@@ -102,8 +102,80 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public async Task PreflightCheckAsync(string databaseName)
+        public async Task<List<string>> GetSupportedCollationsAsync()
         {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
+        public async Task<bool> IsCollationSupportedAsync(string collationName)
+        {
+            if (string.IsNullOrWhiteSpace(collationName))
+            {
+                return false;
+            }
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @CollationName;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        command.Parameters.AddWithValue("@CollationName", collationName.Trim());
+                        var result = await command.ExecuteScalarAsync();
+                        return result != null && Convert.ToInt32(result) > 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to validate collation '{collationName}'.", ex);
+                throw;
+            }
+        }
+
+        public async Task PreflightCheckAsync(string databaseName, string targetCollation)
+        {
+            if (string.IsNullOrWhiteSpace(targetCollation))
+            {
+                throw new ArgumentException("Target collation name cannot be empty.");
+            }
+
+            bool isSupported = await IsCollationSupportedAsync(targetCollation);
+            if (!isSupported)
+            {
+                throw new ArgumentException($"The collation '{targetCollation}' is not supported by the SQL Server engine.");
+            }
+
             var safeDbName = databaseName.Replace("]", "]]");
             try
             {
