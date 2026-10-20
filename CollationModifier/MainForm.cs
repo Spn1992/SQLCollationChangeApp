@@ -18,6 +18,7 @@ namespace CollationModifier
         private bool _isBusy;
         private bool _isConnected;
         private List<DatabaseInfo> _databases = new List<DatabaseInfo>();
+        private List<string> _supportedCollations = new List<string>();
 
         public MainForm()
         {
@@ -40,6 +41,9 @@ namespace CollationModifier
                 Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
                 "SQLBackups"
             );
+
+            txtTargetCollation.AutoCompleteMode = AutoCompleteMode.SuggestAppend;
+            txtTargetCollation.AutoCompleteSource = AutoCompleteSource.CustomSource;
 
             UpdateUIState();
         }
@@ -128,8 +132,9 @@ namespace CollationModifier
                 if (success)
                 {
                     _isConnected = true;
-                    statusLabel.Text = "Connected successfully. Fetching databases...";
+                    statusLabel.Text = "Connected successfully. Fetching databases and collations...";
                     await LoadDatabasesAsync();
+                    await LoadCollationsAsync();
                     statusLabel.Text = "Ready";
                 }
                 else
@@ -172,6 +177,22 @@ namespace CollationModifier
             }
         }
 
+        private async Task LoadCollationsAsync()
+        {
+            try
+            {
+                _supportedCollations = await _databaseService.GetSupportedCollationsAsync();
+                var autoSource = new AutoCompleteStringCollection();
+                autoSource.AddRange(_supportedCollations.ToArray());
+                txtTargetCollation.AutoCompleteCustomSource = autoSource;
+                _logger.LogInfo($"Fetched {_supportedCollations.Count} supported collations.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to load supported collations.", ex);
+            }
+        }
+
         private async void btnProcess_Click(object sender, EventArgs e)
         {
             if (cmbDatabases.SelectedItem is not DatabaseInfo selectedDb) return;
@@ -188,7 +209,7 @@ namespace CollationModifier
             {
                 // 1. Pre-flight
                 statusLabel.Text = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(selectedDb.Name);
+                await _databaseService.PreflightCheckAsync(selectedDb.Name, targetCollation);
 
                 // 2. Automated Backup
                 statusLabel.Text = "Starting automated backup...";
