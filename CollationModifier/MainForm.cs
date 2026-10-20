@@ -41,6 +41,9 @@ namespace CollationModifier
                 "SQLBackups"
             );
 
+            toolTip.SetToolTip(txtBackupDirectory, "Path is evaluated on the SQL Server host filesystem, not the local client.");
+            toolTip.SetToolTip(lblBackupDir, "Path is evaluated on the SQL Server host filesystem, not the local client.");
+
             UpdateUIState();
         }
 
@@ -128,7 +131,19 @@ namespace CollationModifier
                 if (success)
                 {
                     _isConnected = true;
-                    statusLabel.Text = "Connected successfully. Fetching databases...";
+                    statusLabel.Text = "Connected successfully. Querying default backup directory and fetching databases...";
+
+                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
+                    if (!string.IsNullOrWhiteSpace(serverBackupPath))
+                    {
+                        txtBackupDirectory.Text = serverBackupPath;
+                        _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {serverBackupPath}");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
+                    }
+
                     await LoadDatabasesAsync();
                     statusLabel.Text = "Ready";
                 }
@@ -188,7 +203,7 @@ namespace CollationModifier
             {
                 // 1. Pre-flight
                 statusLabel.Text = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(selectedDb.Name);
+                await _databaseService.PreflightCheckAsync(selectedDb.Name, backupDir);
 
                 // 2. Automated Backup
                 statusLabel.Text = "Starting automated backup...";

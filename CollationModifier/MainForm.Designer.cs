@@ -302,6 +302,7 @@ namespace CollationModifier
             this.txtBackupDirectory.Name = "txtBackupDirectory";
             this.txtBackupDirectory.Size = new System.Drawing.Size(240, 25);
             this.txtBackupDirectory.TabIndex = 7;
+            this.toolTip.SetToolTip(this.txtBackupDirectory, "Path is evaluated on the SQL Server host filesystem, not the local client.");
             this.txtBackupDirectory.TextChanged += new System.EventHandler(this.txtBackupDirectory_TextChanged);
             // 
             // lblBackupDir
@@ -311,9 +312,10 @@ namespace CollationModifier
             this.lblBackupDir.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
             this.lblBackupDir.Location = new System.Drawing.Point(267, 322);
             this.lblBackupDir.Name = "lblBackupDir";
-            this.lblBackupDir.Size = new System.Drawing.Size(97, 15);
+            this.lblBackupDir.Size = new System.Drawing.Size(180, 15);
             this.lblBackupDir.TabIndex = 6;
-            this.lblBackupDir.Text = "Backup Directory";
+            this.lblBackupDir.Text = "Backup Directory (Server Host)";
+            this.toolTip.SetToolTip(this.lblBackupDir, "Path is evaluated on the SQL Server host filesystem, not the local client.");
             // 
             // txtTargetCollation
             // 
