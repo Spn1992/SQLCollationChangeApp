@@ -17,6 +17,10 @@ namespace CollationModifier
             {
                 components.Dispose();
             }
+            if (disposing)
+            {
+                _logger?.Dispose();
+            }
             base.Dispose(disposing);
         }
 
