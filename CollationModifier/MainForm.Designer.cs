@@ -50,7 +50,7 @@ namespace CollationModifier
             this.btnProcess = new System.Windows.Forms.Button();
             this.txtBackupDirectory = new System.Windows.Forms.TextBox();
             this.lblBackupDir = new System.Windows.Forms.Label();
-            this.txtTargetCollation = new System.Windows.Forms.TextBox();
+            this.cmbTargetCollation = new System.Windows.Forms.ComboBox();
             this.lblTargetCollation = new System.Windows.Forms.Label();
             this.lblTargetConfigHeader = new System.Windows.Forms.Label();
             this.panelMetadata = new System.Windows.Forms.GroupBox();
@@ -259,7 +259,7 @@ namespace CollationModifier
             this.panelDashboardContent.Controls.Add(this.btnProcess);
             this.panelDashboardContent.Controls.Add(this.txtBackupDirectory);
             this.panelDashboardContent.Controls.Add(this.lblBackupDir);
-            this.panelDashboardContent.Controls.Add(this.txtTargetCollation);
+            this.panelDashboardContent.Controls.Add(this.cmbTargetCollation);
             this.panelDashboardContent.Controls.Add(this.lblTargetCollation);
             this.panelDashboardContent.Controls.Add(this.lblTargetConfigHeader);
             this.panelDashboardContent.Controls.Add(this.panelMetadata);
@@ -315,15 +315,19 @@ namespace CollationModifier
             this.lblBackupDir.TabIndex = 6;
             this.lblBackupDir.Text = "Backup Directory";
             // 
-            // txtTargetCollation
+            // cmbTargetCollation
             // 
-            this.txtTargetCollation.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.txtTargetCollation.Location = new System.Drawing.Point(3, 340);
-            this.txtTargetCollation.Name = "txtTargetCollation";
-            this.txtTargetCollation.Size = new System.Drawing.Size(240, 25);
-            this.txtTargetCollation.TabIndex = 5;
-            this.toolTip.SetToolTip(this.txtTargetCollation, "E.g., SQL_Latin1_General_CP1_CI_AS");
-            this.txtTargetCollation.TextChanged += new System.EventHandler(this.txtTargetCollation_TextChanged);
+            this.cmbTargetCollation.AutoCompleteMode = System.Windows.Forms.AutoCompleteMode.SuggestAppend;
+            this.cmbTargetCollation.AutoCompleteSource = System.Windows.Forms.AutoCompleteSource.CustomSource;
+            this.cmbTargetCollation.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDown;
+            this.cmbTargetCollation.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.cmbTargetCollation.FormattingEnabled = true;
+            this.cmbTargetCollation.Location = new System.Drawing.Point(3, 340);
+            this.cmbTargetCollation.Name = "cmbTargetCollation";
+            this.cmbTargetCollation.Size = new System.Drawing.Size(240, 25);
+            this.cmbTargetCollation.TabIndex = 5;
+            this.toolTip.SetToolTip(this.cmbTargetCollation, "Select or type collation name, e.g., SQL_Latin1_General_CP1_CI_AS");
+            this.cmbTargetCollation.TextChanged += new System.EventHandler(this.cmbTargetCollation_TextChanged);
             // 
             // lblTargetCollation
             // 
@@ -545,7 +549,7 @@ namespace CollationModifier
         private System.Windows.Forms.Label lblSizeValue;
         private System.Windows.Forms.Label lblTargetConfigHeader;
         private System.Windows.Forms.Label lblTargetCollation;
-        private System.Windows.Forms.TextBox txtTargetCollation;
+        private System.Windows.Forms.ComboBox cmbTargetCollation;
         private System.Windows.Forms.Label lblBackupDir;
         private System.Windows.Forms.TextBox txtBackupDirectory;
         private System.Windows.Forms.Button btnProcess;

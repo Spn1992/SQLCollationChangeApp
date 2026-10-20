@@ -102,8 +102,82 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public async Task PreflightCheckAsync(string databaseName)
+        public async Task<List<string>> GetSupportedCollationsAsync()
         {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name ASC;";
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+                _logger.LogInfo($"Fetched {collations.Count} supported collations from server catalog.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations from server catalog.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
+        public async Task<bool> ValidateCollationAsync(string targetCollation)
+        {
+            if (string.IsNullOrWhiteSpace(targetCollation))
+            {
+                return false;
+            }
+
+            if (!System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+            {
+                return false;
+            }
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @CollationName;";
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        command.Parameters.AddWithValue("@CollationName", targetCollation);
+                        var count = Convert.ToInt32(await command.ExecuteScalarAsync());
+                        return count > 0;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to validate collation '{targetCollation}' against server catalog.", ex);
+                throw;
+            }
+        }
+
+        public async Task PreflightCheckAsync(string databaseName, string? targetCollation = null)
+        {
+            if (!string.IsNullOrWhiteSpace(targetCollation))
+            {
+                bool isValid = await ValidateCollationAsync(targetCollation);
+                if (!isValid)
+                {
+                    throw new InvalidOperationException($"Target collation '{targetCollation}' is invalid or not supported by the SQL Server engine.");
+                }
+            }
+
             var safeDbName = databaseName.Replace("]", "]]");
             try
             {
