@@ -55,7 +55,7 @@ namespace CollationModifier
             UpdateUIState();
         }
 
-        private void txtTargetCollation_TextChanged(object sender, EventArgs e)
+        private void cmbTargetCollation_TextChanged(object sender, EventArgs e)
         {
             UpdateUIState();
         }
@@ -97,11 +97,11 @@ namespace CollationModifier
             panelDashboardContent.Enabled = _isConnected;
 
             cmbDatabases.Enabled = !_isBusy && _isConnected;
-            txtTargetCollation.Enabled = !_isBusy && _isConnected;
+            cmbTargetCollation.Enabled = !_isBusy && _isConnected;
             txtBackupDirectory.Enabled = !_isBusy && _isConnected;
 
             var selectedDb = cmbDatabases.SelectedItem as DatabaseInfo;
-            bool canProcess = _isConnected && !_isBusy && selectedDb != null && !string.IsNullOrWhiteSpace(txtTargetCollation.Text);
+            bool canProcess = _isConnected && !_isBusy && selectedDb != null && !string.IsNullOrWhiteSpace(cmbTargetCollation.Text);
             btnProcess.Enabled = canProcess;
 
             progressBar.Visible = _isBusy;
@@ -128,8 +128,9 @@ namespace CollationModifier
                 if (success)
                 {
                     _isConnected = true;
-                    statusLabel.Text = "Connected successfully. Fetching databases...";
+                    statusLabel.Text = "Connected successfully. Fetching databases and collations...";
                     await LoadDatabasesAsync();
+                    await LoadSupportedCollationsAsync();
                     statusLabel.Text = "Ready";
                 }
                 else
@@ -172,12 +173,35 @@ namespace CollationModifier
             }
         }
 
+        private async Task LoadSupportedCollationsAsync()
+        {
+            try
+            {
+                var collations = await _databaseService.GetSupportedCollationsAsync();
+                cmbTargetCollation.BeginUpdate();
+                cmbTargetCollation.Items.Clear();
+                cmbTargetCollation.Items.AddRange(collations.ToArray());
+
+                var autoSource = new AutoCompleteStringCollection();
+                autoSource.AddRange(collations.ToArray());
+                cmbTargetCollation.AutoCompleteCustomSource = autoSource;
+                cmbTargetCollation.EndUpdate();
+
+                _logger.LogInfo($"Fetched and populated {collations.Count} supported collations into selector.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to load supported collations.", ex);
+                statusLabel.Text = $"Warning: Failed to fetch supported collations: {ex.Message}";
+            }
+        }
+
         private async void btnProcess_Click(object sender, EventArgs e)
         {
             if (cmbDatabases.SelectedItem is not DatabaseInfo selectedDb) return;
 
             _isBusy = true;
-            string targetCollation = txtTargetCollation.Text.Trim();
+            string targetCollation = cmbTargetCollation.Text.Trim();
             string backupDir = txtBackupDirectory.Text.Trim();
 
             UpdateUIState();
@@ -186,9 +210,9 @@ namespace CollationModifier
 
             try
             {
-                // 1. Pre-flight
+                // 1. Pre-flight (validates collation against server catalog & user permissions)
                 statusLabel.Text = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(selectedDb.Name);
+                await _databaseService.PreflightCheckAsync(selectedDb.Name, targetCollation);
 
                 // 2. Automated Backup
                 statusLabel.Text = "Starting automated backup...";
