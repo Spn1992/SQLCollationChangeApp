@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../CollationModifier/Collections/ObservableRangeCollection.cs" Link="Collections/ObservableRangeCollection.cs" />
+    <Compile Include="../CollationModifier/Models/DatabaseInfo.cs" Link="Models/DatabaseInfo.cs" />
+    <Compile Include="../CollationModifier/ViewModels/ViewModelBase.cs" Link="ViewModels/ViewModelBase.cs" />
+    <Compile Include="../CollationModifier/ViewModels/MainViewModel.cs" Link="ViewModels/MainViewModel.cs" />
+    <Compile Include="../CollationModifier/ViewModels/RelayCommand.cs" Link="ViewModels/RelayCommand.cs" />
+    <Compile Include="../CollationModifier/Services/DatabaseService.cs" Link="Services/DatabaseService.cs" />
+    <Compile Include="../CollationModifier/Services/LoggerService.cs" Link="Services/LoggerService.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Data.SqlClient" Version="4.8.6" />
+  </ItemGroup>
+
+</Project>

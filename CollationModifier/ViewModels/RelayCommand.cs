@@ -26,8 +26,28 @@ namespace CollationModifier.ViewModels
 
         public event EventHandler? CanExecuteChanged
         {
-            add => CommandManager.RequerySuggested += value;
-            remove => CommandManager.RequerySuggested -= value;
+            add
+            {
+                try
+                {
+                    CommandManager.RequerySuggested += value;
+                }
+                catch
+                {
+                    // Ignore outside WPF runtime environment
+                }
+            }
+            remove
+            {
+                try
+                {
+                    CommandManager.RequerySuggested -= value;
+                }
+                catch
+                {
+                    // Ignore outside WPF runtime environment
+                }
+            }
         }
     }
 }

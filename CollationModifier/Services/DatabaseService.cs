@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace CollationModifier.Services
 {
-    public class DatabaseService
+    public class DatabaseService : IDatabaseService
     {
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
@@ -17,7 +17,7 @@ namespace CollationModifier.Services
             _logger = logger;
         }
 
-        public void SetConnectionString(string server, string authType, string username, string password)
+        public virtual void SetConnectionString(string server, string authType, string username, string password)
         {
             var builder = new SqlConnectionStringBuilder
             {
@@ -39,7 +39,7 @@ namespace CollationModifier.Services
             _connectionString = builder.ConnectionString;
         }
 
-        public async Task<bool> TestConnectionAsync()
+        public virtual async Task<bool> TestConnectionAsync()
         {
             try
             {
@@ -56,7 +56,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
             var databases = new List<DatabaseInfo>();
             try
@@ -102,7 +102,7 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public async Task PreflightCheckAsync(string databaseName)
+        public virtual async Task PreflightCheckAsync(string databaseName)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
@@ -146,7 +146,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
         {
             try
             {
@@ -180,7 +180,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
@@ -219,7 +219,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task AlterCollationAsync(string databaseName, string newCollation)
+        public virtual async Task AlterCollationAsync(string databaseName, string newCollation)
         {
             // Validate the collation to prevent SQL Injection
             if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
