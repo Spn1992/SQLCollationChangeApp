@@ -72,8 +72,15 @@ namespace CollationModifier.Services
                             d.collation_name,
                             d.compatibility_level,
                             SUSER_SNAME(d.owner_sid) as owner,
-                            (SELECT SUM(CAST(size AS bigint)) * 8 / 1024 FROM sys.master_files WHERE database_id = d.database_id) as size_mb
+                            mf.size_mb
                         FROM sys.databases d
+                        LEFT JOIN (
+                            SELECT
+                                database_id,
+                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
+                            FROM sys.master_files
+                            GROUP BY database_id
+                        ) mf ON d.database_id = mf.database_id
                         WHERE d.database_id > 4";
 
                     using (var command = new SqlCommand(query, connection))
