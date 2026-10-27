@@ -13,6 +13,7 @@ namespace CollationModifier.Tests
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
+        public bool ThrowOnGetDatabases { get; set; } = false;
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
@@ -35,6 +36,8 @@ namespace CollationModifier.Tests
         }
 
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS" });
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
@@ -64,6 +67,7 @@ namespace CollationModifier.Tests
         public static async Task RunTestsAsync()
         {
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
+            int failed = 0;
 
             await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
@@ -85,7 +89,7 @@ namespace CollationModifier.Tests
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
             });
 
-            RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
+            await RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
             {
                 long largeSizeMb = 3000000000L;
                 var db = new DatabaseInfo
@@ -97,7 +101,7 @@ namespace CollationModifier.Tests
                 Assert(db.Size == "3000000000 MB", $"Expected '3000000000 MB', got '{db.Size}'");
             });
 
-            RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
+            await RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
             {
                 var collection = new ObservableRangeCollection<DatabaseInfo>();
                 int eventCount = 0;
@@ -284,7 +288,7 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected status message to indicate failure before backup, got: '{vm.StatusMessage}'");
             });
 
-            RunSyncTest("PreflightReport_GetDiagnosticSummary_FormatsDetailsCorrectly", () =>
+            await RunSyncTest("PreflightReport_GetDiagnosticSummary_FormatsDetailsCorrectly", () =>
             {
                 var report = new PreflightReport
                 {
@@ -304,6 +308,11 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("Session ID: 60"), "Summary should include session ID");
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
             });
+
+            if (failed > 0)
+            {
+                throw new InvalidOperationException($"{failed} MainViewModel test(s) failed.");
+            }
 
             Console.WriteLine("\nTest Run Finished: All tests passed!");
 
