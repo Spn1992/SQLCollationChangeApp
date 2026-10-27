@@ -82,17 +82,17 @@ namespace CollationModifier
         {
             if (cmbDatabases.SelectedItem is DatabaseInfo selectedDb)
             {
-                lblCollationValue.Text = string.IsNullOrEmpty(selectedDb.Collation) ? "-" : selectedDb.Collation;
-                lblCompatLevelValue.Text = string.IsNullOrEmpty(selectedDb.CompatibilityLevel) ? "-" : selectedDb.CompatibilityLevel;
-                lblOwnerValue.Text = string.IsNullOrEmpty(selectedDb.Owner) ? "-" : selectedDb.Owner;
-                lblSizeValue.Text = string.IsNullOrEmpty(selectedDb.Size) ? "-" : selectedDb.Size;
+                UpdateMetadataLabel(lblCollationValue, "Current Collation", selectedDb.Collation);
+                UpdateMetadataLabel(lblCompatLevelValue, "Compatibility Level", selectedDb.CompatibilityLevel);
+                UpdateMetadataLabel(lblOwnerValue, "Owner", selectedDb.Owner);
+                UpdateMetadataLabel(lblSizeValue, "Size", selectedDb.Size);
             }
             else
             {
-                lblCollationValue.Text = "-";
-                lblCompatLevelValue.Text = "-";
-                lblOwnerValue.Text = "-";
-                lblSizeValue.Text = "-";
+                UpdateMetadataLabel(lblCollationValue, "Current Collation", null);
+                UpdateMetadataLabel(lblCompatLevelValue, "Compatibility Level", null);
+                UpdateMetadataLabel(lblOwnerValue, "Owner", null);
+                UpdateMetadataLabel(lblSizeValue, "Size", null);
             }
         }
 
