@@ -107,8 +107,21 @@ namespace CollationModifier
             progressBar.Visible = _isBusy;
         }
 
+        private static void RestoreOrSetFocus(Control? preferredControl, Control? fallbackControl = null)
+        {
+            if (preferredControl != null && preferredControl.Enabled && preferredControl.Visible)
+            {
+                preferredControl.Focus();
+            }
+            else if (fallbackControl != null && fallbackControl.Enabled && fallbackControl.Visible)
+            {
+                fallbackControl.Focus();
+            }
+        }
+
         private async void btnConnect_Click(object sender, EventArgs e)
         {
+            Control? activeControl = ActiveControl;
             _isBusy = true;
             statusLabel.Text = "Connecting to server...";
             UpdateUIState();
@@ -147,6 +160,15 @@ namespace CollationModifier
             {
                 _isBusy = false;
                 UpdateUIState();
+
+                if (_isConnected)
+                {
+                    RestoreOrSetFocus(cmbDatabases, activeControl ?? btnConnect);
+                }
+                else
+                {
+                    RestoreOrSetFocus(activeControl, btnConnect);
+                }
             }
         }
 
@@ -176,6 +198,7 @@ namespace CollationModifier
         {
             if (cmbDatabases.SelectedItem is not DatabaseInfo selectedDb) return;
 
+            Control? activeControl = ActiveControl;
             _isBusy = true;
             string targetCollation = txtTargetCollation.Text.Trim();
             string backupDir = txtBackupDirectory.Text.Trim();
@@ -238,6 +261,8 @@ namespace CollationModifier
             {
                 _isBusy = false;
                 UpdateUIState();
+
+                RestoreOrSetFocus(activeControl, btnProcess);
             }
         }
     }
