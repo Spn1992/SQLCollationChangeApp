@@ -1,4 +1,5 @@
 using CollationModifier.Collections;
+using CollationModifier.Exceptions;
 using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
@@ -225,7 +226,6 @@ namespace CollationModifier.ViewModels
 
                 if (success)
                 {
-                    IsConnected = true;
                     StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
 
                     string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
@@ -239,9 +239,17 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    await LoadDatabasesAsync();
-                    await LoadCollationsAsync();
-                    StatusMessage = "Ready";
+                    bool dbLoaded = await LoadDatabasesAsync();
+                    if (dbLoaded)
+                    {
+                        IsConnected = true;
+                        await LoadCollationsAsync();
+                        StatusMessage = "Ready";
+                    }
+                    else
+                    {
+                        IsConnected = false;
+                    }
                 }
                 else
                 {
@@ -260,17 +268,21 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync()
         {
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync();
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
+                return true;
             }
             catch (Exception ex)
             {
+                Databases.Clear();
+                _logger.LogError("Failed to load databases.", ex);
                 StatusMessage = $"Failed to load databases: {ex.Message}";
+                return false;
             }
         }
 
@@ -307,9 +319,15 @@ namespace CollationModifier.ViewModels
 
             try
             {
-                // 1. Pre-flight
+                // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                if (preflightReport.HasBlockingConditions)
+                {
+                    var summary = preflightReport.GetDiagnosticSummary();
+                    _logger.LogWarning($"Pre-flight validation failed for {SelectedDatabase.Name}:\n{summary}");
+                    throw new PreflightValidationException(preflightReport);
+                }
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
