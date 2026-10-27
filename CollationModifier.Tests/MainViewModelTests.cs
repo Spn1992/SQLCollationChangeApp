@@ -28,7 +28,9 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task PreflightCheckAsync(string databaseName) => Task.CompletedTask;
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+
+        public Task PreflightCheckAsync(string databaseName, string backupDirectory = "") => Task.CompletedTask;
 
         public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory) => Task.FromResult("/tmp/mock.bak");
 
@@ -43,9 +45,9 @@ namespace CollationModifier.Tests
         }
     }
 
-    public static class Program
+    public static class MainViewModelTestsRunner
     {
-        public static async Task Main()
+        public static async Task RunAsync()
         {
             Console.WriteLine("Running CollationModifier Tests...");
 
@@ -67,6 +69,14 @@ namespace CollationModifier.Tests
 
                 Assert(nameof(DatabaseInfo.Collation) == changedProperty, $"Expected property name 'Collation', got '{changedProperty}'");
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
+            });
+
+            RunSyncTest("DatabaseService_EscapeIdentifier_EscapesRightBracketsCorrectly", () =>
+            {
+                var method = typeof(DatabaseService).GetMethod("EscapeIdentifier", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(method != null, "EscapeIdentifier method not found");
+                string result = (string)method!.Invoke(null, new object[] { "Test]Db]Name" })!;
+                Assert(result == "Test]]Db]]Name", $"Expected 'Test]]Db]]Name', got '{result}'");
             });
 
             RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
