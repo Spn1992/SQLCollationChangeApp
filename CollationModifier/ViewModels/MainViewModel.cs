@@ -33,6 +33,7 @@ namespace CollationModifier.ViewModels
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            SupportedCollations = new ObservableCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -117,6 +118,7 @@ namespace CollationModifier.ViewModels
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
+        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase

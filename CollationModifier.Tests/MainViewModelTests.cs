@@ -28,7 +28,11 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task PreflightCheckAsync(string databaseName) => Task.CompletedTask;
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>("/tmp/mock_backup");
+
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
+        public Task PreflightCheckAsync(string databaseName, string backupDirectory = "") => Task.CompletedTask;
 
         public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory) => Task.FromResult("/tmp/mock.bak");
 
@@ -43,9 +47,9 @@ namespace CollationModifier.Tests
         }
     }
 
-    public static class Program
+    public static class MainViewModelTestsRunner
     {
-        public static async Task Main()
+        public static async Task RunAllTestsAsync()
         {
             Console.WriteLine("Running CollationModifier Tests...");
 
@@ -67,6 +71,18 @@ namespace CollationModifier.Tests
 
                 Assert(nameof(DatabaseInfo.Collation) == changedProperty, $"Expected property name 'Collation', got '{changedProperty}'");
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
+            });
+
+            RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
+            {
+                long largeSizeMb = 3000000000L;
+                var db = new DatabaseInfo
+                {
+                    Name = "LargeDB",
+                    Size = $"{largeSizeMb} MB"
+                };
+
+                Assert(db.Size == "3000000000 MB", $"Expected '3000000000 MB', got '{db.Size}'");
             });
 
             RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
