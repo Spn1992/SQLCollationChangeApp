@@ -147,6 +147,7 @@
                                 <TextBox x:Name="TargetCollationInput" Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
                                          AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
                                          AutomationProperties.Name="New Collation Name"
+                                         AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
                                          ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}" />
                             </StackPanel>
 
