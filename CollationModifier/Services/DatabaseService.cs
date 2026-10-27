@@ -366,6 +366,32 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             }
         }
 
+        public virtual async Task<List<string>> GetSupportedCollationsAsync()
+        {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            collations.Add(reader.GetString(0));
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+            }
+            return collations;
+        }
+
         private async Task TrySetMultiUserAsync(string databaseName)
         {
             var safeDbName = databaseName.Replace("]", "]]");

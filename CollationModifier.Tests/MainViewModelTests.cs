@@ -28,7 +28,11 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task PreflightCheckAsync(string databaseName) => Task.CompletedTask;
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>("/tmp/default_backup");
+
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
+        public Task PreflightCheckAsync(string databaseName, string backupDirectory = "") => Task.CompletedTask;
 
         public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory) => Task.FromResult("/tmp/mock.bak");
 
@@ -43,9 +47,9 @@ namespace CollationModifier.Tests
         }
     }
 
-    public static class Program
+    public static class MainViewModelTestsRunner
     {
-        public static async Task Main()
+        public static async Task RunTestsAsync()
         {
             Console.WriteLine("Running CollationModifier Tests...");
 
@@ -130,6 +134,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 int getDatabasesCallCountAfterLoad = mockService.GetDatabasesCount;
 
@@ -149,6 +154,57 @@ namespace CollationModifier.Tests
                 Assert(mockService.GetDatabasesCount == getDatabasesCallCountAfterLoad, "GetDatabasesAsync was unexpectedly called during collation change!");
                 Assert(mockService.AlterCollationCount == 1, "AlterCollationCount expected to be 1");
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_WhenUserCancels_DoesNotCallDatabaseService", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "TestDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => false;
+                await vm.LoadDatabasesAsync();
+
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationCount should be 0 when cancelled");
+                Assert(vm.SelectedDatabase.Collation == "SQL_Latin1_General_CP1_CI_AS", "Collation should not be altered when cancelled");
+                Assert(vm.IsBusy == false, "IsBusy should remain false when cancelled");
+                Assert(vm.StatusMessage == "Collation change operation cancelled.", $"Expected cancellation status message, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ConfirmationPrompt_PassesDatabaseNameAndTargetCollation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "TargetDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? promptedDb = null;
+                string? promptedCollation = null;
+                vm.ConfirmCollationChangeHandler = (db, col) =>
+                {
+                    promptedDb = db;
+                    promptedCollation = col;
+                    return false;
+                };
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_BIN";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(promptedDb == "TargetDB", $"Expected prompted database 'TargetDB', got '{promptedDb}'");
+                Assert(promptedCollation == "Latin1_General_100_BIN", $"Expected prompted collation 'Latin1_General_100_BIN', got '{promptedCollation}'");
             });
 
             Console.WriteLine("\nTest Run Finished: All tests passed!");
