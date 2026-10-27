@@ -4,6 +4,7 @@ using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -32,8 +33,10 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            SupportedCollations = new ObservableCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -134,6 +137,7 @@ namespace CollationModifier.ViewModels
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
+        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -186,6 +190,44 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand OpenLogCommand { get; }
+
+        public void OpenLogFile()
+        {
+            try
+            {
+                string logPath = _logger.LogFilePath;
+                if (File.Exists(logPath))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = logPath,
+                        UseShellExecute = true
+                    });
+                }
+                else
+                {
+                    string? directory = Path.GetDirectoryName(logPath);
+                    if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = directory,
+                            UseShellExecute = true
+                        });
+                    }
+                    else
+                    {
+                        StatusMessage = "Log file does not exist yet.";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to open log file.", ex);
+                StatusMessage = $"Unable to open log file: {ex.Message}";
+            }
+        }
 
         public async Task ToggleConnectionAsync()
         {
@@ -222,7 +264,6 @@ namespace CollationModifier.ViewModels
 
                 if (success)
                 {
-                    IsConnected = true;
                     StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
 
                     string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
@@ -236,8 +277,16 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    await LoadDatabasesAsync();
-                    StatusMessage = "Ready";
+                    bool dbLoaded = await LoadDatabasesAsync();
+                    if (dbLoaded)
+                    {
+                        IsConnected = true;
+                        StatusMessage = "Ready";
+                    }
+                    else
+                    {
+                        IsConnected = false;
+                    }
                 }
                 else
                 {
@@ -256,17 +305,21 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync()
         {
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync();
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
+                return true;
             }
             catch (Exception ex)
             {
+                Databases.Clear();
+                _logger.LogError("Failed to load databases.", ex);
                 StatusMessage = $"Failed to load databases: {ex.Message}";
+                return false;
             }
         }
 
@@ -285,7 +338,7 @@ namespace CollationModifier.ViewModels
 
             try
             {
-                // 1. Pre-flight
+                // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
                 var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
                 if (preflightReport.HasBlockingConditions)
