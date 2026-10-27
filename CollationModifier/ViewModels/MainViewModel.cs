@@ -34,6 +34,7 @@ namespace CollationModifier.ViewModels
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            SupportedCollations = new ObservableCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -58,9 +59,12 @@ namespace CollationModifier.ViewModels
             get => _isBusy;
             set
             {
-                SetProperty(ref _isBusy, value);
-                OnPropertyChanged(nameof(IsNotBusy));
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _isBusy, value))
+                {
+                    OnPropertyChanged(nameof(IsNotBusy));
+                    OnPropertyChanged(nameof(CanEditConnection));
+                    InvalidateRequerySuggested();
+                }
             }
         }
         public bool IsNotBusy => !IsBusy;
@@ -113,11 +117,18 @@ namespace CollationModifier.ViewModels
         public bool IsConnected
         {
             get => _isConnected;
-            set => SetProperty(ref _isConnected, value);
+            set
+            {
+                if (SetProperty(ref _isConnected, value))
+                {
+                    OnPropertyChanged(nameof(CanEditConnection));
+                }
+            }
         }
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
+        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -171,8 +182,21 @@ namespace CollationModifier.ViewModels
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
 
+        public bool CanEditConnection => !IsBusy && !IsConnected;
+
         public async Task ConnectAsync()
         {
+            if (IsConnected)
+            {
+                IsConnected = false;
+                Databases.Clear();
+                SupportedCollations.Clear();
+                SelectedDatabase = null;
+                StatusMessage = "Disconnected.";
+                _logger.LogInfo("Disconnected from server.");
+                return;
+            }
+
             IsBusy = true;
             StatusMessage = "Connecting to server...";
             _logger.LogInfo($"Attempting to connect to server: {ServerName} using {SelectedAuthenticationType}");

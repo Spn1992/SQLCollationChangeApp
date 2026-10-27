@@ -30,6 +30,8 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
@@ -237,6 +239,43 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("FAILED (Blocking items found)"), "Summary should indicate failure");
                 Assert(summary.Contains("Session ID: 60"), "Summary should include session ID");
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
+            });
+
+            await RunAsyncTest("ConnectAsync_LocksConnectionFields_WhenConnected", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } }
+                };
+                var vm = new MainViewModel(mockService);
+
+                Assert(vm.CanEditConnection, "Expected CanEditConnection to be true before connecting.");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "Expected IsConnected to be true after successful connect.");
+                Assert(!vm.CanEditConnection, "Expected CanEditConnection to be false while connected.");
+            });
+
+            await RunAsyncTest("Disconnect_ResetsConnectedState_ClearsDatabases_AndUnlocksConnection", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } }
+                };
+                var vm = new MainViewModel(mockService);
+
+                await vm.ConnectAsync();
+                Assert(vm.IsConnected, "Expected IsConnected to be true after connect.");
+                Assert(vm.Databases.Count == 1, "Expected 1 database loaded.");
+
+                // Trigger disconnect
+                await vm.ConnectAsync();
+
+                Assert(!vm.IsConnected, "Expected IsConnected to be false after disconnect.");
+                Assert(vm.CanEditConnection, "Expected CanEditConnection to be true after disconnect.");
+                Assert(vm.Databases.Count == 0, "Expected database list to be cleared after disconnect.");
+                Assert(vm.StatusMessage == "Disconnected.", "Expected status message 'Disconnected.'");
             });
 
             Console.WriteLine("\nTest Run Finished: All tests passed!");
