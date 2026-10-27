@@ -81,6 +81,18 @@ namespace CollationModifier.Tests
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
             });
 
+            RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
+            {
+                long largeSizeMb = 3000000000L;
+                var db = new DatabaseInfo
+                {
+                    Name = "LargeDB",
+                    Size = $"{largeSizeMb} MB"
+                };
+
+                Assert(db.Size == "3000000000 MB", $"Expected '3000000000 MB', got '{db.Size}'");
+            });
+
             RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
             {
                 var collection = new ObservableRangeCollection<DatabaseInfo>();
