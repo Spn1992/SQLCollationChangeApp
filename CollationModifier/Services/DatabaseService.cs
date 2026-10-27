@@ -189,26 +189,17 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    // To restore, we must be in master and ensure exclusive access
-                    var commands = new[]
-                    {
-                        $"USE [master];",
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch restore workflow statements into a single command to minimize network roundtrips
+                    var query = $@"USE [master];
+ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            command.CommandTimeout = 3600;
-                            if (cmdText.Contains("@BackupFile"))
-                            {
-                                command.Parameters.AddWithValue("@BackupFile", backupFile);
-                            }
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        command.Parameters.AddWithValue("@BackupFile", backupFile);
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -216,6 +207,8 @@ namespace CollationModifier.Services
             catch (Exception ex)
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
+                // Attempt emergency MULTI_USER reset if batch execution failed
+                await TrySetMultiUserAsync(databaseName);
                 throw;
             }
         }
@@ -236,21 +229,15 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync();
 
-                    var commands = new[]
-                    {
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch collation change statements into a single command to minimize network roundtrips
+                    var query = $@"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            // Collation change can take time
-                            command.CommandTimeout = 3600;
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
