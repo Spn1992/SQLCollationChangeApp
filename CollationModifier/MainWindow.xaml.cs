@@ -7,6 +7,7 @@ namespace CollationModifier
         public MainWindow()
         {
             InitializeComponent();
+            Closed += (s, e) => (DataContext as System.IDisposable)?.Dispose();
         }
 
         private void PasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
