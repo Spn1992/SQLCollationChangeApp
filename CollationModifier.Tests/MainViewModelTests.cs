@@ -27,6 +27,10 @@ namespace CollationModifier.Tests
         public Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
             GetDatabasesCount++;
+            if (ThrowOnGetDatabases)
+            {
+                throw new InvalidOperationException("Failed to reach database catalog.");
+            }
             return Task.FromResult(DatabasesToReturn);
         }
 
@@ -61,7 +65,7 @@ namespace CollationModifier.Tests
         {
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
-            RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
+            await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
                 var db = new DatabaseInfo
                 {
@@ -138,11 +142,61 @@ namespace CollationModifier.Tests
                     collectionChangedCount++;
                 };
 
-                await vm.LoadDatabasesAsync();
+                bool result = await vm.LoadDatabasesAsync();
 
+                Assert(result == true, "Expected LoadDatabasesAsync to return true");
                 Assert(collectionChangedCount == 1, $"Expected collectionChangedCount 1, got {collectionChangedCount}");
                 Assert(vm.Databases.Count == 3, $"Expected 3 databases in collection, got {vm.Databases.Count}");
                 Assert(mockService.GetDatabasesCount == 1, $"Expected GetDatabasesCount 1, got {mockService.GetDatabasesCount}");
+            });
+
+            await RunAsyncTest("LoadDatabasesAsync_WhenExceptionThrown_ClearsDatabasesAndReturnsFalse", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    ThrowOnGetDatabases = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.Databases.Add(new DatabaseInfo { Name = "OldDB" });
+
+                bool result = await vm.LoadDatabasesAsync();
+
+                Assert(result == false, "Expected LoadDatabasesAsync to return false on exception");
+                Assert(vm.Databases.Count == 0, $"Expected Databases to be cleared, but count was {vm.Databases.Count}");
+                Assert(vm.StatusMessage.Contains("Failed to load databases"), $"Expected StatusMessage to contain error details, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenLoadDatabasesFails_DefersIsConnectedToFalseAndPreservesErrorStatus", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    ThrowOnGetDatabases = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(vm.IsConnected == false, "Expected IsConnected to be false initially");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected == false, "Expected IsConnected to remain false when database load fails");
+                Assert(vm.StatusMessage.Contains("Failed to load databases"), $"Expected StatusMessage to retain database error, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenLoadDatabasesSucceeds_SetsIsConnectedToTrueAndStatusReady", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "DB1" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(vm.IsConnected == false, "Expected IsConnected to be false initially");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected == true, "Expected IsConnected to be true when connection and database load succeed");
+                Assert(vm.StatusMessage == "Ready", $"Expected StatusMessage to be 'Ready', got '{vm.StatusMessage}'");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_UpdatesCollationInMemory_WithoutCallingLoadDatabasesAsync", async () =>
@@ -263,11 +317,11 @@ namespace CollationModifier.Tests
                 catch (Exception ex)
                 {
                     Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    throw;
+                    failed++;
                 }
             }
 
-            void RunSyncTest(string name, Action testAction)
+            Task RunSyncTest(string name, Action testAction)
             {
                 try
                 {
@@ -277,8 +331,9 @@ namespace CollationModifier.Tests
                 catch (Exception ex)
                 {
                     Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    throw;
+                    failed++;
                 }
+                return Task.CompletedTask;
             }
 
             void Assert(bool condition, string message)
