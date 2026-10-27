@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace CollationModifier.Services
 {
-    public class DatabaseService
+    public class DatabaseService : IDatabaseService
     {
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
@@ -17,7 +17,7 @@ namespace CollationModifier.Services
             _logger = logger;
         }
 
-        public void SetConnectionString(string server, string authType, string username, string password)
+        public virtual void SetConnectionString(string server, string authType, string username, string password)
         {
             var builder = new SqlConnectionStringBuilder
             {
@@ -40,7 +40,7 @@ namespace CollationModifier.Services
             _connectionString = builder.ConnectionString;
         }
 
-        public async Task<bool> TestConnectionAsync()
+        public virtual async Task<bool> TestConnectionAsync()
         {
             try
             {
@@ -57,7 +57,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
             var databases = new List<DatabaseInfo>();
             try
@@ -73,8 +73,15 @@ namespace CollationModifier.Services
                             d.collation_name,
                             d.compatibility_level,
                             SUSER_SNAME(d.owner_sid) as owner,
-                            (SELECT SUM(CAST(size AS bigint)) * 8 / 1024 FROM sys.master_files WHERE database_id = d.database_id) as size_mb
+                            mf.size_mb
                         FROM sys.databases d
+                        LEFT JOIN (
+                            SELECT
+                                database_id,
+                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
+                            FROM sys.master_files
+                            GROUP BY database_id
+                        ) mf ON d.database_id = mf.database_id
                         WHERE d.database_id > 4";
 
                     using (var command = new SqlCommand(query, connection))
@@ -103,24 +110,70 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public async Task<List<string>> GetSupportedCollationsAsync()
+        public async Task<string?> GetDefaultBackupDirectoryAsync()
         {
-            var collations = new List<string>();
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    var query = @"
+                        DECLARE @path NVARCHAR(4000) = NULL;
+
+                        BEGIN TRY
+                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
+                        END TRY
+                        BEGIN CATCH
+                        END CATCH;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        SELECT ISNULL(@path, '') AS DefaultBackupPath;";
 
                     using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
                     {
-                        while (await reader.ReadAsync())
+                        var result = await command.ExecuteScalarAsync();
+                        if (result != null && result != DBNull.Value)
                         {
-                            if (!reader.IsDBNull(0))
+                            var backupPath = result.ToString()?.Trim();
+                            if (!string.IsNullOrWhiteSpace(backupPath))
                             {
-                                collations.Add(reader.GetString(0));
+                                _logger.LogInfo($"Retrieved SQL Server default backup path: {backupPath}");
+                                return backupPath;
                             }
                         }
                     }
@@ -128,53 +181,42 @@ namespace CollationModifier.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError("Failed to fetch supported collations.", ex);
-                throw;
+                _logger.LogError("Failed to retrieve default backup directory from server.", ex);
             }
 
-            return collations;
+            return null;
         }
 
-        public async Task<bool> IsCollationSupportedAsync(string collationName)
+        public static void ValidateBackupDirectoryPath(string backupDirectory)
         {
-            if (string.IsNullOrWhiteSpace(collationName))
+            if (string.IsNullOrWhiteSpace(backupDirectory))
             {
-                return false;
+                throw new ArgumentException("Backup directory path cannot be empty or whitespace.");
             }
 
-            try
-            {
-                using (var connection = new SqlConnection(_connectionString))
-                {
-                    await connection.OpenAsync();
-                    var query = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @CollationName;";
+            string trimmedPath = backupDirectory.Trim();
 
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        command.Parameters.AddWithValue("@CollationName", collationName.Trim());
-                        var result = await command.ExecuteScalarAsync();
-                        return result != null && Convert.ToInt32(result) > 0;
-                    }
-                }
-            }
-            catch (Exception ex)
+            char[] invalidChars = new char[] { '|', '<', '>', '"', '?', '*' };
+            if (trimmedPath.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || trimmedPath.IndexOfAny(invalidChars) >= 0)
             {
-                _logger.LogError($"Failed to validate collation '{collationName}'.", ex);
-                throw;
+                throw new ArgumentException($"Backup directory path contains invalid path characters: '{backupDirectory}'");
+            }
+
+            bool isWindowsDrive = System.Text.RegularExpressions.Regex.IsMatch(trimmedPath, @"^[a-zA-Z]:[\\/]");
+            bool isUncShare = trimmedPath.StartsWith(@"\\") || trimmedPath.StartsWith("//");
+            bool isLinuxRoot = trimmedPath.StartsWith("/");
+
+            if (!isWindowsDrive && !isUncShare && !isLinuxRoot && !Path.IsPathRooted(trimmedPath))
+            {
+                throw new ArgumentException($"Backup directory '{backupDirectory}' must be a valid absolute path or UNC share on the target SQL Server host.");
             }
         }
 
-        public async Task PreflightCheckAsync(string databaseName, string targetCollation)
+        public async Task PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
-            if (string.IsNullOrWhiteSpace(targetCollation))
+            if (!string.IsNullOrWhiteSpace(backupDirectory))
             {
-                throw new ArgumentException("Target collation name cannot be empty.");
-            }
-
-            bool isSupported = await IsCollationSupportedAsync(targetCollation);
-            if (!isSupported)
-            {
-                throw new ArgumentException($"The collation '{targetCollation}' is not supported by the SQL Server engine.");
+                ValidateBackupDirectoryPath(backupDirectory);
             }
 
             var safeDbName = databaseName.Replace("]", "]]");
@@ -219,8 +261,9 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
         {
+            ValidateBackupDirectoryPath(backupDirectory);
             try
             {
                 // Note: The backupDirectory must exist on the SQL Server machine, not the client running this app.
@@ -253,7 +296,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
@@ -261,26 +304,17 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    // To restore, we must be in master and ensure exclusive access
-                    var commands = new[]
-                    {
-                        $"USE [master];",
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch restore workflow statements into a single command to minimize network roundtrips
+                    var query = $@"USE [master];
+ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            command.CommandTimeout = 3600;
-                            if (cmdText.Contains("@BackupFile"))
-                            {
-                                command.Parameters.AddWithValue("@BackupFile", backupFile);
-                            }
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        command.Parameters.AddWithValue("@BackupFile", backupFile);
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -288,11 +322,13 @@ namespace CollationModifier.Services
             catch (Exception ex)
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
+                // Attempt emergency MULTI_USER reset if batch execution failed
+                await TrySetMultiUserAsync(databaseName);
                 throw;
             }
         }
 
-        public async Task AlterCollationAsync(string databaseName, string newCollation)
+        public virtual async Task AlterCollationAsync(string databaseName, string newCollation)
         {
             // Validate the collation to prevent SQL Injection
             if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
@@ -308,21 +344,15 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync();
 
-                    var commands = new[]
-                    {
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch collation change statements into a single command to minimize network roundtrips
+                    var query = $@"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            // Collation change can take time
-                            command.CommandTimeout = 3600;
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
