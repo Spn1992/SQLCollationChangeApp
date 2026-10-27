@@ -3,6 +3,22 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
+        <!-- Reusable Color Brush Resources -->
+        <SolidColorBrush x:Key="DisabledBackgroundBrush" Color="#E2E8F0" />
+        <SolidColorBrush x:Key="DisabledForegroundBrush" Color="#475569" />
+        <SolidColorBrush x:Key="FocusBorderBrush" Color="#0284C7" />
+
+        <!-- Global Focus Visual Style -->
+        <Style x:Key="FocusVisualStyle">
+            <Setter Property="Control.Template">
+                <Setter.Value>
+                    <ControlTemplate>
+                        <Rectangle Margin="-2" Stroke="{StaticResource FocusBorderBrush}" StrokeThickness="2" SnapsToDevicePixels="True" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Application-wide styles following MIT UI/UX standards (Flat design, slate grays, etc.) -->
         <Style TargetType="Window">
             <Setter Property="Background" Value="#F8FAFC" />
@@ -26,6 +42,12 @@
                     <Setter Property="CornerRadius" Value="4" />
                 </Style>
             </Style.Resources>
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style TargetType="PasswordBox">
@@ -39,6 +61,12 @@
                     <Setter Property="CornerRadius" Value="4" />
                 </Style>
             </Style.Resources>
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style TargetType="ComboBox">
@@ -46,6 +74,12 @@
             <Setter Property="BorderBrush" Value="#CBD5E1" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Background" Value="White" />
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocused" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
+                    <Setter Property="BorderThickness" Value="2" />
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <Style TargetType="Button" x:Key="PrimaryButton">
@@ -55,6 +89,7 @@
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -69,8 +104,8 @@
                     <Setter Property="Background" Value="#059669" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Background" Value="#94A3B8" />
-                    <Setter Property="Foreground" Value="#E2E8F0" />
+                    <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource DisabledForegroundBrush}" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -83,7 +118,8 @@
                     <Setter Property="Background" Value="#2563EB" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
-                    <Setter Property="Background" Value="#94A3B8" />
+                    <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource DisabledForegroundBrush}" />
                 </Trigger>
             </Style.Triggers>
         </Style>
