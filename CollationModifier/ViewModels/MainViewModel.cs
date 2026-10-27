@@ -335,24 +335,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        private async Task LoadCollationsAsync()
-        {
-            try
-            {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
-                SupportedCollations.Clear();
-                foreach (var collation in collations)
-                {
-                    SupportedCollations.Add(collation);
-                }
-                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Failed to load supported collations.", ex);
-            }
-        }
-
         private bool CanProcessCollationChange()
         {
             return IsConnected && !IsBusy && SelectedDatabase != null && !string.IsNullOrWhiteSpace(TargetCollation);
