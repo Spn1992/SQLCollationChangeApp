@@ -38,6 +38,20 @@ namespace CollationModifier.Tests
         }
 
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
+        public Exception? TrySetMultiUserExceptionToThrow { get; set; }
+        public Exception? AlterCollationExceptionToThrow { get; set; }
+        public Exception? RestoreExceptionToThrow { get; set; }
+
+        public Task TrySetMultiUserAsync(string databaseName)
+        {
+            if (TrySetMultiUserExceptionToThrow != null)
+            {
+                throw TrySetMultiUserExceptionToThrow;
+            }
+            return Task.CompletedTask;
+        }
 
         public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
@@ -53,7 +67,21 @@ namespace CollationModifier.Tests
             return Task.FromResult("/tmp/mock.bak");
         }
 
-        public Task RestoreDatabaseAsync(string databaseName, string backupFile) => Task.CompletedTask;
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        {
+            if (RestoreExceptionToThrow != null)
+            {
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException($"Restore failed for database '{databaseName}' and emergency MULTI_USER reset also failed. Database may remain in SINGLE_USER mode.", RestoreExceptionToThrow, resetEx);
+                }
+                throw RestoreExceptionToThrow;
+            }
+        }
 
         public async Task AlterCollationAsync(string databaseName, string newCollation)
         {
