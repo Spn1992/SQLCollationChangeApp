@@ -5,8 +5,11 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+
+[assembly: InternalsVisibleTo("CollationModifier.Tests")]
 
 namespace CollationModifier
 {
@@ -17,7 +20,15 @@ namespace CollationModifier
 
         private bool _isBusy;
         private bool _isConnected;
+        private bool _isInitializing;
+        private string? _previousAuthType;
         private List<DatabaseInfo> _databases = new List<DatabaseInfo>();
+
+        internal ComboBox CmbAuthType => cmbAuthType;
+        internal TextBox TxtUsername => txtUsername;
+        internal TextBox TxtPassword => txtPassword;
+        internal ToolStripStatusLabel StatusLabel => statusLabel;
+        internal StatusStrip StatusStrip => statusStrip;
 
         public MainForm()
         {
@@ -31,17 +42,26 @@ namespace CollationModifier
 
         private void InitializeFormState()
         {
-            cmbAuthType.Items.Clear();
-            cmbAuthType.Items.Add("Windows Authentication");
-            cmbAuthType.Items.Add("SQL Server Authentication");
-            cmbAuthType.SelectedIndex = 0;
+            _isInitializing = true;
+            try
+            {
+                cmbAuthType.Items.Clear();
+                cmbAuthType.Items.Add("Windows Authentication");
+                cmbAuthType.Items.Add("SQL Server Authentication");
+                cmbAuthType.SelectedIndex = 0;
 
-            txtBackupDirectory.Text = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "SQLBackups"
-            );
+                txtBackupDirectory.Text = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    "SQLBackups"
+                );
 
-            UpdateUIState();
+                UpdateUIState();
+                _previousAuthType = cmbAuthType.SelectedItem?.ToString();
+            }
+            finally
+            {
+                _isInitializing = false;
+            }
         }
 
         private void cmbAuthType_SelectedIndexChanged(object sender, EventArgs e)
@@ -85,10 +105,43 @@ namespace CollationModifier
 
         private void UpdateUIState()
         {
-            bool isSqlServerAuth = cmbAuthType.SelectedItem?.ToString() == "SQL Server Authentication";
+            bool prevUsernameEnabled = txtUsername.Enabled;
+            bool prevPasswordEnabled = txtPassword.Enabled;
 
-            txtUsername.Enabled = !_isBusy && isSqlServerAuth;
-            txtPassword.Enabled = !_isBusy && isSqlServerAuth;
+            string? currentAuthType = cmbAuthType.SelectedItem?.ToString();
+            bool isSqlServerAuth = currentAuthType == "SQL Server Authentication";
+
+            bool newUsernameEnabled = !_isBusy && isSqlServerAuth;
+            bool newPasswordEnabled = !_isBusy && isSqlServerAuth;
+
+            txtUsername.Enabled = newUsernameEnabled;
+            txtPassword.Enabled = newPasswordEnabled;
+
+            if (prevUsernameEnabled != newUsernameEnabled)
+            {
+                txtUsername.AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
+            }
+
+            if (prevPasswordEnabled != newPasswordEnabled)
+            {
+                txtPassword.AccessibilityNotifyClients(AccessibleEvents.StateChange, -1);
+            }
+
+            if (!_isInitializing && !_isBusy && currentAuthType != null && currentAuthType != _previousAuthType)
+            {
+                if (isSqlServerAuth)
+                {
+                    statusLabel.Text = "SQL Server Authentication selected. Username and Password fields enabled.";
+                }
+                else
+                {
+                    statusLabel.Text = "Windows Authentication selected. Username and Password fields disabled.";
+                }
+
+                statusStrip.AccessibilityNotifyClients(AccessibleEvents.SystemAlert, -1);
+                _previousAuthType = currentAuthType;
+            }
+
             txtServerName.Enabled = !_isBusy;
             cmbAuthType.Enabled = !_isBusy;
             btnConnect.Enabled = !_isBusy;
