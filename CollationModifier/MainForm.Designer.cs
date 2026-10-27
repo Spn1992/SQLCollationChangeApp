@@ -29,6 +29,8 @@ namespace CollationModifier
         private void InitializeComponent()
         {
             this.components = new System.ComponentModel.Container();
+            this.errorProviderMain = new System.Windows.Forms.ErrorProvider(this.components);
+            this.errorProviderMain.ContainerControl = this;
             this.statusStrip = new System.Windows.Forms.StatusStrip();
             this.statusLabel = new System.Windows.Forms.ToolStripStatusLabel();
             this.progressBar = new System.Windows.Forms.ToolStripProgressBar();
@@ -66,6 +68,7 @@ namespace CollationModifier
             this.lblSelectDb = new System.Windows.Forms.Label();
             this.lblDashboardHeader = new System.Windows.Forms.Label();
             this.toolTip = new System.Windows.Forms.ToolTip(this.components);
+            ((System.ComponentModel.ISupportInitialize)(this.errorProviderMain)).BeginInit();
             this.statusStrip.SuspendLayout();
             this.panelAuth.SuspendLayout();
             this.panelDashboard.SuspendLayout();
@@ -507,6 +510,7 @@ namespace CollationModifier
             this.panelDashboardContent.PerformLayout();
             this.panelMetadata.ResumeLayout(false);
             this.panelMetadata.PerformLayout();
+            ((System.ComponentModel.ISupportInitialize)(this.errorProviderMain)).EndInit();
             this.ResumeLayout(false);
             this.PerformLayout();
 
@@ -551,5 +555,6 @@ namespace CollationModifier
         private System.Windows.Forms.Button btnProcess;
         private System.Windows.Forms.Label lblWarning;
         private System.Windows.Forms.ToolTip toolTip;
+        private System.Windows.Forms.ErrorProvider errorProviderMain;
     }
 }
