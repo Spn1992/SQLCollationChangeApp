@@ -166,7 +166,11 @@
                                     AutomationProperties.Name="Cancel Operation" />
                         </StackPanel>
 
-                        <TextBlock Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                        <TextBlock x:Name="lblWarning"
+                                   Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.Name="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.HelpText="Database single user mode operation warning message."
+                                   AutomationProperties.LiveSetting="Assertive"
                                    Foreground="#DC2626" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
                     </StackPanel>
                 </Grid>
