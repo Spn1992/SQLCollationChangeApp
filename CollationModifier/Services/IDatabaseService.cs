@@ -14,5 +14,7 @@ namespace CollationModifier.Services
         Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory);
         Task RestoreDatabaseAsync(string databaseName, string backupFile);
         Task AlterCollationAsync(string databaseName, string newCollation);
+        Task TrySetMultiUserAsync(string databaseName);
+        Task<List<string>> GetSupportedCollationsAsync();
     }
 }
