@@ -20,7 +20,6 @@
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
     <Compile Remove="App.xaml.cs" />
     <Compile Remove="MainWindow.xaml.cs" />
-    <Compile Remove="ViewModels\**" />
     <Page Remove="App.xaml" />
     <Page Remove="MainWindow.xaml" />
   </ItemGroup>
