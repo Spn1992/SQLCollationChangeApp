@@ -369,6 +369,8 @@ namespace CollationModifier
             // 
             // lblSizeValue
             // 
+            this.lblSizeValue.AccessibleName = "Size: -";
+            this.lblSizeValue.AccessibleRole = System.Windows.Forms.AccessibleRole.StaticText;
             this.lblSizeValue.AutoSize = true;
             this.lblSizeValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.lblSizeValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
@@ -380,6 +382,8 @@ namespace CollationModifier
             // 
             // lblOwnerValue
             // 
+            this.lblOwnerValue.AccessibleName = "Owner: -";
+            this.lblOwnerValue.AccessibleRole = System.Windows.Forms.AccessibleRole.StaticText;
             this.lblOwnerValue.AutoSize = true;
             this.lblOwnerValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.lblOwnerValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
@@ -391,6 +395,8 @@ namespace CollationModifier
             // 
             // lblCompatLevelValue
             // 
+            this.lblCompatLevelValue.AccessibleName = "Compatibility Level: -";
+            this.lblCompatLevelValue.AccessibleRole = System.Windows.Forms.AccessibleRole.StaticText;
             this.lblCompatLevelValue.AutoSize = true;
             this.lblCompatLevelValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.lblCompatLevelValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
@@ -402,6 +408,8 @@ namespace CollationModifier
             // 
             // lblCollationValue
             // 
+            this.lblCollationValue.AccessibleName = "Current Collation: -";
+            this.lblCollationValue.AccessibleRole = System.Windows.Forms.AccessibleRole.StaticText;
             this.lblCollationValue.AutoSize = true;
             this.lblCollationValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.lblCollationValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
