@@ -226,7 +226,6 @@ namespace CollationModifier.ViewModels
 
                 if (success)
                 {
-                    IsConnected = true;
                     StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
 
                     string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
@@ -240,9 +239,17 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    await LoadDatabasesAsync();
-                    await LoadCollationsAsync();
-                    StatusMessage = "Ready";
+                    bool dbLoaded = await LoadDatabasesAsync();
+                    if (dbLoaded)
+                    {
+                        IsConnected = true;
+                        await LoadCollationsAsync();
+                        StatusMessage = "Ready";
+                    }
+                    else
+                    {
+                        IsConnected = false;
+                    }
                 }
                 else
                 {
@@ -261,17 +268,21 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync()
         {
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync();
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
+                return true;
             }
             catch (Exception ex)
             {
+                Databases.Clear();
+                _logger.LogError("Failed to load databases.", ex);
                 StatusMessage = $"Failed to load databases: {ex.Message}";
+                return false;
             }
         }
 
