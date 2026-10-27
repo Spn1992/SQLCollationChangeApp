@@ -14,6 +14,8 @@ namespace CollationModifier.Services
         private readonly CancellationTokenSource _cts;
         private bool _disposed;
 
+        public string LogFilePath => _logFilePath;
+
         public LoggerService() : this(null)
         {
         }

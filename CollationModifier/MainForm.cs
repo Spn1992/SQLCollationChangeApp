@@ -87,10 +87,13 @@ namespace CollationModifier
         {
             bool isSqlServerAuth = cmbAuthType.SelectedItem?.ToString() == "SQL Server Authentication";
 
-            txtUsername.Enabled = !_isBusy && isSqlServerAuth;
-            txtPassword.Enabled = !_isBusy && isSqlServerAuth;
-            txtServerName.Enabled = !_isBusy;
-            cmbAuthType.Enabled = !_isBusy;
+            bool canEditConnection = !_isBusy && !_isConnected;
+            txtUsername.Enabled = canEditConnection && isSqlServerAuth;
+            txtPassword.Enabled = canEditConnection && isSqlServerAuth;
+            txtServerName.Enabled = canEditConnection;
+            cmbAuthType.Enabled = canEditConnection;
+
+            btnConnect.Text = _isConnected ? "Disconnect" : "Connect";
             btnConnect.Enabled = !_isBusy;
 
             lblDisconnectedOverlay.Visible = !_isConnected;
@@ -109,6 +112,17 @@ namespace CollationModifier
 
         private async void btnConnect_Click(object sender, EventArgs e)
         {
+            if (_isConnected)
+            {
+                _isConnected = false;
+                _databases.Clear();
+                cmbDatabases.DataSource = null;
+                UpdateMetadataPanel();
+                statusLabel.Text = "Disconnected.";
+                _logger.LogInfo("Disconnected from server.");
+                UpdateUIState();
+                return;
+            }
             _isBusy = true;
             statusLabel.Text = "Connecting to server...";
             UpdateUIState();
