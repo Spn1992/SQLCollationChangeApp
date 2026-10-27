@@ -10,7 +10,7 @@ namespace CollationModifier.Services
         Task<bool> TestConnectionAsync();
         Task<List<DatabaseInfo>> GetDatabasesAsync();
         Task<string?> GetDefaultBackupDirectoryAsync();
-        Task PreflightCheckAsync(string databaseName, string backupDirectory = "");
+        Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "");
         Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory);
         Task RestoreDatabaseAsync(string databaseName, string backupFile);
         Task AlterCollationAsync(string databaseName, string newCollation);
