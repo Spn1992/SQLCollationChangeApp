@@ -120,6 +120,7 @@ namespace CollationModifier.ViewModels
         }
 
         // Dashboard Properties
+        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
         public ObservableCollection<string> SupportedCollations { get; }
 
@@ -353,17 +354,33 @@ namespace CollationModifier.ViewModels
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
-                        StatusMessage = $"Process failed: {ex.Message}. Database restored successfully.";
+                        if (ex is AggregateException)
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                        }
+                        else
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
+                        }
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}";
+                        bool isSingleUserLocked = ex is AggregateException || restoreEx is AggregateException;
+                        string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
+                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}.{lockWarning}";
                     }
                 }
                 else
                 {
-                    StatusMessage = $"Process failed before backup: {ex.Message}";
+                    if (ex is AggregateException)
+                    {
+                        StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                    }
+                    else
+                    {
+                        StatusMessage = $"Process failed before backup: {ex.Message}";
+                    }
                 }
             }
             finally
