@@ -3,6 +3,7 @@ using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -31,8 +32,10 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            SupportedCollations = new ObservableCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -117,6 +120,7 @@ namespace CollationModifier.ViewModels
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
+        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -169,6 +173,44 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand OpenLogCommand { get; }
+
+        public void OpenLogFile()
+        {
+            try
+            {
+                string logPath = _logger.LogFilePath;
+                if (File.Exists(logPath))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = logPath,
+                        UseShellExecute = true
+                    });
+                }
+                else
+                {
+                    string? directory = Path.GetDirectoryName(logPath);
+                    if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = directory,
+                            UseShellExecute = true
+                        });
+                    }
+                    else
+                    {
+                        StatusMessage = "Log file does not exist yet.";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to open log file.", ex);
+                StatusMessage = $"Unable to open log file: {ex.Message}";
+            }
+        }
 
         public async Task ConnectAsync()
         {

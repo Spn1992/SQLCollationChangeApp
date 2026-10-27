@@ -110,6 +110,38 @@ namespace CollationModifier.Services
             return databases;
         }
 
+        public async Task<List<string>> GetSupportedCollationsAsync()
+        {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
         public async Task<string?> GetDefaultBackupDirectoryAsync()
         {
             try

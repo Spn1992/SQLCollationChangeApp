@@ -28,7 +28,11 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task PreflightCheckAsync(string databaseName) => Task.CompletedTask;
+        public Task PreflightCheckAsync(string databaseName, string backupDirectory = "") => Task.CompletedTask;
+
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>("/tmp/backup");
+
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_KS_WS_SC_UTF8" });
 
         public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory) => Task.FromResult("/tmp/mock.bak");
 
@@ -43,9 +47,9 @@ namespace CollationModifier.Tests
         }
     }
 
-    public static class Program
+    public static class MainViewModelTestsRunner
     {
-        public static async Task Main()
+        public static async Task RunAllTests()
         {
             Console.WriteLine("Running CollationModifier Tests...");
 
@@ -149,6 +153,17 @@ namespace CollationModifier.Tests
                 Assert(mockService.GetDatabasesCount == getDatabasesCallCountAfterLoad, "GetDatabasesAsync was unexpectedly called during collation change!");
                 Assert(mockService.AlterCollationCount == 1, "AlterCollationCount expected to be 1");
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
+            });
+
+            RunSyncTest("OpenLogCommand_ExecutesWithoutException", () =>
+            {
+                var tempLogFile = Path.Combine(Path.GetTempPath(), $"test_log_{Guid.NewGuid():N}.txt");
+                using (var logger = new LoggerService(tempLogFile))
+                {
+                    var vm = new MainViewModel(new MockDatabaseService(), logger);
+                    Assert(vm.OpenLogCommand.CanExecute(null), "OpenLogCommand should be executable");
+                    vm.OpenLogCommand.Execute(null);
+                }
             });
 
             Console.WriteLine("\nTest Run Finished: All tests passed!");
