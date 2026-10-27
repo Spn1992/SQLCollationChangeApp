@@ -272,6 +272,9 @@ namespace CollationModifier
             // 
             // lblWarning
             // 
+            this.lblWarning.AccessibleDescription = "Database single user mode operation warning message.";
+            this.lblWarning.AccessibleName = "Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections.";
+            this.lblWarning.AccessibleRole = System.Windows.Forms.AccessibleRole.Alert;
             this.lblWarning.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.lblWarning.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(220)))), ((int)(((byte)(38)))), ((int)(((byte)(38)))));
             this.lblWarning.Location = new System.Drawing.Point(3, 440);

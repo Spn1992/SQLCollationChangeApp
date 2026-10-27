@@ -17,6 +17,7 @@ namespace CollationModifier
 
         private bool _isBusy;
         private bool _isConnected;
+        private bool _wasConnected;
         private List<DatabaseInfo> _databases = new List<DatabaseInfo>();
 
         public MainForm()
@@ -103,6 +104,12 @@ namespace CollationModifier
             var selectedDb = cmbDatabases.SelectedItem as DatabaseInfo;
             bool canProcess = _isConnected && !_isBusy && selectedDb != null && !string.IsNullOrWhiteSpace(txtTargetCollation.Text);
             btnProcess.Enabled = canProcess;
+
+            if (_isConnected && !_wasConnected)
+            {
+                lblWarning.AccessibilityNotifyClients(AccessibleEvents.SystemAlert, -1);
+            }
+            _wasConnected = _isConnected;
 
             progressBar.Visible = _isBusy;
         }
