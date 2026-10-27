@@ -49,8 +49,6 @@ namespace CollationModifier.Tests
 
         public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
-        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
-
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }

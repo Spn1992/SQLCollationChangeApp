@@ -48,6 +48,41 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            Console.WriteLine("\n=== Running MainForm UI Accessibility & SystemColors Tests ===");
+
+            try
+            {
+                TestMainFormTableLayoutPanelLayout();
+                Console.WriteLine("PASS: TestMainFormTableLayoutPanelLayout");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMainFormTableLayoutPanelLayout - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestMainFormSystemColorsAndStyles();
+                Console.WriteLine("PASS: TestMainFormSystemColorsAndStyles");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMainFormSystemColorsAndStyles - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestLogFilePathProperty();
+                Console.WriteLine("PASS: TestLogFilePathProperty");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
+                failed++;
+            }
+
             if (failed == 0)
             {
                 Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
@@ -216,6 +251,31 @@ namespace CollationModifier.Tests
             {
                 Assert(customLogger.LogFilePath == customPath, "LogFilePath should match custom log path");
             }
+        }
+
+        static void TestMainFormSystemColorsAndStyles()
+        {
+            string designerPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainForm.Designer.cs"));
+            if (!File.Exists(designerPath))
+            {
+                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "CollationModifier", "MainForm.Designer.cs"));
+            }
+            if (!File.Exists(designerPath))
+            {
+                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainForm.Designer.cs"));
+            }
+
+            Assert(File.Exists(designerPath), $"MainForm.Designer.cs not found at path: {designerPath}");
+            string content = File.ReadAllText(designerPath);
+
+            Assert(!content.Contains("Color.FromArgb"), "MainForm.Designer.cs should contain zero hardcoded Color.FromArgb assignments.");
+            Assert(!content.Contains("Color.White"), "MainForm.Designer.cs should contain zero hardcoded Color.White assignments.");
+            Assert(content.Contains("this.btnConnect.UseVisualStyleBackColor = true;"), "btnConnect should have UseVisualStyleBackColor = true");
+            Assert(content.Contains("this.btnProcess.UseVisualStyleBackColor = true;"), "btnProcess should have UseVisualStyleBackColor = true");
+            Assert(content.Contains("this.panelAuth.BackColor = System.Drawing.SystemColors.Window;"), "panelAuth should use SystemColors.Window");
+            Assert(content.Contains("this.panelDashboard.BackColor = System.Drawing.SystemColors.Control;"), "panelDashboard should use SystemColors.Control");
+
+            Console.WriteLine("  [Verify] All SystemColors and native visual style properties verified in MainForm.Designer.cs.");
         }
 
         static void Assert(bool condition, string message)
