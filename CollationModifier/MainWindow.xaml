@@ -44,29 +44,29 @@
                     <TextBox x:Name="ServerNameInput" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}"
                              AutomationProperties.LabeledBy="{Binding ElementName=ServerNameLabel}"
                              AutomationProperties.Name="Server Name"
-                             Margin="0,0,0,16" IsEnabled="{Binding IsNotBusy}" />
+                             Margin="0,0,0,16" IsEnabled="{Binding CanEditConnectionParameters}" />
 
                     <TextBlock x:Name="AuthTypeLabel" Text="Authentication Type" Margin="0,0,0,4" />
                     <ComboBox x:Name="AuthTypeInput" ItemsSource="{Binding AuthenticationTypes}"
                               SelectedItem="{Binding SelectedAuthenticationType}"
                               AutomationProperties.LabeledBy="{Binding ElementName=AuthTypeLabel}"
                               AutomationProperties.Name="Authentication Type"
-                              Margin="0,0,0,16" IsEnabled="{Binding IsNotBusy}" />
+                              Margin="0,0,0,16" IsEnabled="{Binding CanEditConnectionParameters}" />
 
                     <TextBlock x:Name="UsernameLabel" Text="Username" Margin="0,0,0,4" />
                     <TextBox x:Name="UsernameInput" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
                              AutomationProperties.LabeledBy="{Binding ElementName=UsernameLabel}"
                              AutomationProperties.Name="Username"
-                             Margin="0,0,0,16" IsEnabled="{Binding IsSqlServerAuth}" />
+                             Margin="0,0,0,16" IsEnabled="{Binding CanEditSqlCredentials}" />
 
                     <TextBlock x:Name="PasswordLabel" Text="Password" Margin="0,0,0,4" />
                     <PasswordBox x:Name="PasswordBoxInput" Margin="0,0,0,24"
                                  AutomationProperties.LabeledBy="{Binding ElementName=PasswordLabel}"
                                  AutomationProperties.Name="Password"
-                                 IsEnabled="{Binding IsSqlServerAuth}"
+                                 IsEnabled="{Binding CanEditSqlCredentials}"
                                  PasswordChanged="PasswordBox_PasswordChanged" />
 
-                    <Button Content="Connect" Command="{Binding ConnectCommand}" Style="{StaticResource SecondaryButton}" />
+                    <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" Style="{StaticResource SecondaryButton}" />
                 </StackPanel>
             </Border>
 
@@ -85,7 +85,7 @@
                                 </Style.Triggers>
                             </Style>
                         </Border.Style>
-                        <TextBlock Text="Please connect to a server to continue."
+                        <TextBlock x:Name="lblDisconnectedOverlay" Text="Please connect to a server to continue."
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
                                    Foreground="#64748B" FontSize="16" />
                     </Border>

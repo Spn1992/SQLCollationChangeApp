@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -151,6 +151,12 @@ namespace CollationModifier.ViewModels
                 }
             }
         }
+
+        public string ConnectButtonText => IsConnected ? "Disconnect" : "Connect";
+
+        public bool CanEditConnectionParameters => !IsBusy && !IsConnected;
+
+        public bool CanEditSqlCredentials => CanEditConnectionParameters && IsSqlServerAuth;
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
@@ -317,7 +323,6 @@ namespace CollationModifier.ViewModels
                     if (dbLoaded)
                     {
                         IsConnected = true;
-                        await LoadCollationsAsync();
                         StatusMessage = "Ready";
                     }
                     else
