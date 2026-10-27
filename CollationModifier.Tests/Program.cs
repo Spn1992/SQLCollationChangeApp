@@ -11,8 +11,20 @@ namespace CollationModifier.Tests
     {
         static async Task<int> Main(string[] args)
         {
-            Console.WriteLine("=== Running LoggerService Async Queue Unit Tests ===");
+            Console.WriteLine("=== Running CollationModifier Unit Tests ===");
             int failed = 0;
+
+            try
+            {
+                await MainViewModelTestsRunner.RunTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                failed++;
+            }
+
+            Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
 
             try
             {
@@ -55,17 +67,6 @@ namespace CollationModifier.Tests
             catch (Exception ex)
             {
                 Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await MainViewModelTestsRunner.RunAllTests();
-                Console.WriteLine("PASS: MainViewModelTestsRunner");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
                 failed++;
             }
 
