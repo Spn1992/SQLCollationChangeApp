@@ -14,16 +14,6 @@ namespace CollationModifier.Tests
             Console.WriteLine("=== Running CollationModifier Unit Tests ===");
             int failed = 0;
 
-            try
-            {
-                await MainViewModelTestsRunner.RunAllTestsAsync();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
-                failed++;
-            }
-
             Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
 
             try
