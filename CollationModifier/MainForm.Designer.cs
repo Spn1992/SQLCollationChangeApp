@@ -107,7 +107,7 @@ namespace CollationModifier
             // 
             this.panelAuth.AutoScroll = true;
             this.panelAuth.AutoSize = true;
-            this.panelAuth.BackColor = System.Drawing.Color.White;
+            this.panelAuth.BackColor = System.Drawing.SystemColors.Window;
             this.panelAuth.BorderStyle = System.Windows.Forms.BorderStyle.FixedSingle;
             this.panelAuth.ColumnCount = 1;
             this.panelAuth.ColumnStyles.Add(new System.Windows.Forms.ColumnStyle(System.Windows.Forms.SizeType.Percent, 100F));
@@ -143,7 +143,7 @@ namespace CollationModifier
             // 
             this.lblAuthHeader.AutoSize = true;
             this.lblAuthHeader.Font = new System.Drawing.Font("Segoe UI", 14.25F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblAuthHeader.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(30)))), ((int)(((byte)(41)))), ((int)(((byte)(59)))));
+            this.lblAuthHeader.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblAuthHeader.Location = new System.Drawing.Point(20, 20);
             this.lblAuthHeader.Margin = new System.Windows.Forms.Padding(0, 0, 0, 12);
             this.lblAuthHeader.Name = "lblAuthHeader";
@@ -155,7 +155,7 @@ namespace CollationModifier
             // 
             this.lblServerName.AutoSize = true;
             this.lblServerName.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblServerName.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblServerName.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblServerName.Location = new System.Drawing.Point(20, 57);
             this.lblServerName.Margin = new System.Windows.Forms.Padding(0, 4, 0, 4);
             this.lblServerName.Name = "lblServerName";
@@ -179,7 +179,7 @@ namespace CollationModifier
             // 
             this.lblAuthType.AutoSize = true;
             this.lblAuthType.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblAuthType.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblAuthType.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblAuthType.Location = new System.Drawing.Point(20, 113);
             this.lblAuthType.Margin = new System.Windows.Forms.Padding(0, 4, 0, 4);
             this.lblAuthType.Name = "lblAuthType";
@@ -205,7 +205,7 @@ namespace CollationModifier
             // 
             this.lblUsername.AutoSize = true;
             this.lblUsername.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblUsername.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblUsername.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblUsername.Location = new System.Drawing.Point(20, 169);
             this.lblUsername.Margin = new System.Windows.Forms.Padding(0, 4, 0, 4);
             this.lblUsername.Name = "lblUsername";
@@ -229,7 +229,7 @@ namespace CollationModifier
             // 
             this.lblPassword.AutoSize = true;
             this.lblPassword.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblPassword.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblPassword.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblPassword.Location = new System.Drawing.Point(20, 225);
             this.lblPassword.Margin = new System.Windows.Forms.Padding(0, 4, 0, 4);
             this.lblPassword.Name = "lblPassword";
@@ -254,24 +254,20 @@ namespace CollationModifier
             // 
             this.btnConnect.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
-            this.btnConnect.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(59)))), ((int)(((byte)(130)))), ((int)(((byte)(246)))));
-            this.btnConnect.FlatAppearance.BorderSize = 0;
-            this.btnConnect.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.btnConnect.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.btnConnect.ForeColor = System.Drawing.Color.White;
             this.btnConnect.Location = new System.Drawing.Point(20, 285);
             this.btnConnect.Margin = new System.Windows.Forms.Padding(0, 8, 0, 0);
             this.btnConnect.Name = "btnConnect";
             this.btnConnect.Size = new System.Drawing.Size(278, 36);
             this.btnConnect.TabIndex = 9;
             this.btnConnect.Text = "Connect";
-            this.btnConnect.UseVisualStyleBackColor = false;
+            this.btnConnect.UseVisualStyleBackColor = true;
             this.btnConnect.Click += new System.EventHandler(this.btnConnect_Click);
             // 
             // panelDashboard
             // 
             this.panelDashboard.AutoScroll = true;
-            this.panelDashboard.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(248)))), ((int)(((byte)(250)))), ((int)(((byte)(252)))));
+            this.panelDashboard.BackColor = System.Drawing.SystemColors.Control;
             this.panelDashboard.Controls.Add(this.lblDisconnectedOverlay);
             this.panelDashboard.Controls.Add(this.panelDashboardContent);
             this.panelDashboard.Controls.Add(this.lblDashboardHeader);
@@ -285,7 +281,7 @@ namespace CollationModifier
             // lblDisconnectedOverlay
             // 
             this.lblDisconnectedOverlay.Font = new System.Drawing.Font("Segoe UI", 12F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblDisconnectedOverlay.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(100)))), ((int)(((byte)(116)))), ((int)(((byte)(139)))));
+            this.lblDisconnectedOverlay.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblDisconnectedOverlay.Location = new System.Drawing.Point(33, 270);
             this.lblDisconnectedOverlay.Name = "lblDisconnectedOverlay";
             this.lblDisconnectedOverlay.Size = new System.Drawing.Size(517, 30);
@@ -324,7 +320,7 @@ namespace CollationModifier
             // 
             this.lblSelectDb.AutoSize = true;
             this.lblSelectDb.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblSelectDb.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblSelectDb.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblSelectDb.Location = new System.Drawing.Point(0, 4);
             this.lblSelectDb.Margin = new System.Windows.Forms.Padding(0, 4, 0, 4);
             this.lblSelectDb.Name = "lblSelectDb";
@@ -351,10 +347,10 @@ namespace CollationModifier
             this.panelMetadata.Anchor = ((System.Windows.Forms.AnchorStyles)(((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Left) 
             | System.Windows.Forms.AnchorStyles.Right)));
             this.panelMetadata.AutoSize = true;
-            this.panelMetadata.BackColor = System.Drawing.Color.White;
+            this.panelMetadata.BackColor = System.Drawing.SystemColors.Window;
             this.panelMetadata.Controls.Add(this.tblMetadataLayout);
             this.panelMetadata.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.panelMetadata.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(30)))), ((int)(((byte)(41)))), ((int)(((byte)(59)))));
+            this.panelMetadata.ForeColor = System.Drawing.SystemColors.ControlText;
             this.panelMetadata.Location = new System.Drawing.Point(0, 66);
             this.panelMetadata.Margin = new System.Windows.Forms.Padding(0, 0, 0, 16);
             this.panelMetadata.Name = "panelMetadata";
@@ -404,7 +400,7 @@ namespace CollationModifier
             // 
             this.lblCollationValue.AutoSize = true;
             this.lblCollationValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblCollationValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
+            this.lblCollationValue.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblCollationValue.Location = new System.Drawing.Point(133, 4);
             this.lblCollationValue.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
             this.lblCollationValue.Name = "lblCollationValue";
@@ -427,7 +423,7 @@ namespace CollationModifier
             // 
             this.lblCompatLevelValue.AutoSize = true;
             this.lblCompatLevelValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblCompatLevelValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
+            this.lblCompatLevelValue.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblCompatLevelValue.Location = new System.Drawing.Point(151, 29);
             this.lblCompatLevelValue.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
             this.lblCompatLevelValue.Name = "lblCompatLevelValue";
@@ -450,7 +446,7 @@ namespace CollationModifier
             // 
             this.lblOwnerValue.AutoSize = true;
             this.lblOwnerValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblOwnerValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
+            this.lblOwnerValue.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblOwnerValue.Location = new System.Drawing.Point(71, 54);
             this.lblOwnerValue.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
             this.lblOwnerValue.Name = "lblOwnerValue";
@@ -473,7 +469,7 @@ namespace CollationModifier
             // 
             this.lblSizeValue.AutoSize = true;
             this.lblSizeValue.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblSizeValue.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(71)))), ((int)(((byte)(85)))), ((int)(((byte)(105)))));
+            this.lblSizeValue.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblSizeValue.Location = new System.Drawing.Point(54, 79);
             this.lblSizeValue.Margin = new System.Windows.Forms.Padding(3, 4, 3, 4);
             this.lblSizeValue.Name = "lblSizeValue";
@@ -485,7 +481,7 @@ namespace CollationModifier
             // 
             this.lblTargetConfigHeader.AutoSize = true;
             this.lblTargetConfigHeader.Font = new System.Drawing.Font("Segoe UI", 12F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblTargetConfigHeader.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(30)))), ((int)(((byte)(41)))), ((int)(((byte)(59)))));
+            this.lblTargetConfigHeader.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblTargetConfigHeader.Location = new System.Drawing.Point(0, 232);
             this.lblTargetConfigHeader.Margin = new System.Windows.Forms.Padding(0, 8, 0, 8);
             this.lblTargetConfigHeader.Name = "lblTargetConfigHeader";
@@ -518,7 +514,7 @@ namespace CollationModifier
             // 
             this.lblTargetCollation.AutoSize = true;
             this.lblTargetCollation.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblTargetCollation.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblTargetCollation.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblTargetCollation.Location = new System.Drawing.Point(0, 0);
             this.lblTargetCollation.Margin = new System.Windows.Forms.Padding(0, 0, 8, 4);
             this.lblTargetCollation.Name = "lblTargetCollation";
@@ -543,7 +539,7 @@ namespace CollationModifier
             // 
             this.lblBackupDir.AutoSize = true;
             this.lblBackupDir.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblBackupDir.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(51)))), ((int)(((byte)(65)))), ((int)(((byte)(85)))));
+            this.lblBackupDir.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblBackupDir.Location = new System.Drawing.Point(268, 0);
             this.lblBackupDir.Margin = new System.Windows.Forms.Padding(8, 0, 0, 4);
             this.lblBackupDir.Name = "lblBackupDir";
@@ -565,18 +561,14 @@ namespace CollationModifier
             // 
             // btnProcess
             // 
-            this.btnProcess.BackColor = System.Drawing.Color.FromArgb(((int)(((byte)(16)))), ((int)(((byte)(185)))), ((int)(((byte)(129)))));
-            this.btnProcess.FlatAppearance.BorderSize = 0;
-            this.btnProcess.FlatStyle = System.Windows.Forms.FlatStyle.Flat;
             this.btnProcess.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.btnProcess.ForeColor = System.Drawing.Color.White;
             this.btnProcess.Location = new System.Drawing.Point(0, 337);
             this.btnProcess.Margin = new System.Windows.Forms.Padding(0, 0, 0, 12);
             this.btnProcess.Name = "btnProcess";
             this.btnProcess.Size = new System.Drawing.Size(220, 36);
             this.btnProcess.TabIndex = 5;
             this.btnProcess.Text = "Process Collation Change";
-            this.btnProcess.UseVisualStyleBackColor = false;
+            this.btnProcess.UseVisualStyleBackColor = true;
             this.btnProcess.Click += new System.EventHandler(this.btnProcess_Click);
             // 
             // lblWarning
@@ -585,7 +577,7 @@ namespace CollationModifier
             | System.Windows.Forms.AnchorStyles.Right)));
             this.lblWarning.AutoSize = true;
             this.lblWarning.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblWarning.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(220)))), ((int)(((byte)(38)))), ((int)(((byte)(38)))));
+            this.lblWarning.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblWarning.Location = new System.Drawing.Point(0, 385);
             this.lblWarning.Margin = new System.Windows.Forms.Padding(0, 0, 0, 12);
             this.lblWarning.MaximumSize = new System.Drawing.Size(500, 0);
@@ -598,7 +590,7 @@ namespace CollationModifier
             // 
             this.lblDashboardHeader.AutoSize = true;
             this.lblDashboardHeader.Font = new System.Drawing.Font("Segoe UI", 15.75F, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
-            this.lblDashboardHeader.ForeColor = System.Drawing.Color.FromArgb(((int)(((byte)(30)))), ((int)(((byte)(41)))), ((int)(((byte)(59)))));
+            this.lblDashboardHeader.ForeColor = System.Drawing.SystemColors.ControlText;
             this.lblDashboardHeader.Location = new System.Drawing.Point(25, 20);
             this.lblDashboardHeader.Name = "lblDashboardHeader";
             this.lblDashboardHeader.Size = new System.Drawing.Size(217, 30);

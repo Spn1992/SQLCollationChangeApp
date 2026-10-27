@@ -334,6 +334,25 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        public async Task LoadCollationsAsync()
+        {
+            try
+            {
+                var collations = await _databaseService.GetSupportedCollationsAsync();
+                SupportedCollations.Clear();
+                foreach (var collation in collations)
+                {
+                    SupportedCollations.Add(collation);
+                }
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (Exception ex)
+            {
+                SupportedCollations.Clear();
+                _logger.LogError("Failed to load supported collations.", ex);
+            }
+        }
+
         public Func<string, string, bool>? ConfirmCollationChangeHandler { get; set; }
 
         private bool DefaultConfirmCollationChange(string databaseName, string targetCollation)
