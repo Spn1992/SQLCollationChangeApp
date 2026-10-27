@@ -1,3 +1,4 @@
+using CollationModifier.Collections;
 using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
@@ -9,15 +10,17 @@ using System.Windows.Input;
 
 namespace CollationModifier.ViewModels
 {
-    public class MainViewModel : ViewModelBase
+    public class MainViewModel : ViewModelBase, IDisposable
     {
-        private readonly DatabaseService _databaseService;
+        private readonly IDatabaseService _databaseService;
         private readonly LoggerService _logger;
 
-        public MainViewModel()
+        public MainViewModel() : this(null, null) { }
+
+        public MainViewModel(IDatabaseService? databaseService = null, LoggerService? logger = null)
         {
-            _logger = new LoggerService();
-            _databaseService = new DatabaseService(_logger);
+            _logger = logger ?? new LoggerService();
+            _databaseService = databaseService ?? CreateDefaultDatabaseService(_logger);
 
             AuthenticationTypes = new ObservableCollection<string>
             {
@@ -29,7 +32,21 @@ namespace CollationModifier.ViewModels
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
 
-            Databases = new ObservableCollection<DatabaseInfo>();
+            Databases = new ObservableRangeCollection<DatabaseInfo>();
+        }
+
+        private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
+        {
+            try
+            {
+                var type = Type.GetType("CollationModifier.Services.DatabaseService, CollationModifier");
+                if (type != null)
+                {
+                    return (IDatabaseService)Activator.CreateInstance(type, logger)!;
+                }
+            }
+            catch { }
+            throw new InvalidOperationException("No IDatabaseService implementation was provided or found.");
         }
 
         #region Properties
@@ -42,7 +59,7 @@ namespace CollationModifier.ViewModels
             {
                 SetProperty(ref _isBusy, value);
                 OnPropertyChanged(nameof(IsNotBusy));
-                CommandManager.InvalidateRequerySuggested();
+                InvalidateRequerySuggested();
             }
         }
         public bool IsNotBusy => !IsBusy;
@@ -84,8 +101,6 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _username, value);
         }
 
-        // Password handling in MVVM can be tricky, keeping it simple for string here,
-        // ideally SecureString would be used in a real enterprise app.
         private string _password = string.Empty;
         public string Password
         {
@@ -101,7 +116,7 @@ namespace CollationModifier.ViewModels
         }
 
         // Dashboard Properties
-        public ObservableCollection<DatabaseInfo> Databases { get; }
+        public ObservableRangeCollection<DatabaseInfo> Databases { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -110,7 +125,7 @@ namespace CollationModifier.ViewModels
             set
             {
                 SetProperty(ref _selectedDatabase, value);
-                CommandManager.InvalidateRequerySuggested();
+                InvalidateRequerySuggested();
             }
         }
 
@@ -121,7 +136,7 @@ namespace CollationModifier.ViewModels
             set
             {
                 SetProperty(ref _targetCollation, value);
-                CommandManager.InvalidateRequerySuggested();
+                InvalidateRequerySuggested();
             }
         }
 
@@ -134,12 +149,28 @@ namespace CollationModifier.ViewModels
 
         #endregion
 
+        #region Helpers
+
+        private void InvalidateRequerySuggested()
+        {
+            try
+            {
+                CommandManager.InvalidateRequerySuggested();
+            }
+            catch
+            {
+                // Safe fallthrough when running in test environment outside WPF runtime
+            }
+        }
+
+        #endregion
+
         #region Commands
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
 
-        private async Task ConnectAsync()
+        public async Task ConnectAsync()
         {
             IsBusy = true;
             StatusMessage = "Connecting to server...";
@@ -153,7 +184,19 @@ namespace CollationModifier.ViewModels
                 if (success)
                 {
                     IsConnected = true;
-                    StatusMessage = "Connected successfully. Fetching databases...";
+                    StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
+
+                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
+                    if (!string.IsNullOrWhiteSpace(serverBackupPath))
+                    {
+                        BackupDirectory = serverBackupPath;
+                        _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {serverBackupPath}");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
+                    }
+
                     await LoadDatabasesAsync();
                     StatusMessage = "Ready";
                 }
@@ -174,16 +217,12 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        private async Task LoadDatabasesAsync()
+        public async Task LoadDatabasesAsync()
         {
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync();
-                Databases.Clear();
-                foreach (var db in dbs)
-                {
-                    Databases.Add(db);
-                }
+                Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
             }
             catch (Exception ex)
@@ -197,7 +236,7 @@ namespace CollationModifier.ViewModels
             return IsConnected && !IsBusy && SelectedDatabase != null && !string.IsNullOrWhiteSpace(TargetCollation);
         }
 
-        private async Task ProcessCollationChangeAsync()
+        public async Task ProcessCollationChangeAsync()
         {
             if (SelectedDatabase == null) return;
 
@@ -209,7 +248,7 @@ namespace CollationModifier.ViewModels
             {
                 // 1. Pre-flight
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name);
+                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
@@ -222,9 +261,8 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Collation changed successfully!";
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
-                // Refresh data
-                await LoadDatabasesAsync();
-                SelectedDatabase = Databases.FirstOrDefault(d => d.Name == SelectedDatabase?.Name);
+                // Update in-memory model directly without calling LoadDatabasesAsync()
+                SelectedDatabase.Collation = TargetCollation;
             }
             catch (Exception ex)
             {
@@ -256,5 +294,10 @@ namespace CollationModifier.ViewModels
         }
 
         #endregion
+
+        public void Dispose()
+        {
+            _logger?.Dispose();
+        }
     }
 }

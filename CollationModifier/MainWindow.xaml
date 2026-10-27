@@ -146,11 +146,10 @@
                             </StackPanel>
 
                             <StackPanel Grid.Column="1">
-                                <TextBlock x:Name="BackupDirectoryLabel" Text="Backup Directory" Margin="0,0,0,4" />
-                                <TextBox x:Name="BackupDirectoryInput" Text="{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}"
-                                         AutomationProperties.LabeledBy="{Binding ElementName=BackupDirectoryLabel}"
-                                         AutomationProperties.Name="Backup Directory"
-                                         IsEnabled="{Binding IsNotBusy}" />
+                                <TextBlock Text="Backup Directory (Server Host)" Margin="0,0,0,4"
+                                           ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
+                                <TextBox Text="{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsNotBusy}"
+                                         ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
                             </StackPanel>
                         </Grid>
 
