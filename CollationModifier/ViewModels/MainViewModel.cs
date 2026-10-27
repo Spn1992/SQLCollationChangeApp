@@ -266,7 +266,7 @@ namespace CollationModifier.ViewModels
 
             try
             {
-                // 1. Pre-flight
+                // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
                 var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
                 if (preflightReport.HasBlockingConditions)
