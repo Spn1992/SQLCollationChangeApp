@@ -13,9 +13,10 @@ namespace CollationModifier.Tests
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
-        public bool ThrowOnGetDatabases { get; set; } = false;
+        public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
+        public int BackupCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
 
@@ -35,11 +36,17 @@ namespace CollationModifier.Tests
 
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS" });
+        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        {
+            PreflightReportToReturn.DatabaseName = databaseName;
+            return Task.FromResult(PreflightReportToReturn);
+        }
 
-        public Task PreflightCheckAsync(string databaseName, string backupDirectory = "") => Task.CompletedTask;
-
-        public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory) => Task.FromResult("/tmp/mock.bak");
+        public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        {
+            BackupCount++;
+            return Task.FromResult("/tmp/mock.bak");
+        }
 
         public Task RestoreDatabaseAsync(string databaseName, string backupFile) => Task.CompletedTask;
 
@@ -54,10 +61,9 @@ namespace CollationModifier.Tests
 
     public static class MainViewModelTestsRunner
     {
-        public static async Task<int> RunTestsAsync()
+        public static async Task RunTestsAsync()
         {
-            Console.WriteLine("=== Running CollationModifier MainViewModel Unit Tests ===");
-            int failed = 0;
+            Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
             await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
@@ -79,7 +85,19 @@ namespace CollationModifier.Tests
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
             });
 
-            await RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
+            RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
+            {
+                long largeSizeMb = 3000000000L;
+                var db = new DatabaseInfo
+                {
+                    Name = "LargeDB",
+                    Size = $"{largeSizeMb} MB"
+                };
+
+                Assert(db.Size == "3000000000 MB", $"Expected '3000000000 MB', got '{db.Size}'");
+            });
+
+            RunSyncTest("ObservableRangeCollection_ReplaceRange_FiresSingleCollectionChangedResetEvent", () =>
             {
                 var collection = new ObservableRangeCollection<DatabaseInfo>();
                 int eventCount = 0;
@@ -211,7 +229,83 @@ namespace CollationModifier.Tests
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
             });
 
-            return failed;
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "ActiveDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    PreflightReportToReturn = new PreflightReport
+                    {
+                        ActiveSessions = new List<ActiveSessionInfo>
+                        {
+                            new ActiveSessionInfo { SessionId = 55, LoginName = "app_user", HostName = "WORKSTATION1", ProgramName = "AppClient", Status = "running" }
+                        }
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup should NOT have been performed when active sessions exist!");
+                Assert(mockService.AlterCollationCount == 0, "Alter Collation should NOT have been performed when active sessions exist!");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected status message to indicate failure before backup, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenSchemaDependenciesExist", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "SchemaDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    PreflightReportToReturn = new PreflightReport
+                    {
+                        SchemaDependencies = new List<SchemaDependencyInfo>
+                        {
+                            new SchemaDependencyInfo { ObjectName = "vw_Orders", ObjectType = "Schema-Bound Object", SchemaName = "dbo", Details = "Definition is schema-bound (VIEW)." },
+                            new SchemaDependencyInfo { ObjectName = "tbl_Users.FullAddress", ObjectType = "Computed Column", SchemaName = "dbo", Details = "Computed column expression: [Street] + [City]" }
+                        }
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup should NOT have been performed when schema dependencies exist!");
+                Assert(mockService.AlterCollationCount == 0, "Alter Collation should NOT have been performed when schema dependencies exist!");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected status message to indicate failure before backup, got: '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("PreflightReport_GetDiagnosticSummary_FormatsDetailsCorrectly", () =>
+            {
+                var report = new PreflightReport
+                {
+                    DatabaseName = "TestDiagDB",
+                    ActiveSessions = new List<ActiveSessionInfo>
+                    {
+                        new ActiveSessionInfo { SessionId = 60, LoginName = "db_admin", HostName = "SERVER1", ProgramName = "SSMS", Status = "sleeping" }
+                    },
+                    SchemaDependencies = new List<SchemaDependencyInfo>
+                    {
+                        new SchemaDependencyInfo { ObjectName = "FK_Orders_Users", ObjectType = "Foreign Key Constraint", SchemaName = "dbo", Details = "Table 'Orders' references 'Users'." }
+                    }
+                };
+
+                string summary = report.GetDiagnosticSummary();
+                Assert(summary.Contains("FAILED (Blocking items found)"), "Summary should indicate failure");
+                Assert(summary.Contains("Session ID: 60"), "Summary should include session ID");
+                Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
+            });
+
+            Console.WriteLine("\nTest Run Finished: All tests passed!");
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
             {

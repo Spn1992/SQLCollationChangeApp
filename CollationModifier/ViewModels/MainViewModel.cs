@@ -1,4 +1,5 @@
 using CollationModifier.Collections;
+using CollationModifier.Exceptions;
 using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
@@ -278,9 +279,15 @@ namespace CollationModifier.ViewModels
 
             try
             {
-                // 1. Pre-flight
+                // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                if (preflightReport.HasBlockingConditions)
+                {
+                    var summary = preflightReport.GetDiagnosticSummary();
+                    _logger.LogWarning($"Pre-flight validation failed for {SelectedDatabase.Name}:\n{summary}");
+                    throw new PreflightValidationException(preflightReport);
+                }
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
