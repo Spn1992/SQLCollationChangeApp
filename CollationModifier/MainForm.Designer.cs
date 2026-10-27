@@ -49,6 +49,8 @@ namespace CollationModifier
             this.lblWarning = new System.Windows.Forms.Label();
             this.btnProcess = new System.Windows.Forms.Button();
             this.txtBackupDirectory = new System.Windows.Forms.TextBox();
+            this.btnBrowseBackupDir = new System.Windows.Forms.Button();
+            this.folderBrowserDialog = new System.Windows.Forms.FolderBrowserDialog();
             this.lblBackupDir = new System.Windows.Forms.Label();
             this.txtTargetCollation = new System.Windows.Forms.TextBox();
             this.lblTargetCollation = new System.Windows.Forms.Label();
@@ -257,6 +259,7 @@ namespace CollationModifier
             // 
             this.panelDashboardContent.Controls.Add(this.lblWarning);
             this.panelDashboardContent.Controls.Add(this.btnProcess);
+            this.panelDashboardContent.Controls.Add(this.btnBrowseBackupDir);
             this.panelDashboardContent.Controls.Add(this.txtBackupDirectory);
             this.panelDashboardContent.Controls.Add(this.lblBackupDir);
             this.panelDashboardContent.Controls.Add(this.txtTargetCollation);
@@ -300,9 +303,20 @@ namespace CollationModifier
             this.txtBackupDirectory.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.txtBackupDirectory.Location = new System.Drawing.Point(270, 340);
             this.txtBackupDirectory.Name = "txtBackupDirectory";
-            this.txtBackupDirectory.Size = new System.Drawing.Size(240, 25);
+            this.txtBackupDirectory.Size = new System.Drawing.Size(165, 25);
             this.txtBackupDirectory.TabIndex = 7;
             this.txtBackupDirectory.TextChanged += new System.EventHandler(this.txtBackupDirectory_TextChanged);
+            // 
+            // btnBrowseBackupDir
+            // 
+            this.btnBrowseBackupDir.Font = new System.Drawing.Font("Segoe UI", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.btnBrowseBackupDir.Location = new System.Drawing.Point(440, 339);
+            this.btnBrowseBackupDir.Name = "btnBrowseBackupDir";
+            this.btnBrowseBackupDir.Size = new System.Drawing.Size(70, 26);
+            this.btnBrowseBackupDir.TabIndex = 10;
+            this.btnBrowseBackupDir.Text = "Browse...";
+            this.btnBrowseBackupDir.UseVisualStyleBackColor = true;
+            this.btnBrowseBackupDir.Click += new System.EventHandler(this.btnBrowseBackupDir_Click);
             // 
             // lblBackupDir
             // 
@@ -556,6 +570,8 @@ namespace CollationModifier
         private System.Windows.Forms.TextBox txtTargetCollation;
         private System.Windows.Forms.Label lblBackupDir;
         private System.Windows.Forms.TextBox txtBackupDirectory;
+        private System.Windows.Forms.Button btnBrowseBackupDir;
+        private System.Windows.Forms.FolderBrowserDialog folderBrowserDialog;
         private System.Windows.Forms.Button btnProcess;
         private System.Windows.Forms.Label lblWarning;
         private System.Windows.Forms.ToolTip toolTip;
