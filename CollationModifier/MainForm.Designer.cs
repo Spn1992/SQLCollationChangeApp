@@ -131,7 +131,7 @@ namespace CollationModifier
             this.btnConnect.Name = "btnConnect";
             this.btnConnect.Size = new System.Drawing.Size(272, 36);
             this.btnConnect.TabIndex = 9;
-            this.btnConnect.Text = "Connect";
+            this.btnConnect.Text = "&Connect";
             this.btnConnect.UseVisualStyleBackColor = false;
             this.btnConnect.Click += new System.EventHandler(this.btnConnect_Click);
             // 
@@ -154,7 +154,7 @@ namespace CollationModifier
             this.lblPassword.Name = "lblPassword";
             this.lblPassword.Size = new System.Drawing.Size(57, 15);
             this.lblPassword.TabIndex = 7;
-            this.lblPassword.Text = "Password";
+            this.lblPassword.Text = "Pass&word";
             // 
             // txtUsername
             // 
@@ -174,7 +174,7 @@ namespace CollationModifier
             this.lblUsername.Name = "lblUsername";
             this.lblUsername.Size = new System.Drawing.Size(60, 15);
             this.lblUsername.TabIndex = 5;
-            this.lblUsername.Text = "Username";
+            this.lblUsername.Text = "&Username";
             // 
             // cmbAuthType
             // 
@@ -196,7 +196,7 @@ namespace CollationModifier
             this.lblAuthType.Name = "lblAuthType";
             this.lblAuthType.Size = new System.Drawing.Size(114, 15);
             this.lblAuthType.TabIndex = 3;
-            this.lblAuthType.Text = "Authentication Type";
+            this.lblAuthType.Text = "&Authentication Type";
             // 
             // txtServerName
             // 
@@ -216,7 +216,7 @@ namespace CollationModifier
             this.lblServerName.Name = "lblServerName";
             this.lblServerName.Size = new System.Drawing.Size(72, 15);
             this.lblServerName.TabIndex = 1;
-            this.lblServerName.Text = "Server Name";
+            this.lblServerName.Text = "&Server Name";
             // 
             // lblAuthHeader
             // 
@@ -291,7 +291,7 @@ namespace CollationModifier
             this.btnProcess.Name = "btnProcess";
             this.btnProcess.Size = new System.Drawing.Size(220, 36);
             this.btnProcess.TabIndex = 8;
-            this.btnProcess.Text = "Process Collation Change";
+            this.btnProcess.Text = "&Process Collation Change";
             this.btnProcess.UseVisualStyleBackColor = false;
             this.btnProcess.Click += new System.EventHandler(this.btnProcess_Click);
             // 
@@ -313,7 +313,7 @@ namespace CollationModifier
             this.lblBackupDir.Name = "lblBackupDir";
             this.lblBackupDir.Size = new System.Drawing.Size(97, 15);
             this.lblBackupDir.TabIndex = 6;
-            this.lblBackupDir.Text = "Backup Directory";
+            this.lblBackupDir.Text = "&Backup Directory";
             // 
             // txtTargetCollation
             // 
@@ -334,7 +334,7 @@ namespace CollationModifier
             this.lblTargetCollation.Name = "lblTargetCollation";
             this.lblTargetCollation.Size = new System.Drawing.Size(120, 15);
             this.lblTargetCollation.TabIndex = 4;
-            this.lblTargetCollation.Text = "New Collation Name";
+            this.lblTargetCollation.Text = "&New Collation Name";
             // 
             // lblTargetConfigHeader
             // 
@@ -471,7 +471,7 @@ namespace CollationModifier
             this.lblSelectDb.Name = "lblSelectDb";
             this.lblSelectDb.Size = new System.Drawing.Size(105, 17);
             this.lblSelectDb.TabIndex = 0;
-            this.lblSelectDb.Text = "Select Database";
+            this.lblSelectDb.Text = "Select &Database";
             // 
             // lblDashboardHeader
             // 
