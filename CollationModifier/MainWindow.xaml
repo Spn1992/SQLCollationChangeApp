@@ -15,12 +15,23 @@
     <Grid>
         <!-- Status Bar at the bottom -->
         <Border Background="#E2E8F0" Height="30" VerticalAlignment="Bottom" Grid.ZIndex="10">
-            <StackPanel Orientation="Horizontal" Margin="10,0" VerticalAlignment="Center">
-                <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
-                <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
-                             AutomationProperties.Name="Operation Progress"
-                             Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
-            </StackPanel>
+            <Grid Margin="10,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel Orientation="Horizontal" Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
+                    <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
+                                 AutomationProperties.Name="Operation Progress"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                </StackPanel>
+                <Button x:Name="btnStatusBarCancel" Content="Cancel" Command="{Binding CancelCommand}"
+                        Grid.Column="1" VerticalAlignment="Center" Height="22" Padding="8,0" Margin="10,0,0,0"
+                        Style="{StaticResource SecondaryButton}"
+                        Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        AutomationProperties.Name="Cancel Active Operation" />
+            </Grid>
         </Border>
 
         <!-- Main Content Area -->
@@ -153,7 +164,12 @@
                             </StackPanel>
                         </Grid>
 
-                        <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                            <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0" />
+                            <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
+                                    Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                    AutomationProperties.Name="Cancel Operation" />
+                        </StackPanel>
 
                         <TextBlock Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
                                    Foreground="#DC2626" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />

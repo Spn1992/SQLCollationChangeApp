@@ -5,6 +5,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 
@@ -14,6 +15,7 @@ namespace CollationModifier.ViewModels
     {
         private readonly IDatabaseService _databaseService;
         private readonly LoggerService _logger;
+        private CancellationTokenSource? _cts;
 
         public MainViewModel() : this(null, null) { }
 
@@ -31,8 +33,10 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            CancelCommand = new RelayCommand(_ => CancelOperation(), _ => IsBusy);
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            SupportedCollations = new ObservableCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -117,6 +121,7 @@ namespace CollationModifier.ViewModels
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
+        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -169,24 +174,38 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand CancelCommand { get; }
+
+        public void CancelOperation()
+        {
+            if (_cts != null && !_cts.IsCancellationRequested)
+            {
+                StatusMessage = "Cancelling operation...";
+                _logger.LogInfo("User requested cancellation of active operation.");
+                _cts.Cancel();
+            }
+        }
 
         public async Task ConnectAsync()
         {
             IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
             StatusMessage = "Connecting to server...";
             _logger.LogInfo($"Attempting to connect to server: {ServerName} using {SelectedAuthenticationType}");
 
             try
             {
                 _databaseService.SetConnectionString(ServerName, SelectedAuthenticationType, Username, Password);
-                var success = await _databaseService.TestConnectionAsync();
+                var success = await _databaseService.TestConnectionAsync(token);
 
                 if (success)
                 {
                     IsConnected = true;
                     StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
 
-                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
+                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync(token);
                     if (!string.IsNullOrWhiteSpace(serverBackupPath))
                     {
                         BackupDirectory = serverBackupPath;
@@ -197,8 +216,8 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    await LoadDatabasesAsync();
-                    await LoadCollationsAsync();
+                    await LoadDatabasesAsync(token);
+                    await LoadCollationsAsync(token);
                     StatusMessage = "Ready";
                 }
                 else
@@ -207,6 +226,12 @@ namespace CollationModifier.ViewModels
                     StatusMessage = "Connection failed. Check credentials and server name.";
                 }
             }
+            catch (OperationCanceledException)
+            {
+                IsConnected = false;
+                _logger.LogInfo("Connect operation was cancelled by user.");
+                StatusMessage = "Operation cancelled by user.";
+            }
             catch (Exception ex)
             {
                 IsConnected = false;
@@ -214,17 +239,25 @@ namespace CollationModifier.ViewModels
             }
             finally
             {
+                _cts?.Dispose();
+                _cts = null;
                 IsBusy = false;
             }
         }
 
-        public async Task LoadDatabasesAsync()
+        public async Task LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var dbs = await _databaseService.GetDatabasesAsync();
+                var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Load databases operation was cancelled by user.");
+                StatusMessage = "Operation cancelled by user.";
+                throw;
             }
             catch (Exception ex)
             {
@@ -232,17 +265,22 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        private async Task LoadCollationsAsync()
+        private async Task LoadCollationsAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
+                var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.Clear();
                 foreach (var collation in collations)
                 {
                     SupportedCollations.Add(collation);
                 }
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Load collations operation was cancelled by user.");
+                throw;
             }
             catch (Exception ex)
             {
@@ -260,28 +298,42 @@ namespace CollationModifier.ViewModels
             if (SelectedDatabase == null) return;
 
             IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
 
             try
             {
+                token.ThrowIfCancellationRequested();
+
                 // 1. Pre-flight
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, token);
+
+                token.ThrowIfCancellationRequested();
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
-                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory);
+                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, token);
+
+                token.ThrowIfCancellationRequested();
 
                 // 3. Execution Phase
                 StatusMessage = "Altering database collation... This may take a while.";
-                await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation);
+                await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 StatusMessage = "Collation changed successfully!";
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()
                 SelectedDatabase.Collation = TargetCollation;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Process collation change was cancelled by user.");
+                StatusMessage = "Operation cancelled by user.";
             }
             catch (Exception ex)
             {
@@ -308,6 +360,8 @@ namespace CollationModifier.ViewModels
             }
             finally
             {
+                _cts?.Dispose();
+                _cts = null;
                 IsBusy = false;
             }
         }
@@ -316,6 +370,16 @@ namespace CollationModifier.ViewModels
 
         public void Dispose()
         {
+            if (_cts != null)
+            {
+                try
+                {
+                    _cts.Cancel();
+                }
+                catch { }
+                _cts.Dispose();
+                _cts = null;
+            }
             _logger?.Dispose();
         }
     }

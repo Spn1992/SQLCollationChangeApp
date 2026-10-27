@@ -16,6 +16,16 @@ namespace CollationModifier.Tests
 
             try
             {
+                await MainViewModelTests.RunAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTests - {ex}");
+                failed++;
+            }
+
+            try
+            {
                 await TestHighFrequencyConcurrentLoggingWithoutDataLoss();
                 Console.WriteLine("PASS: TestHighFrequencyConcurrentLoggingWithoutDataLoss");
             }

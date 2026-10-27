@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.Data.SqlClient;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CollationModifier.Services
@@ -40,13 +41,13 @@ namespace CollationModifier.Services
             _connectionString = builder.ConnectionString;
         }
 
-        public virtual async Task<bool> TestConnectionAsync()
+        public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
         {
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     return true;
                 }
             }
@@ -57,14 +58,14 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
             var databases = new List<DatabaseInfo>();
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
 
                     // Exclude system databases
                     var query = @"
@@ -85,9 +86,9 @@ namespace CollationModifier.Services
                         WHERE d.database_id > 4";
 
                     using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
-                        while (await reader.ReadAsync())
+                        while (await reader.ReadAsync(cancellationToken))
                         {
                             databases.Add(new DatabaseInfo
                             {
@@ -110,13 +111,13 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public async Task<string?> GetDefaultBackupDirectoryAsync()
+        public async Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default)
         {
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
 
                     var query = @"
                         DECLARE @path NVARCHAR(4000) = NULL;
@@ -166,7 +167,7 @@ namespace CollationModifier.Services
 
                     using (var command = new SqlCommand(query, connection))
                     {
-                        var result = await command.ExecuteScalarAsync();
+                        var result = await command.ExecuteScalarAsync(cancellationToken);
                         if (result != null && result != DBNull.Value)
                         {
                             var backupPath = result.ToString()?.Trim();
@@ -185,6 +186,32 @@ namespace CollationModifier.Services
             }
 
             return null;
+        }
+
+        public virtual async Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+                    var query = "SELECT name FROM sys.fn_helpcollations();";
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                    {
+                        while (await reader.ReadAsync(cancellationToken))
+                        {
+                            collations.Add(reader.GetString(0));
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to load supported collations.", ex);
+            }
+            return collations;
         }
 
         public static void ValidateBackupDirectoryPath(string backupDirectory)
@@ -212,7 +239,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        public async Task PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
         {
             if (!string.IsNullOrWhiteSpace(backupDirectory))
             {
@@ -224,9 +251,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
-                    // Basic check to see if user has alter/backup/restore permissions
-                    // (Note: fn_my_permissions works on the current database context)
+                    await connection.OpenAsync(cancellationToken);
 
                     var query = $@"
                         USE [{safeDbName}];
@@ -235,9 +260,9 @@ namespace CollationModifier.Services
 
                     var permissions = new List<string>();
                     using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
-                        while (await reader.ReadAsync())
+                        while (await reader.ReadAsync(cancellationToken))
                         {
                             permissions.Add(reader.GetString(0));
                         }
@@ -246,11 +271,6 @@ namespace CollationModifier.Services
                     if (!permissions.Contains("ALTER"))
                     {
                         throw new UnauthorizedAccessException($"User does not have ALTER permissions on database {databaseName}.");
-                    }
-                    if (!permissions.Contains("BACKUP DATABASE") && !permissions.Contains("BACKUP LOG")) // Sometimes backup log is needed or just backup db is enough depending on recovery model, but checking BACKUP DATABASE is primary
-                    {
-                        // We will allow it to proceed as sysadmin might not explicitly show BACKUP DATABASE via fn_my_permissions sometimes depending on context,
-                        // but ideally we'd strictly enforce it here. For robustness, if they lack ALTER, we stop.
                     }
                 }
             }
@@ -261,29 +281,26 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
             try
             {
-                // Note: The backupDirectory must exist on the SQL Server machine, not the client running this app.
                 var safeDbName = databaseName.Replace("]", "]]");
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                // Clean the database name for file path safety
                 var safeFileName = string.Join("_", databaseName.Split(Path.GetInvalidFileNameChars()));
                 var backupFile = Path.Combine(backupDirectory, $"{safeFileName}_{timestamp}.bak");
 
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
 
                     using (var command = new SqlCommand(query, connection))
                     {
-                        // Needs longer timeout for backup
                         command.CommandTimeout = 3600;
                         command.Parameters.AddWithValue("@BackupFile", backupFile);
-                        await command.ExecuteNonQueryAsync();
+                        await command.ExecuteNonQueryAsync(cancellationToken);
                     }
                 }
                 _logger.LogInfo($"Successfully backed up {databaseName} to {backupFile}");
@@ -296,15 +313,14 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
-                    // Batch restore workflow statements into a single command to minimize network roundtrips
+                    await connection.OpenAsync(cancellationToken);
                     var query = $@"USE [master];
 ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
 RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;
@@ -314,7 +330,7 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
                     {
                         command.CommandTimeout = 3600;
                         command.Parameters.AddWithValue("@BackupFile", backupFile);
-                        await command.ExecuteNonQueryAsync();
+                        await command.ExecuteNonQueryAsync(cancellationToken);
                     }
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -322,15 +338,14 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             catch (Exception ex)
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
-                // Attempt emergency MULTI_USER reset if batch execution failed
+                // Attempt emergency MULTI_USER reset with an uncancelled token
                 await TrySetMultiUserAsync(databaseName);
                 throw;
             }
         }
 
-        public virtual async Task AlterCollationAsync(string databaseName, string newCollation)
+        public virtual async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
-            // Validate the collation to prevent SQL Injection
             if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
             {
                 throw new ArgumentException("Invalid collation name format. Only alphanumeric characters and underscores are allowed.");
@@ -342,9 +357,8 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
 
-                    // Batch collation change statements into a single command to minimize network roundtrips
                     var query = $@"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
 ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
 ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
@@ -352,7 +366,7 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
                     using (var command = new SqlCommand(query, connection))
                     {
                         command.CommandTimeout = 3600;
-                        await command.ExecuteNonQueryAsync();
+                        await command.ExecuteNonQueryAsync(cancellationToken);
                     }
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
@@ -360,24 +374,25 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             catch (Exception ex)
             {
                 _logger.LogError($"Failed to alter collation for database: {databaseName}", ex);
-                // Attempt to put it back to multi-user if it failed mid-way
+                // Attempt emergency MULTI_USER reset with an uncancelled token
                 await TrySetMultiUserAsync(databaseName);
                 throw;
             }
         }
 
-        private async Task TrySetMultiUserAsync(string databaseName)
+        public async Task TrySetMultiUserAsync(string databaseName)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    // Use CancellationToken.None so emergency cleanup executes independently of cancellation status
+                    await connection.OpenAsync(CancellationToken.None);
                     var query = $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
                     using (var command = new SqlCommand(query, connection))
                     {
-                        await command.ExecuteNonQueryAsync();
+                        await command.ExecuteNonQueryAsync(CancellationToken.None);
                     }
                 }
             }

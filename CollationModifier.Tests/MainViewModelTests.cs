@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CollationModifier.Tests
@@ -13,41 +14,86 @@ namespace CollationModifier.Tests
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
+        public List<string> CollationsToReturn { get; set; } = new();
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
+        public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
+        public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
+        public Func<CancellationToken, Task>? OnTestConnection { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public Task<bool> TestConnectionAsync() => Task.FromResult(true);
-
-        public Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
         {
+            if (OnTestConnection != null)
+            {
+                await OnTestConnection(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return true;
+        }
+
+        public Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             GetDatabasesCount++;
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task PreflightCheckAsync(string databaseName) => Task.CompletedTask;
-
-        public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory) => Task.FromResult("/tmp/mock.bak");
-
-        public Task RestoreDatabaseAsync(string databaseName, string backupFile) => Task.CompletedTask;
-
-        public Task AlterCollationAsync(string databaseName, string newCollation)
+        public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<string?>("/tmp/mock_backup_dir");
+        }
+
+        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(CollationsToReturn);
+        }
+
+        public Task PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+        {
+            if (OnBackupDatabase != null)
+            {
+                await OnBackupDatabase(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return "/tmp/mock.bak";
+        }
+
+        public Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
+        {
+            if (OnAlterCollation != null)
+            {
+                await OnAlterCollation(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             AlterCollationCount++;
             LastAlteredDatabase = databaseName;
             LastTargetCollation = newCollation;
-            return Task.CompletedTask;
         }
     }
 
-    public static class Program
+    public static class MainViewModelTests
     {
-        public static async Task Main()
+        public static async Task RunAsync()
         {
-            Console.WriteLine("Running CollationModifier Tests...");
+            Console.WriteLine("=== Running CollationModifier MainViewModel Unit Tests ===");
 
             RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
@@ -151,7 +197,75 @@ namespace CollationModifier.Tests
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
             });
 
-            Console.WriteLine("\nTest Run Finished: All tests passed!");
+            await RunAsyncTest("ProcessCollationChangeAsync_WhenCancelled_UpdatesStatusToOperationCancelledByUser", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DB1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var tcs = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    OnBackupDatabase = async (token) =>
+                    {
+                        tcs.SetResult(true);
+                        while (!token.IsCancellationRequested)
+                        {
+                            await Task.Delay(10, CancellationToken.None);
+                        }
+                        token.ThrowIfCancellationRequested();
+                    }
+                };
+
+                var vm = new MainViewModel(mockService)
+                {
+                    IsConnected = true,
+                    SelectedDatabase = initialDb,
+                    TargetCollation = "Latin1_General_100_CI_AS_KS_WS",
+                    BackupDirectory = "/tmp/backups"
+                };
+
+                var processTask = vm.ProcessCollationChangeAsync();
+                await tcs.Task;
+                Assert(vm.IsBusy, "MainViewModel should be busy during operation");
+
+                vm.CancelCommand.Execute(null);
+                await processTask;
+
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected status 'Operation cancelled by user.', got '{vm.StatusMessage}'");
+                Assert(!vm.IsBusy, "MainViewModel should not be busy after cancellation");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenCancelled_UpdatesStatusToOperationCancelledByUser", async () =>
+            {
+                var tcs = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    OnTestConnection = async (token) =>
+                    {
+                        tcs.SetResult(true);
+                        while (!token.IsCancellationRequested)
+                        {
+                            await Task.Delay(10, CancellationToken.None);
+                        }
+                        token.ThrowIfCancellationRequested();
+                    }
+                };
+
+                var vm = new MainViewModel(mockService)
+                {
+                    ServerName = "localhost"
+                };
+
+                var connectTask = vm.ConnectAsync();
+                await tcs.Task;
+                Assert(vm.IsBusy, "MainViewModel should be busy during connect");
+
+                vm.CancelCommand.Execute(null);
+                await connectTask;
+
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected status 'Operation cancelled by user.', got '{vm.StatusMessage}'");
+                Assert(!vm.IsConnected, "MainViewModel should not be connected after cancellation");
+                Assert(!vm.IsBusy, "MainViewModel should not be busy after cancellation");
+            });
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
             {

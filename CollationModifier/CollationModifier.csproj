@@ -6,6 +6,7 @@
     <TargetFramework Condition="'$(OS)' == 'Windows_NT'">net48</TargetFramework>
     <TargetFramework Condition="'$(OS)' != 'Windows_NT'">net8.0</TargetFramework>
     <UseWPF Condition="'$(OS)' == 'Windows_NT'">true</UseWPF>
+    <EnableWindowsTargeting Condition="'$(OS)' != 'Windows_NT'">true</EnableWindowsTargeting>
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -24,7 +25,6 @@
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
     <Compile Remove="App.xaml.cs" />
     <Compile Remove="MainWindow.xaml.cs" />
-    <Compile Remove="ViewModels\**" />
     <Page Remove="App.xaml" />
     <Page Remove="MainWindow.xaml" />
   </ItemGroup>
