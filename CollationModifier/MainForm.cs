@@ -65,6 +65,19 @@ namespace CollationModifier
             UpdateUIState();
         }
 
+        private void btnBrowseBackupDir_Click(object sender, EventArgs e)
+        {
+            if (!string.IsNullOrWhiteSpace(txtBackupDirectory.Text) && Directory.Exists(txtBackupDirectory.Text))
+            {
+                folderBrowserDialog.SelectedPath = txtBackupDirectory.Text;
+            }
+
+            if (folderBrowserDialog.ShowDialog() == DialogResult.OK)
+            {
+                txtBackupDirectory.Text = folderBrowserDialog.SelectedPath;
+            }
+        }
+
         private void UpdateMetadataPanel()
         {
             if (cmbDatabases.SelectedItem is DatabaseInfo selectedDb)
@@ -99,6 +112,7 @@ namespace CollationModifier
             cmbDatabases.Enabled = !_isBusy && _isConnected;
             txtTargetCollation.Enabled = !_isBusy && _isConnected;
             txtBackupDirectory.Enabled = !_isBusy && _isConnected;
+            btnBrowseBackupDir.Enabled = !_isBusy && _isConnected;
 
             var selectedDb = cmbDatabases.SelectedItem as DatabaseInfo;
             bool canProcess = _isConnected && !_isBusy && selectedDb != null && !string.IsNullOrWhiteSpace(txtTargetCollation.Text);
