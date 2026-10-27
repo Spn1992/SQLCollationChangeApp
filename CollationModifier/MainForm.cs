@@ -60,6 +60,20 @@ namespace CollationModifier
             UpdateUIState();
         }
 
+        private void txtTargetCollation_Enter(object sender, EventArgs e)
+        {
+            string tipText = this.toolTip.GetToolTip(this.txtTargetCollation);
+            if (!string.IsNullOrEmpty(tipText))
+            {
+                this.toolTip.Show(tipText, this.txtTargetCollation, 0, this.txtTargetCollation.Height + 2);
+            }
+        }
+
+        private void txtTargetCollation_Leave(object sender, EventArgs e)
+        {
+            this.toolTip.Hide(this.txtTargetCollation);
+        }
+
         private void txtBackupDirectory_TextChanged(object sender, EventArgs e)
         {
             UpdateUIState();

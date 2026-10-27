@@ -317,6 +317,8 @@ namespace CollationModifier
             // 
             // txtTargetCollation
             // 
+            this.txtTargetCollation.AccessibleDescription = "E.g., SQL_Latin1_General_CP1_CI_AS";
+            this.txtTargetCollation.AccessibleName = "New Collation Name";
             this.txtTargetCollation.Font = new System.Drawing.Font("Segoe UI", 9.75F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.txtTargetCollation.Location = new System.Drawing.Point(3, 340);
             this.txtTargetCollation.Name = "txtTargetCollation";
@@ -324,6 +326,8 @@ namespace CollationModifier
             this.txtTargetCollation.TabIndex = 5;
             this.toolTip.SetToolTip(this.txtTargetCollation, "E.g., SQL_Latin1_General_CP1_CI_AS");
             this.txtTargetCollation.TextChanged += new System.EventHandler(this.txtTargetCollation_TextChanged);
+            this.txtTargetCollation.Enter += new System.EventHandler(this.txtTargetCollation_Enter);
+            this.txtTargetCollation.Leave += new System.EventHandler(this.txtTargetCollation_Leave);
             // 
             // lblTargetCollation
             // 
