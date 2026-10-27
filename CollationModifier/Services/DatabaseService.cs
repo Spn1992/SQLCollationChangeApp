@@ -1,7 +1,7 @@
 using CollationModifier.Models;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using System.IO;
 using System.Threading.Tasks;
 
@@ -23,7 +23,8 @@ namespace CollationModifier.Services
             {
                 DataSource = server,
                 InitialCatalog = "master",
-                ApplicationName = "CollationModifier"
+                ApplicationName = "CollationModifier",
+                TrustServerCertificate = true
             };
 
             if (authType == "Windows Authentication")
@@ -134,7 +135,7 @@ namespace CollationModifier.Services
             return collations;
         }
 
-        public async Task<bool> ValidateCollationAsync(string targetCollation)
+        public async Task<bool> ValidateCollationAsync(string? targetCollation)
         {
             if (string.IsNullOrWhiteSpace(targetCollation))
             {
