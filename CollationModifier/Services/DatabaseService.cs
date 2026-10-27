@@ -110,6 +110,38 @@ namespace CollationModifier.Services
             return databases;
         }
 
+        public virtual async Task<List<string>> GetSupportedCollationsAsync()
+        {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name ASC;";
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+                _logger.LogInfo($"Fetched {collations.Count} supported collations from server catalog.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations from server catalog.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
         public async Task<string?> GetDefaultBackupDirectoryAsync()
         {
             try
@@ -495,7 +527,14 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
                 // Attempt emergency MULTI_USER reset if batch execution failed
-                await TrySetMultiUserAsync(databaseName);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException($"Restore failed for database '{databaseName}' and emergency MULTI_USER reset also failed. Database may remain in SINGLE_USER mode.", ex, resetEx);
+                }
                 throw;
             }
         }
@@ -533,12 +572,19 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             {
                 _logger.LogError($"Failed to alter collation for database: {databaseName}", ex);
                 // Attempt to put it back to multi-user if it failed mid-way
-                await TrySetMultiUserAsync(databaseName);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException($"Failed to alter collation for database '{databaseName}' and emergency MULTI_USER reset also failed. Database may remain in SINGLE_USER mode.", ex, resetEx);
+                }
                 throw;
             }
         }
 
-        private async Task TrySetMultiUserAsync(string databaseName)
+        public virtual async Task TrySetMultiUserAsync(string databaseName)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
@@ -556,6 +602,7 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             catch (Exception ex)
             {
                  _logger.LogError($"Failed emergency MULTI_USER reset for database: {databaseName}", ex);
+                 throw;
             }
         }
     }

@@ -31,6 +31,20 @@ namespace CollationModifier.Tests
         }
 
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
+        public Exception? TrySetMultiUserExceptionToThrow { get; set; }
+        public Exception? AlterCollationExceptionToThrow { get; set; }
+        public Exception? RestoreExceptionToThrow { get; set; }
+
+        public Task TrySetMultiUserAsync(string databaseName)
+        {
+            if (TrySetMultiUserExceptionToThrow != null)
+            {
+                throw TrySetMultiUserExceptionToThrow;
+            }
+            return Task.CompletedTask;
+        }
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
@@ -44,14 +58,40 @@ namespace CollationModifier.Tests
             return Task.FromResult("/tmp/mock.bak");
         }
 
-        public Task RestoreDatabaseAsync(string databaseName, string backupFile) => Task.CompletedTask;
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        {
+            if (RestoreExceptionToThrow != null)
+            {
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException($"Restore failed for database '{databaseName}' and emergency MULTI_USER reset also failed. Database may remain in SINGLE_USER mode.", RestoreExceptionToThrow, resetEx);
+                }
+                throw RestoreExceptionToThrow;
+            }
+        }
 
-        public Task AlterCollationAsync(string databaseName, string newCollation)
+        public async Task AlterCollationAsync(string databaseName, string newCollation)
         {
             AlterCollationCount++;
             LastAlteredDatabase = databaseName;
             LastTargetCollation = newCollation;
-            return Task.CompletedTask;
+
+            if (AlterCollationExceptionToThrow != null)
+            {
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException($"Failed to alter collation for database '{databaseName}' and emergency MULTI_USER reset also failed. Database may remain in SINGLE_USER mode.", AlterCollationExceptionToThrow, resetEx);
+                }
+                throw AlterCollationExceptionToThrow;
+            }
         }
     }
 
@@ -237,6 +277,68 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("FAILED (Blocking items found)"), "Summary should indicate failure");
                 Assert(summary.Contains("Session ID: 60"), "Summary should include session ID");
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
+            });
+
+            await RunAsyncTest("TrySetMultiUserAsync_RethrowsException_WhenResetFails", async () =>
+            {
+                var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_host_xyz_999", "Windows Authentication", "", "");
+
+                bool threw = false;
+                try
+                {
+                    await dbService.TrySetMultiUserAsync("TestDb");
+                }
+                catch (Exception)
+                {
+                    threw = true;
+                }
+
+                Assert(threw, "TrySetMultiUserAsync must rethrow exceptions when MULTI_USER reset fails.");
+            });
+
+            await RunAsyncTest("AlterCollationAsync_RaisesAggregateException_WhenBothCollationAndResetFail", async () =>
+            {
+                var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_host_xyz_999", "Windows Authentication", "", "");
+
+                bool threwAggregate = false;
+                try
+                {
+                    await dbService.AlterCollationAsync("TestDb", "Latin1_General_100_CI_AS");
+                }
+                catch (AggregateException aggEx)
+                {
+                    threwAggregate = true;
+                    Assert(aggEx.InnerExceptions.Count >= 2, $"Expected aggregate exception with at least 2 inner exceptions, got {aggEx.InnerExceptions.Count}");
+                    Assert(aggEx.Message.Contains("SINGLE_USER"), $"Expected AggregateException message to reference SINGLE_USER mode, got: {aggEx.Message}");
+                }
+
+                Assert(threwAggregate, "AlterCollationAsync must throw an AggregateException when collation change and reset both fail.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_DisplaysWarning_WhenDatabaseRemainsLockedInSingleUserMode", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "LockedDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    AlterCollationExceptionToThrow = new InvalidOperationException("Collation change blocked by table locks"),
+                    TrySetMultiUserExceptionToThrow = new InvalidOperationException("Reset to MULTI_USER failed due to network error"),
+                    RestoreExceptionToThrow = new InvalidOperationException("Auto-restore failed")
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode!"), $"Expected status message to contain SINGLE_USER warning, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Collation change blocked by table locks"), $"Expected status message to include primary error, got: '{vm.StatusMessage}'");
             });
 
             Console.WriteLine("\nTest Run Finished: All tests passed!");
