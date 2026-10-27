@@ -239,6 +239,107 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
             });
 
+            await RunAsyncTest("ConnectAsync_DisablesConnectionParameters_And_UpdatesButtonText_WhenConnected", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "DB1" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+
+                Assert(!vm.IsConnected, "Initial IsConnected should be false");
+                Assert(vm.ConnectButtonText == "Connect", $"Expected button text 'Connect', got '{vm.ConnectButtonText}'");
+                Assert(vm.CanEditConnectionParameters, "CanEditConnectionParameters should be true initially");
+
+                vm.SelectedAuthenticationType = "SQL Server Authentication";
+                Assert(vm.CanEditSqlCredentials, "CanEditSqlCredentials should be true for SQL Auth when disconnected");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "IsConnected should be true after successful connection");
+                Assert(vm.ConnectButtonText == "Disconnect", $"Expected button text 'Disconnect', got '{vm.ConnectButtonText}'");
+                Assert(!vm.CanEditConnectionParameters, "CanEditConnectionParameters should be false after connecting");
+                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false after connecting");
+            });
+
+            await RunAsyncTest("Disconnect_ResetsConnectionState_ClearsDatabases_And_EnablesConnectionParameters", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo>
+                    {
+                        new DatabaseInfo { Name = "DB1" },
+                        new DatabaseInfo { Name = "DB2" }
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "IsConnected should be true after connecting");
+                Assert(vm.Databases.Count == 2, $"Expected 2 databases, got {vm.Databases.Count}");
+                vm.SelectedDatabase = vm.Databases[0];
+
+                vm.Disconnect();
+
+                Assert(!vm.IsConnected, "IsConnected should be false after disconnect");
+                Assert(vm.Databases.Count == 0, "Databases should be cleared after disconnect");
+                Assert(vm.SelectedDatabase == null, "SelectedDatabase should be null after disconnect");
+                Assert(vm.ConnectButtonText == "Connect", $"Expected button text 'Connect', got '{vm.ConnectButtonText}'");
+                Assert(vm.CanEditConnectionParameters, "CanEditConnectionParameters should be true after disconnect");
+                Assert(vm.StatusMessage == "Disconnected from server.", $"Expected 'Disconnected from server.', got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ToggleConnectionCommand_DisconnectsWhenConnected_AndConnectsWhenDisconnected", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "ToggleDB" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+
+                // Execute command to Connect
+                if (vm.ConnectCommand.CanExecute(null))
+                {
+                    vm.ConnectCommand.Execute(null);
+                }
+                // Allow async Task execution to finish
+                await Task.Delay(50);
+
+                Assert(vm.IsConnected, "IsConnected should be true after executing ConnectCommand");
+
+                // Execute command to Disconnect
+                if (vm.ConnectCommand.CanExecute(null))
+                {
+                    vm.ConnectCommand.Execute(null);
+                }
+                await Task.Delay(50);
+
+                Assert(!vm.IsConnected, "IsConnected should be false after executing ConnectCommand second time");
+            });
+
+            RunSyncTest("CanEditConnectionParameters_ReturnsFalse_WhenBusyOrConnected", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+
+                // Disconnected and Not Busy -> Can Edit
+                vm.IsBusy = false;
+                vm.IsConnected = false;
+                Assert(vm.CanEditConnectionParameters, "Should be editable when not busy and not connected");
+
+                // Busy and Disconnected -> Cannot Edit
+                vm.IsBusy = true;
+                vm.IsConnected = false;
+                Assert(!vm.CanEditConnectionParameters, "Should not be editable when busy");
+
+                // Not Busy and Connected -> Cannot Edit
+                vm.IsBusy = false;
+                vm.IsConnected = true;
+                Assert(!vm.CanEditConnectionParameters, "Should not be editable when connected");
+            });
+
             Console.WriteLine("\nTest Run Finished: All tests passed!");
 
             async Task RunAsyncTest(string name, Func<Task> testAction)

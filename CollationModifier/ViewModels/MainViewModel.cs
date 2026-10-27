@@ -30,7 +30,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
@@ -60,6 +60,8 @@ namespace CollationModifier.ViewModels
             {
                 SetProperty(ref _isBusy, value);
                 OnPropertyChanged(nameof(IsNotBusy));
+                OnPropertyChanged(nameof(CanEditConnectionParameters));
+                OnPropertyChanged(nameof(CanEditSqlCredentials));
                 InvalidateRequerySuggested();
             }
         }
@@ -90,6 +92,7 @@ namespace CollationModifier.ViewModels
             {
                 SetProperty(ref _selectedAuthenticationType, value);
                 OnPropertyChanged(nameof(IsSqlServerAuth));
+                OnPropertyChanged(nameof(CanEditSqlCredentials));
             }
         }
 
@@ -113,8 +116,21 @@ namespace CollationModifier.ViewModels
         public bool IsConnected
         {
             get => _isConnected;
-            set => SetProperty(ref _isConnected, value);
+            set
+            {
+                SetProperty(ref _isConnected, value);
+                OnPropertyChanged(nameof(ConnectButtonText));
+                OnPropertyChanged(nameof(CanEditConnectionParameters));
+                OnPropertyChanged(nameof(CanEditSqlCredentials));
+                InvalidateRequerySuggested();
+            }
         }
+
+        public string ConnectButtonText => IsConnected ? "Disconnect" : "Connect";
+
+        public bool CanEditConnectionParameters => !IsBusy && !IsConnected;
+
+        public bool CanEditSqlCredentials => CanEditConnectionParameters && IsSqlServerAuth;
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
@@ -171,6 +187,28 @@ namespace CollationModifier.ViewModels
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
 
+        public async Task ToggleConnectionAsync()
+        {
+            if (IsConnected)
+            {
+                Disconnect();
+            }
+            else
+            {
+                await ConnectAsync();
+            }
+        }
+
+        public void Disconnect()
+        {
+            IsConnected = false;
+            Databases.Clear();
+            SelectedDatabase = null;
+            TargetCollation = string.Empty;
+            StatusMessage = "Disconnected from server.";
+            _logger.LogInfo("Disconnected from server.");
+        }
+
         public async Task ConnectAsync()
         {
             IsBusy = true;
@@ -199,7 +237,6 @@ namespace CollationModifier.ViewModels
                     }
 
                     await LoadDatabasesAsync();
-                    await LoadCollationsAsync();
                     StatusMessage = "Ready";
                 }
                 else
@@ -230,24 +267,6 @@ namespace CollationModifier.ViewModels
             catch (Exception ex)
             {
                 StatusMessage = $"Failed to load databases: {ex.Message}";
-            }
-        }
-
-        private async Task LoadCollationsAsync()
-        {
-            try
-            {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
-                SupportedCollations.Clear();
-                foreach (var collation in collations)
-                {
-                    SupportedCollations.Add(collation);
-                }
-                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Failed to load supported collations.", ex);
             }
         }
 
