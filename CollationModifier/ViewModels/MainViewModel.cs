@@ -7,6 +7,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Input;
 
@@ -16,6 +17,7 @@ namespace CollationModifier.ViewModels
     {
         private readonly IDatabaseService _databaseService;
         private readonly LoggerService _logger;
+        private CancellationTokenSource? _cts;
 
         public MainViewModel() : this(null, null) { }
 
@@ -61,11 +63,12 @@ namespace CollationModifier.ViewModels
             get => _isBusy;
             set
             {
-                SetProperty(ref _isBusy, value);
-                OnPropertyChanged(nameof(IsNotBusy));
-                OnPropertyChanged(nameof(CanEditConnectionParameters));
-                OnPropertyChanged(nameof(CanEditSqlCredentials));
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _isBusy, value))
+                {
+                    OnPropertyChanged(nameof(IsNotBusy));
+                    OnPropertyChanged(nameof(CanEditConnection));
+                    InvalidateRequerySuggested();
+                }
             }
         }
         public bool IsNotBusy => !IsBusy;
@@ -77,6 +80,13 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusMessage, value);
         }
 
+        private string? _statusToolTip;
+        public string? StatusToolTip
+        {
+            get => _statusToolTip;
+            set => SetProperty(ref _statusToolTip, value);
+        }
+
         // Authentication Properties
         private string _serverName = "localhost";
         public string ServerName
@@ -86,6 +96,7 @@ namespace CollationModifier.ViewModels
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
+        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
 
         private string _selectedAuthenticationType = string.Empty;
         public string SelectedAuthenticationType
@@ -93,9 +104,22 @@ namespace CollationModifier.ViewModels
             get => _selectedAuthenticationType;
             set
             {
-                SetProperty(ref _selectedAuthenticationType, value);
-                OnPropertyChanged(nameof(IsSqlServerAuth));
-                OnPropertyChanged(nameof(CanEditSqlCredentials));
+                string previous = _selectedAuthenticationType;
+                if (SetProperty(ref _selectedAuthenticationType, value))
+                {
+                    OnPropertyChanged(nameof(IsSqlServerAuth));
+                    if (!string.IsNullOrEmpty(previous) && previous != value)
+                    {
+                        if (value == "SQL Server Authentication")
+                        {
+                            StatusMessage = "SQL Server Authentication selected. Username and Password fields enabled.";
+                        }
+                        else if (value == "Windows Authentication")
+                        {
+                            StatusMessage = "Windows Authentication selected. Username and Password fields disabled.";
+                        }
+                    }
+                }
             }
         }
 
@@ -121,11 +145,10 @@ namespace CollationModifier.ViewModels
             get => _isConnected;
             set
             {
-                SetProperty(ref _isConnected, value);
-                OnPropertyChanged(nameof(ConnectButtonText));
-                OnPropertyChanged(nameof(CanEditConnectionParameters));
-                OnPropertyChanged(nameof(CanEditSqlCredentials));
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _isConnected, value))
+                {
+                    OnPropertyChanged(nameof(CanEditConnection));
+                }
             }
         }
 
@@ -136,7 +159,6 @@ namespace CollationModifier.ViewModels
         public bool CanEditSqlCredentials => CanEditConnectionParameters && IsSqlServerAuth;
 
         // Dashboard Properties
-        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
 
         private DatabaseInfo? _selectedDatabase;
@@ -255,44 +277,38 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync()
-        {
-            if (IsConnected)
-            {
-                Disconnect();
-            }
-            else
-            {
-                await ConnectAsync();
-            }
-        }
-
-        public void Disconnect()
-        {
-            IsConnected = false;
-            Databases.Clear();
-            SelectedDatabase = null;
-            TargetCollation = string.Empty;
-            StatusMessage = "Disconnected from server.";
-            _logger.LogInfo("Disconnected from server.");
-        }
+        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
+            if (IsConnected)
+            {
+                IsConnected = false;
+                Databases.Clear();
+                SupportedCollations.Clear();
+                SelectedDatabase = null;
+                StatusMessage = "Disconnected.";
+                _logger.LogInfo("Disconnected from server.");
+                return;
+            }
+
             IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
             StatusMessage = "Connecting to server...";
             _logger.LogInfo($"Attempting to connect to server: {ServerName} using {SelectedAuthenticationType}");
 
             try
             {
                 _databaseService.SetConnectionString(ServerName, SelectedAuthenticationType, Username, Password);
-                var success = await _databaseService.TestConnectionAsync();
+                var success = await _databaseService.TestConnectionAsync(token);
 
                 if (success)
                 {
                     StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
 
-                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
+                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync(token);
                     if (!string.IsNullOrWhiteSpace(serverBackupPath))
                     {
                         BackupDirectory = serverBackupPath;
@@ -317,16 +333,25 @@ namespace CollationModifier.ViewModels
                 else
                 {
                     IsConnected = false;
-                    StatusMessage = "Connection failed. Check credentials and server name.";
+                    SetStatus("Connection failed. Check credentials and server name.");
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                IsConnected = false;
+                _logger.LogInfo("Connect operation was cancelled by user.");
+                StatusMessage = "Operation cancelled by user.";
             }
             catch (Exception ex)
             {
                 IsConnected = false;
-                StatusMessage = $"Error: {ex.Message}";
+                var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
+                SetStatus(statusText, toolTipText);
             }
             finally
             {
+                _cts?.Dispose();
+                _cts = null;
                 IsBusy = false;
             }
         }
@@ -335,10 +360,16 @@ namespace CollationModifier.ViewModels
         {
             try
             {
-                var dbs = await _databaseService.GetDatabasesAsync();
+                var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Load databases operation was cancelled by user.");
+                StatusMessage = "Operation cancelled by user.";
+                throw;
             }
             catch (Exception ex)
             {
@@ -347,6 +378,33 @@ namespace CollationModifier.ViewModels
                 StatusMessage = $"Failed to load databases: {ex.Message}";
                 return false;
             }
+        }
+
+        public Func<string, string, bool>? ConfirmCollationChangeHandler { get; set; }
+
+        private bool DefaultConfirmCollationChange(string databaseName, string targetCollation)
+        {
+#if NETFRAMEWORK
+            string message = $"Are you sure you want to change the collation of database '{databaseName}' to '{targetCollation}'?\n\nWARNING: This process will close all active database connections and force the database into SINGLE_USER mode.";
+            string title = "Confirm Collation Change";
+
+            try
+            {
+                var result = System.Windows.MessageBox.Show(
+                    message,
+                    title,
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Warning,
+                    System.Windows.MessageBoxResult.No);
+                return result == System.Windows.MessageBoxResult.Yes;
+            }
+            catch
+            {
+                return true;
+            }
+#else
+            return true;
+#endif
         }
 
         private bool CanProcessCollationChange()
@@ -358,15 +416,31 @@ namespace CollationModifier.ViewModels
         {
             if (SelectedDatabase == null) return;
 
+            bool confirmed = ConfirmCollationChangeHandler != null
+                ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
+                : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
+
+            if (!confirmed)
+            {
+                _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
+                StatusMessage = "Collation change operation cancelled.";
+                return;
+            }
+
             IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
 
             try
             {
+                token.ThrowIfCancellationRequested();
+
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, token);
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();
@@ -374,19 +448,28 @@ namespace CollationModifier.ViewModels
                     throw new PreflightValidationException(preflightReport);
                 }
 
+                token.ThrowIfCancellationRequested();
+
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
-                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory);
+                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, token);
+
+                token.ThrowIfCancellationRequested();
 
                 // 3. Execution Phase
                 StatusMessage = "Altering database collation... This may take a while.";
-                await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation);
+                await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                StatusMessage = "Collation changed successfully!";
+                SetStatus("Collation changed successfully!");
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()
                 SelectedDatabase.Collation = TargetCollation;
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Process collation change was cancelled by user.");
+                StatusMessage = "Operation cancelled by user.";
             }
             catch (Exception ex)
             {
@@ -432,6 +515,8 @@ namespace CollationModifier.ViewModels
             }
             finally
             {
+                _cts?.Dispose();
+                _cts = null;
                 IsBusy = false;
             }
         }
@@ -440,6 +525,16 @@ namespace CollationModifier.ViewModels
 
         public void Dispose()
         {
+            if (_cts != null)
+            {
+                try
+                {
+                    _cts.Cancel();
+                }
+                catch { }
+                _cts.Dispose();
+                _cts = null;
+            }
             _logger?.Dispose();
         }
     }

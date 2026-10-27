@@ -90,7 +90,7 @@
                                    Foreground="#64748B" FontSize="16" />
                     </Border>
 
-                    <StackPanel>
+                    <StackPanel IsEnabled="{Binding IsConnected}">
                         <Label Content="Database Operations" Style="{StaticResource CardHeader}" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->
@@ -147,6 +147,7 @@
                                 <TextBox x:Name="TargetCollationInput" Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
                                          AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
                                          AutomationProperties.Name="New Collation Name"
+                                         AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
                                          ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}" />
                             </StackPanel>
 
@@ -158,9 +159,18 @@
                             </StackPanel>
                         </Grid>
 
-                        <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" />
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                            <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0" />
+                            <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
+                                    Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                    AutomationProperties.Name="Cancel Operation" />
+                        </StackPanel>
 
-                        <TextBlock Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                        <TextBlock x:Name="lblWarning"
+                                   Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.Name="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.HelpText="Database single user mode operation warning message."
+                                   AutomationProperties.LiveSetting="Assertive"
                                    Foreground="#DC2626" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
                     </StackPanel>
                 </Grid>
