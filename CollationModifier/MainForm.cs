@@ -83,6 +83,19 @@ namespace CollationModifier
             }
         }
 
+        private void SetStatusText(string text)
+        {
+            statusLabel.Text = text;
+            statusLabel.AccessibleDescription = text;
+
+            int statusLabelIndex = statusStrip.Items.IndexOf(statusLabel);
+            if (statusLabelIndex >= 0)
+            {
+                statusStrip.AccessibilityNotifyClients(AccessibleEvents.NameChange, statusLabelIndex);
+                statusStrip.AccessibilityNotifyClients(AccessibleEvents.ValueChange, statusLabelIndex);
+            }
+        }
+
         private void UpdateUIState()
         {
             bool isSqlServerAuth = cmbAuthType.SelectedItem?.ToString() == "SQL Server Authentication";
@@ -104,13 +117,23 @@ namespace CollationModifier
             bool canProcess = _isConnected && !_isBusy && selectedDb != null && !string.IsNullOrWhiteSpace(txtTargetCollation.Text);
             btnProcess.Enabled = canProcess;
 
+            bool wasProgressBarVisible = progressBar.Visible;
             progressBar.Visible = _isBusy;
+
+            if (wasProgressBarVisible != progressBar.Visible)
+            {
+                int pbIndex = statusStrip.Items.IndexOf(progressBar);
+                if (pbIndex >= 0)
+                {
+                    statusStrip.AccessibilityNotifyClients(AccessibleEvents.StateChange, pbIndex);
+                }
+            }
         }
 
         private async void btnConnect_Click(object sender, EventArgs e)
         {
             _isBusy = true;
-            statusLabel.Text = "Connecting to server...";
+            SetStatusText("Connecting to server...");
             UpdateUIState();
 
             string server = txtServerName.Text.Trim();
@@ -128,20 +151,20 @@ namespace CollationModifier
                 if (success)
                 {
                     _isConnected = true;
-                    statusLabel.Text = "Connected successfully. Fetching databases...";
+                    SetStatusText("Connected successfully. Fetching databases...");
                     await LoadDatabasesAsync();
-                    statusLabel.Text = "Ready";
+                    SetStatusText("Ready");
                 }
                 else
                 {
                     _isConnected = false;
-                    statusLabel.Text = "Connection failed. Check credentials and server name.";
+                    SetStatusText("Connection failed. Check credentials and server name.");
                 }
             }
             catch (Exception ex)
             {
                 _isConnected = false;
-                statusLabel.Text = $"Error: {ex.Message}";
+                SetStatusText($"Error: {ex.Message}");
             }
             finally
             {
@@ -168,7 +191,7 @@ namespace CollationModifier
             }
             catch (Exception ex)
             {
-                statusLabel.Text = $"Failed to load databases: {ex.Message}";
+                SetStatusText($"Failed to load databases: {ex.Message}");
             }
         }
 
@@ -187,18 +210,18 @@ namespace CollationModifier
             try
             {
                 // 1. Pre-flight
-                statusLabel.Text = "Running pre-flight checks...";
+                SetStatusText("Running pre-flight checks...");
                 await _databaseService.PreflightCheckAsync(selectedDb.Name);
 
                 // 2. Automated Backup
-                statusLabel.Text = "Starting automated backup...";
+                SetStatusText("Starting automated backup...");
                 backupFile = await _databaseService.BackupDatabaseAsync(selectedDb.Name, backupDir);
 
                 // 3. Execution Phase
-                statusLabel.Text = "Altering database collation... This may take a while.";
+                SetStatusText("Altering database collation... This may take a while.");
                 await _databaseService.AlterCollationAsync(selectedDb.Name, targetCollation);
 
-                statusLabel.Text = "Collation changed successfully!";
+                SetStatusText("Collation changed successfully!");
                 _logger.LogInfo($"Collation change process completed successfully for {selectedDb.Name}");
 
                 // Refresh data
@@ -217,21 +240,21 @@ namespace CollationModifier
 
                 if (backupFile != null)
                 {
-                    statusLabel.Text = $"Process failed: {ex.Message}. Attempting to restore from backup...";
+                    SetStatusText($"Process failed: {ex.Message}. Attempting to restore from backup...");
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(selectedDb.Name, backupFile);
-                        statusLabel.Text = $"Process failed: {ex.Message}. Database restored successfully.";
+                        SetStatusText($"Process failed: {ex.Message}. Database restored successfully.");
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        statusLabel.Text = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}";
+                        SetStatusText($"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}");
                     }
                 }
                 else
                 {
-                    statusLabel.Text = $"Process failed before backup: {ex.Message}";
+                    SetStatusText($"Process failed before backup: {ex.Message}");
                 }
             }
             finally

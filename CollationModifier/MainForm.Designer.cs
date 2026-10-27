@@ -75,6 +75,8 @@ namespace CollationModifier
             // 
             // statusStrip
             // 
+            this.statusStrip.AccessibleName = "Status Bar";
+            this.statusStrip.AccessibleRole = System.Windows.Forms.AccessibleRole.StatusBar;
             this.statusStrip.Items.AddRange(new System.Windows.Forms.ToolStripItem[] {
             this.statusLabel,
             this.progressBar});
@@ -86,6 +88,9 @@ namespace CollationModifier
             // 
             // statusLabel
             // 
+            this.statusLabel.AccessibleDescription = "Current status message";
+            this.statusLabel.AccessibleName = "Status";
+            this.statusLabel.AccessibleRole = System.Windows.Forms.AccessibleRole.StatusStrip;
             this.statusLabel.Name = "statusLabel";
             this.statusLabel.Size = new System.Drawing.Size(783, 17);
             this.statusLabel.Spring = true;
@@ -94,6 +99,9 @@ namespace CollationModifier
             // 
             // progressBar
             // 
+            this.progressBar.AccessibleDescription = "Indicates background database operation progress";
+            this.progressBar.AccessibleName = "Operation Progress";
+            this.progressBar.AccessibleRole = System.Windows.Forms.AccessibleRole.ProgressBar;
             this.progressBar.Name = "progressBar";
             this.progressBar.Size = new System.Drawing.Size(100, 16);
             this.progressBar.Style = System.Windows.Forms.ProgressBarStyle.Marquee;
