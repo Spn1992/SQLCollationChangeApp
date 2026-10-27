@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.Data.SqlClient;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CollationModifier.Services
@@ -40,13 +41,13 @@ namespace CollationModifier.Services
             _connectionString = builder.ConnectionString;
         }
 
-        public virtual async Task<bool> TestConnectionAsync()
+        public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
         {
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     return true;
                 }
             }
@@ -57,14 +58,14 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
             var databases = new List<DatabaseInfo>();
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
 
                     // Exclude system databases
                     var query = @"
@@ -85,9 +86,9 @@ namespace CollationModifier.Services
                         WHERE d.database_id > 4";
 
                     using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
-                        while (await reader.ReadAsync())
+                        while (await reader.ReadAsync(cancellationToken))
                         {
                             databases.Add(new DatabaseInfo
                             {
@@ -110,20 +111,20 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public virtual async Task<List<string>> GetSupportedCollationsAsync()
+        public virtual async Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
         {
             var collations = new List<string>();
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
 
                     using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
-                        while (await reader.ReadAsync())
+                        while (await reader.ReadAsync(cancellationToken))
                         {
                             if (!reader.IsDBNull(0))
                             {
@@ -142,13 +143,13 @@ namespace CollationModifier.Services
             return collations;
         }
 
-        public async Task<string?> GetDefaultBackupDirectoryAsync()
+        public async Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default)
         {
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
 
                     var query = @"
                         DECLARE @path NVARCHAR(4000) = NULL;
@@ -198,7 +199,7 @@ namespace CollationModifier.Services
 
                     using (var command = new SqlCommand(query, connection))
                     {
-                        var result = await command.ExecuteScalarAsync();
+                        var result = await command.ExecuteScalarAsync(cancellationToken);
                         if (result != null && result != DBNull.Value)
                         {
                             var backupPath = result.ToString()?.Trim();
@@ -246,7 +247,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
             {
@@ -270,7 +271,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
 
                     // 1. Check permissions in target database context
                     try
@@ -282,9 +283,9 @@ namespace CollationModifier.Services
 
                         var permissions = new List<string>();
                         using (var command = new SqlCommand(permQuery, connection))
-                        using (var reader = await command.ExecuteReaderAsync())
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync(cancellationToken))
                             {
                                 permissions.Add(reader.GetString(0));
                             }
@@ -318,9 +319,9 @@ namespace CollationModifier.Services
                         using (var command = new SqlCommand(sessionsQuery, connection))
                         {
                             command.Parameters.AddWithValue("@DbName", databaseName);
-                            using (var reader = await command.ExecuteReaderAsync())
+                            using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                             {
-                                while (await reader.ReadAsync())
+                                while (await reader.ReadAsync(cancellationToken))
                                 {
                                     report.ActiveSessions.Add(new ActiveSessionInfo
                                     {
@@ -344,7 +345,7 @@ namespace CollationModifier.Services
                     {
                         using (var useCmd = new SqlCommand($"USE [{safeDbName}];", connection))
                         {
-                            await useCmd.ExecuteNonQueryAsync();
+                            await useCmd.ExecuteNonQueryAsync(cancellationToken);
                         }
 
                         // 3a. Schema-bound views / modules
@@ -359,9 +360,9 @@ namespace CollationModifier.Services
                             WHERE m.is_schema_bound = 1;";
 
                         using (var command = new SqlCommand(schemaBoundQuery, connection))
-                        using (var reader = await command.ExecuteReaderAsync())
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync(cancellationToken))
                             {
                                 report.SchemaDependencies.Add(new SchemaDependencyInfo
                                 {
@@ -385,9 +386,9 @@ namespace CollationModifier.Services
                             JOIN sys.schemas s ON t.schema_id = s.schema_id;";
 
                         using (var command = new SqlCommand(computedColsQuery, connection))
-                        using (var reader = await command.ExecuteReaderAsync())
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync(cancellationToken))
                             {
                                 report.SchemaDependencies.Add(new SchemaDependencyInfo
                                 {
@@ -412,9 +413,9 @@ namespace CollationModifier.Services
                             JOIN sys.schemas s ON fk.schema_id = s.schema_id;";
 
                         using (var command = new SqlCommand(fkQuery, connection))
-                        using (var reader = await command.ExecuteReaderAsync())
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync(cancellationToken))
                             {
                                 report.SchemaDependencies.Add(new SchemaDependencyInfo
                                 {
@@ -438,9 +439,9 @@ namespace CollationModifier.Services
                             JOIN sys.schemas s ON chk.schema_id = s.schema_id;";
 
                         using (var command = new SqlCommand(checkQuery, connection))
-                        using (var reader = await command.ExecuteReaderAsync())
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync(cancellationToken))
                             {
                                 report.SchemaDependencies.Add(new SchemaDependencyInfo
                                 {
@@ -467,7 +468,7 @@ namespace CollationModifier.Services
             return report;
         }
 
-        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
             try
@@ -475,13 +476,12 @@ namespace CollationModifier.Services
                 // Note: The backupDirectory must exist on the SQL Server machine, not the client running this app.
                 var safeDbName = EscapeIdentifier(databaseName);
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                // Clean the database name for file path safety
                 var safeFileName = string.Join("_", databaseName.Split(Path.GetInvalidFileNameChars()));
                 var backupFile = Path.Combine(backupDirectory, $"{safeFileName}_{timestamp}.bak");
 
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
                     await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
                 }
@@ -532,9 +532,8 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task AlterCollationAsync(string databaseName, string newCollation)
+        public virtual async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
-            // Validate the collation to prevent SQL Injection
             if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
             {
                 throw new ArgumentException("Invalid collation name format. Only alphanumeric characters and underscores are allowed.");

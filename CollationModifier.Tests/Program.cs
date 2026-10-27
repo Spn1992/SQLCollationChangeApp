@@ -15,7 +15,6 @@ namespace CollationModifier.Tests
             int failed = 0;
 
             Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
-
             try
             {
                 await TestHighFrequencyConcurrentLoggingWithoutDataLoss();

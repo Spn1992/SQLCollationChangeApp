@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace CollationModifier.Tests
@@ -13,6 +14,7 @@ namespace CollationModifier.Tests
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
+        public List<string> CollationsToReturn { get; set; } = new();
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
@@ -30,8 +32,9 @@ namespace CollationModifier.Tests
 
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
-        public Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             GetDatabasesCount++;
             if (ThrowOnGetDatabases)
             {
@@ -64,14 +67,20 @@ namespace CollationModifier.Tests
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
+            cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
             return Task.FromResult(PreflightReportToReturn);
         }
 
-        public Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
         {
+            if (OnBackupDatabase != null)
+            {
+                await OnBackupDatabase(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             BackupCount++;
-            return Task.FromResult("/tmp/mock.bak");
+            return "/tmp/mock.bak";
         }
 
         public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
@@ -92,6 +101,11 @@ namespace CollationModifier.Tests
 
         public async Task AlterCollationAsync(string databaseName, string newCollation)
         {
+            if (OnAlterCollation != null)
+            {
+                await OnAlterCollation(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
             AlterCollationCount++;
             LastAlteredDatabase = databaseName;
             LastTargetCollation = newCollation;
