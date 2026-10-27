@@ -136,6 +136,7 @@ namespace CollationModifier.ViewModels
         public bool CanEditSqlCredentials => CanEditConnectionParameters && IsSqlServerAuth;
 
         // Dashboard Properties
+        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
         public ObservableCollection<string> SupportedCollations { get; }
 
@@ -171,6 +172,32 @@ namespace CollationModifier.ViewModels
         #endregion
 
         #region Helpers
+
+        private static string FormatExceptionMessage(Exception ex)
+        {
+            if (ex is AggregateException aggEx)
+            {
+                var messages = aggEx.Flatten().InnerExceptions.Select(e => e.Message);
+                return string.Join(" | ", messages);
+            }
+            return ex.Message;
+        }
+
+        private static bool IsSingleUserLockState(Exception ex)
+        {
+            if (ex is AggregateException aggEx)
+            {
+                foreach (var inner in aggEx.Flatten().InnerExceptions)
+                {
+                    if (IsSingleUserLockState(inner)) return true;
+                }
+            }
+            if (ex == null || string.IsNullOrEmpty(ex.Message)) return false;
+            var msg = ex.Message;
+            return msg.IndexOf("SINGLE_USER", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   msg.IndexOf("reset failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
 
         private void InvalidateRequerySuggested()
         {
@@ -367,23 +394,42 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogError("Process collation change failed.", ex);
 
+                string formattedError = FormatExceptionMessage(ex);
+                bool isSingleUser = IsSingleUserLockState(ex);
+
                 if (backupFile != null)
                 {
-                    StatusMessage = $"Process failed: {ex.Message}. Attempting to restore from backup...";
+                    StatusMessage = $"Process failed: {formattedError}. Attempting to restore from backup...";
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
-                        StatusMessage = $"Process failed: {ex.Message}. Database restored successfully.";
+                        if (ex is AggregateException)
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                        }
+                        else
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
+                        }
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}";
+                        bool isSingleUserLocked = ex is AggregateException || restoreEx is AggregateException;
+                        string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
+                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}.{lockWarning}";
                     }
                 }
                 else
                 {
-                    StatusMessage = $"Process failed before backup: {ex.Message}";
+                    if (ex is AggregateException)
+                    {
+                        StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                    }
+                    else
+                    {
+                        StatusMessage = $"Process failed before backup: {ex.Message}";
+                    }
                 }
             }
             finally
