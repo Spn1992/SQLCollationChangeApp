@@ -1,4 +1,5 @@
 using CollationModifier.Collections;
+using CollationModifier.Exceptions;
 using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
@@ -33,6 +34,7 @@ namespace CollationModifier.ViewModels
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            SupportedCollations = new ObservableRangeCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -117,6 +119,7 @@ namespace CollationModifier.ViewModels
 
         // Dashboard Properties
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
+        public ObservableRangeCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -198,6 +201,7 @@ namespace CollationModifier.ViewModels
                     }
 
                     await LoadDatabasesAsync();
+                    await LoadCollationsAsync();
                     StatusMessage = "Ready";
                 }
                 else
@@ -231,6 +235,24 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        private async Task LoadCollationsAsync()
+        {
+            try
+            {
+                var collations = await _databaseService.GetSupportedCollationsAsync();
+                SupportedCollations.Clear();
+                foreach (var collation in collations)
+                {
+                    SupportedCollations.Add(collation);
+                }
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to load supported collations.", ex);
+            }
+        }
+
         private bool CanProcessCollationChange()
         {
             return IsConnected && !IsBusy && SelectedDatabase != null && !string.IsNullOrWhiteSpace(TargetCollation);
@@ -246,9 +268,15 @@ namespace CollationModifier.ViewModels
 
             try
             {
-                // 1. Pre-flight
+                // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                if (preflightReport.HasBlockingConditions)
+                {
+                    var summary = preflightReport.GetDiagnosticSummary();
+                    _logger.LogWarning($"Pre-flight validation failed for {SelectedDatabase.Name}:\n{summary}");
+                    throw new PreflightValidationException(preflightReport);
+                }
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
