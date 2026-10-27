@@ -90,7 +90,7 @@
                                    Foreground="#64748B" FontSize="16" />
                     </Border>
 
-                    <StackPanel>
+                    <StackPanel IsEnabled="{Binding IsConnected}">
                         <Label Content="Database Operations" Style="{StaticResource CardHeader}" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->

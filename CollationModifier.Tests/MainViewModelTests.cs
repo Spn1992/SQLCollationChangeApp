@@ -25,7 +25,9 @@ namespace CollationModifier.Tests
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public Task<bool> TestConnectionAsync() => Task.FromResult(true);
+        public virtual Task<bool> TestConnectionAsync() => Task.FromResult(true);
+
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
         public Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
@@ -116,6 +118,11 @@ namespace CollationModifier.Tests
             }
             return Task.CompletedTask;
         }
+    }
+
+    public class FailingMockDatabaseService : MockDatabaseService
+    {
+        public override Task<bool> TestConnectionAsync() => Task.FromResult(false);
     }
 
     public static class MainViewModelTestsRunner
@@ -286,6 +293,40 @@ namespace CollationModifier.Tests
                 Assert(mockService.GetDatabasesCount == getDatabasesCallCountAfterLoad, "GetDatabasesAsync was unexpectedly called during collation change!");
                 Assert(mockService.AlterCollationCount == 1, "AlterCollationCount expected to be 1");
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
+            });
+
+            RunSyncTest("MainViewModel_IsConnected_DefaultsToFalse_AndNotifiesPropertyChanged", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(vm.IsConnected == false, "Expected IsConnected to default to false");
+
+                string? notifiedProperty = null;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    notifiedProperty = args.PropertyName;
+                };
+
+                vm.IsConnected = true;
+
+                Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
+                Assert(notifiedProperty == nameof(MainViewModel.IsConnected), $"Expected PropertyChanged for 'IsConnected', got '{notifiedProperty}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                Assert(vm.IsConnected == false, "IsConnected should be false initially");
+
+                await vm.ConnectAsync();
+                Assert(vm.IsConnected == true, "IsConnected should be true after successful connect");
+
+                // Test failure
+                var failingService = new FailingMockDatabaseService();
+                var failingVm = new MainViewModel(failingService);
+                await failingVm.ConnectAsync();
+                Assert(failingVm.IsConnected == false, "IsConnected should be false after failed connect");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>

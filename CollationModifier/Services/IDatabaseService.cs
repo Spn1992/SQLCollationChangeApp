@@ -11,6 +11,8 @@ namespace CollationModifier.Services
         Task<List<DatabaseInfo>> GetDatabasesAsync();
         Task<List<string>> GetSupportedCollationsAsync();
         Task<string?> GetDefaultBackupDirectoryAsync();
+        Task<List<DatabaseInfo>> GetDatabasesAsync();
+        Task<List<string>> GetSupportedCollationsAsync();
         Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "");
         Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory);
         Task RestoreDatabaseAsync(string databaseName, string backupFile);
