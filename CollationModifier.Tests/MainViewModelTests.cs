@@ -30,6 +30,8 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_CI_AS" });
+
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
