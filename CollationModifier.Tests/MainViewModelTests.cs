@@ -16,6 +16,7 @@ namespace CollationModifier.Tests
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
         public List<string> CollationsToReturn { get; set; } = new();
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
+        public bool ThrowOnGetDatabases { get; set; }
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
@@ -140,8 +141,9 @@ namespace CollationModifier.Tests
         {
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
+            int failed = 0;
 
-            await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
+            RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
                 var db = new DatabaseInfo
                 {
@@ -531,7 +533,7 @@ namespace CollationModifier.Tests
                 }
             }
 
-            Task RunSyncTest(string name, Action testAction)
+            void RunSyncTest(string name, Action testAction)
             {
                 try
                 {
@@ -543,7 +545,6 @@ namespace CollationModifier.Tests
                     Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
                     failed++;
                 }
-                return Task.CompletedTask;
             }
 
             void Assert(bool condition, string message)

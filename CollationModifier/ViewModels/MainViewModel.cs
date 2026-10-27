@@ -97,8 +97,22 @@ namespace CollationModifier.ViewModels
             get => _selectedAuthenticationType;
             set
             {
-                SetProperty(ref _selectedAuthenticationType, value);
-                OnPropertyChanged(nameof(IsSqlServerAuth));
+                string previous = _selectedAuthenticationType;
+                if (SetProperty(ref _selectedAuthenticationType, value))
+                {
+                    OnPropertyChanged(nameof(IsSqlServerAuth));
+                    if (!string.IsNullOrEmpty(previous) && previous != value)
+                    {
+                        if (value == "SQL Server Authentication")
+                        {
+                            StatusMessage = "SQL Server Authentication selected. Username and Password fields enabled.";
+                        }
+                        else if (value == "Windows Authentication")
+                        {
+                            StatusMessage = "Windows Authentication selected. Username and Password fields disabled.";
+                        }
+                    }
+                }
             }
         }
 
