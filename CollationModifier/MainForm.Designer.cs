@@ -80,6 +80,7 @@ namespace CollationModifier
             this.progressBar});
             this.statusStrip.Location = new System.Drawing.Point(0, 604);
             this.statusStrip.Name = "statusStrip";
+            this.statusStrip.ShowItemToolTips = true;
             this.statusStrip.Size = new System.Drawing.Size(900, 22);
             this.statusStrip.TabIndex = 0;
             this.statusStrip.Text = "statusStrip";
@@ -90,6 +91,7 @@ namespace CollationModifier
             this.statusLabel.Size = new System.Drawing.Size(783, 17);
             this.statusLabel.Spring = true;
             this.statusLabel.Text = "Ready";
+            this.statusLabel.ToolTipText = "Ready";
             this.statusLabel.TextAlign = System.Drawing.ContentAlignment.MiddleLeft;
             // 
             // progressBar

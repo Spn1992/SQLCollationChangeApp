@@ -107,10 +107,16 @@ namespace CollationModifier
             progressBar.Visible = _isBusy;
         }
 
+        private void SetStatus(string text, string? toolTipText = null)
+        {
+            statusLabel.Text = text;
+            statusLabel.ToolTipText = toolTipText ?? text;
+        }
+
         private async void btnConnect_Click(object sender, EventArgs e)
         {
             _isBusy = true;
-            statusLabel.Text = "Connecting to server...";
+            SetStatus("Connecting to server...");
             UpdateUIState();
 
             string server = txtServerName.Text.Trim();
@@ -128,20 +134,21 @@ namespace CollationModifier
                 if (success)
                 {
                     _isConnected = true;
-                    statusLabel.Text = "Connected successfully. Fetching databases...";
+                    SetStatus("Connected successfully. Fetching databases...");
                     await LoadDatabasesAsync();
-                    statusLabel.Text = "Ready";
+                    SetStatus("Ready");
                 }
                 else
                 {
                     _isConnected = false;
-                    statusLabel.Text = "Connection failed. Check credentials and server name.";
+                    SetStatus("Connection failed. Check credentials and server name.");
                 }
             }
             catch (Exception ex)
             {
                 _isConnected = false;
-                statusLabel.Text = $"Error: {ex.Message}";
+                var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
+                SetStatus(statusText, toolTipText);
             }
             finally
             {
@@ -168,7 +175,8 @@ namespace CollationModifier
             }
             catch (Exception ex)
             {
-                statusLabel.Text = $"Failed to load databases: {ex.Message}";
+                var (statusText, toolTipText) = ErrorFormattingHelper.FormatLoadDatabasesError(ex);
+                SetStatus(statusText, toolTipText);
             }
         }
 
@@ -187,18 +195,18 @@ namespace CollationModifier
             try
             {
                 // 1. Pre-flight
-                statusLabel.Text = "Running pre-flight checks...";
+                SetStatus("Running pre-flight checks...");
                 await _databaseService.PreflightCheckAsync(selectedDb.Name);
 
                 // 2. Automated Backup
-                statusLabel.Text = "Starting automated backup...";
+                SetStatus("Starting automated backup...");
                 backupFile = await _databaseService.BackupDatabaseAsync(selectedDb.Name, backupDir);
 
                 // 3. Execution Phase
-                statusLabel.Text = "Altering database collation... This may take a while.";
+                SetStatus("Altering database collation... This may take a while.");
                 await _databaseService.AlterCollationAsync(selectedDb.Name, targetCollation);
 
-                statusLabel.Text = "Collation changed successfully!";
+                SetStatus("Collation changed successfully!");
                 _logger.LogInfo($"Collation change process completed successfully for {selectedDb.Name}");
 
                 // Refresh data
@@ -217,27 +225,112 @@ namespace CollationModifier
 
                 if (backupFile != null)
                 {
-                    statusLabel.Text = $"Process failed: {ex.Message}. Attempting to restore from backup...";
+                    var (restoringStatus, restoringToolTip, _) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreAttempted: false);
+                    SetStatus(restoringStatus, restoringToolTip);
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(selectedDb.Name, backupFile);
-                        statusLabel.Text = $"Process failed: {ex.Message}. Database restored successfully.";
+                        var (restoredStatus, restoredToolTip, dialogMsg) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreAttempted: true);
+                        SetStatus(restoredStatus, restoredToolTip);
+                        MessageBox.Show(this, dialogMsg, "Collation Change Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        statusLabel.Text = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}";
+                        var (failStatus, failToolTip, dialogMsg) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: restoreEx, restoreAttempted: true);
+                        SetStatus(failStatus, failToolTip);
+                        MessageBox.Show(this, dialogMsg, "Collation Change Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
                 else
                 {
-                    statusLabel.Text = $"Process failed before backup: {ex.Message}";
+                    var (noBackupStatus, noBackupToolTip, dialogMsg) = ErrorFormattingHelper.FormatProcessError(ex, backupFile: null);
+                    SetStatus(noBackupStatus, noBackupToolTip);
+                    MessageBox.Show(this, dialogMsg, "Collation Change Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
             finally
             {
                 _isBusy = false;
                 UpdateUIState();
+            }
+        }
+    }
+
+    public static class ErrorFormattingHelper
+    {
+        public static string GetSafeErrorMessage(Exception? ex)
+        {
+            if (ex == null) return "An unknown error occurred.";
+
+            string message = ex.Message;
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                message = ex.GetType().Name;
+            }
+
+            if (ex.InnerException != null && !string.IsNullOrWhiteSpace(ex.InnerException.Message))
+            {
+                message += $" ({ex.InnerException.Message})";
+            }
+
+            return message;
+        }
+
+        public static (string StatusText, string ToolTipText) FormatConnectionError(Exception ex)
+        {
+            string details = GetSafeErrorMessage(ex);
+            return ("Connection error occurred.", $"Error: {details}");
+        }
+
+        public static (string StatusText, string ToolTipText) FormatLoadDatabasesError(Exception ex)
+        {
+            string details = GetSafeErrorMessage(ex);
+            return ("Failed to load databases.", $"Failed to load databases: {details}");
+        }
+
+        public static (string StatusText, string ToolTipText, string DialogMessage) FormatProcessError(Exception ex, string? backupFile, Exception? restoreEx = null, bool restoreAttempted = false)
+        {
+            string primaryError = GetSafeErrorMessage(ex);
+
+            if (backupFile != null)
+            {
+                if (restoreAttempted)
+                {
+                    if (restoreEx != null)
+                    {
+                        string restoreError = GetSafeErrorMessage(restoreEx);
+                        return (
+                            "Process failed. Auto-restore failed.",
+                            $"Process failed: {primaryError}. CRITICAL: Auto-restore also failed: {restoreError}",
+                            $"Process failed: {primaryError}\n\nCRITICAL: Auto-restore from backup also failed: {restoreError}"
+                        );
+                    }
+                    else
+                    {
+                        return (
+                            "Process failed. Database restored successfully.",
+                            $"Process failed: {primaryError}. Database restored successfully.",
+                            $"Process failed: {primaryError}\n\nDatabase was restored successfully from backup."
+                        );
+                    }
+                }
+                else
+                {
+                    return (
+                        "Process failed. Restoring from backup...",
+                        $"Process failed: {primaryError}. Attempting to restore from backup...",
+                        ""
+                    );
+                }
+            }
+            else
+            {
+                return (
+                    "Process failed before backup.",
+                    $"Process failed before backup: {primaryError}",
+                    $"Process failed before backup: {primaryError}"
+                );
             }
         }
     }
