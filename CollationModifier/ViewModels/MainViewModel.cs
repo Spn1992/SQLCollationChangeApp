@@ -4,6 +4,7 @@ using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -32,9 +33,10 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
-            SupportedCollations = new ObservableRangeCollection<string>();
+            SupportedCollations = new ObservableCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -59,9 +61,12 @@ namespace CollationModifier.ViewModels
             get => _isBusy;
             set
             {
-                SetProperty(ref _isBusy, value);
-                OnPropertyChanged(nameof(IsNotBusy));
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _isBusy, value))
+                {
+                    OnPropertyChanged(nameof(IsNotBusy));
+                    OnPropertyChanged(nameof(CanEditConnection));
+                    InvalidateRequerySuggested();
+                }
             }
         }
         public bool IsNotBusy => !IsBusy;
@@ -114,12 +119,19 @@ namespace CollationModifier.ViewModels
         public bool IsConnected
         {
             get => _isConnected;
-            set => SetProperty(ref _isConnected, value);
+            set
+            {
+                if (SetProperty(ref _isConnected, value))
+                {
+                    OnPropertyChanged(nameof(CanEditConnection));
+                }
+            }
         }
 
         // Dashboard Properties
+        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
-        public ObservableRangeCollection<string> SupportedCollations { get; }
+        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -154,6 +166,32 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
+        private static string FormatExceptionMessage(Exception ex)
+        {
+            if (ex is AggregateException aggEx)
+            {
+                var messages = aggEx.Flatten().InnerExceptions.Select(e => e.Message);
+                return string.Join(" | ", messages);
+            }
+            return ex.Message;
+        }
+
+        private static bool IsSingleUserLockState(Exception ex)
+        {
+            if (ex is AggregateException aggEx)
+            {
+                foreach (var inner in aggEx.Flatten().InnerExceptions)
+                {
+                    if (IsSingleUserLockState(inner)) return true;
+                }
+            }
+            if (ex == null || string.IsNullOrEmpty(ex.Message)) return false;
+            var msg = ex.Message;
+            return msg.IndexOf("SINGLE_USER", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   msg.IndexOf("reset failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         private void InvalidateRequerySuggested()
         {
             try
@@ -172,9 +210,60 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand OpenLogCommand { get; }
+
+        public void OpenLogFile()
+        {
+            try
+            {
+                string logPath = _logger.LogFilePath;
+                if (File.Exists(logPath))
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = logPath,
+                        UseShellExecute = true
+                    });
+                }
+                else
+                {
+                    string? directory = Path.GetDirectoryName(logPath);
+                    if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
+                    {
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = directory,
+                            UseShellExecute = true
+                        });
+                    }
+                    else
+                    {
+                        StatusMessage = "Log file does not exist yet.";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to open log file.", ex);
+                StatusMessage = $"Unable to open log file: {ex.Message}";
+            }
+        }
+
+        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
+            if (IsConnected)
+            {
+                IsConnected = false;
+                Databases.Clear();
+                SupportedCollations.Clear();
+                SelectedDatabase = null;
+                StatusMessage = "Disconnected.";
+                _logger.LogInfo("Disconnected from server.");
+                return;
+            }
+
             IsBusy = true;
             StatusMessage = "Connecting to server...";
             _logger.LogInfo($"Attempting to connect to server: {ServerName} using {SelectedAuthenticationType}");
@@ -186,7 +275,6 @@ namespace CollationModifier.ViewModels
 
                 if (success)
                 {
-                    IsConnected = true;
                     StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
 
                     string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
@@ -200,9 +288,17 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    await LoadDatabasesAsync();
-                    await LoadCollationsAsync();
-                    StatusMessage = "Ready";
+                    bool dbLoaded = await LoadDatabasesAsync();
+                    if (dbLoaded)
+                    {
+                        IsConnected = true;
+                        await LoadCollationsAsync();
+                        StatusMessage = "Ready";
+                    }
+                    else
+                    {
+                        IsConnected = false;
+                    }
                 }
                 else
                 {
@@ -221,17 +317,21 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync()
         {
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync();
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
+                return true;
             }
             catch (Exception ex)
             {
+                Databases.Clear();
+                _logger.LogError("Failed to load databases.", ex);
                 StatusMessage = $"Failed to load databases: {ex.Message}";
+                return false;
             }
         }
 
@@ -296,23 +396,42 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogError("Process collation change failed.", ex);
 
+                string formattedError = FormatExceptionMessage(ex);
+                bool isSingleUser = IsSingleUserLockState(ex);
+
                 if (backupFile != null)
                 {
-                    StatusMessage = $"Process failed: {ex.Message}. Attempting to restore from backup...";
+                    StatusMessage = $"Process failed: {formattedError}. Attempting to restore from backup...";
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
-                        StatusMessage = $"Process failed: {ex.Message}. Database restored successfully.";
+                        if (ex is AggregateException)
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                        }
+                        else
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
+                        }
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}";
+                        bool isSingleUserLocked = ex is AggregateException || restoreEx is AggregateException;
+                        string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
+                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}.{lockWarning}";
                     }
                 }
                 else
                 {
-                    StatusMessage = $"Process failed before backup: {ex.Message}";
+                    if (ex is AggregateException)
+                    {
+                        StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                    }
+                    else
+                    {
+                        StatusMessage = $"Process failed before backup: {ex.Message}";
+                    }
                 }
             }
             finally
