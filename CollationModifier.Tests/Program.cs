@@ -11,8 +11,20 @@ namespace CollationModifier.Tests
     {
         static async Task<int> Main(string[] args)
         {
-            Console.WriteLine("=== Running LoggerService Async Queue Unit Tests ===");
+            Console.WriteLine("=== Running CollationModifier Unit Tests ===");
             int failed = 0;
+
+            try
+            {
+                await MainViewModelTestsRunner.RunAllTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                failed++;
+            }
+
+            Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
 
             try
             {
@@ -168,6 +180,23 @@ namespace CollationModifier.Tests
                 // Wait briefly for background loop to attempt write and handle exception
                 await Task.Delay(200);
             } // Dispose should complete without crashing
+        }
+
+        static void TestLogFilePathProperty()
+        {
+            using (var logger = new LoggerService())
+            {
+                string path = logger.LogFilePath;
+                Assert(!string.IsNullOrWhiteSpace(path), "LogFilePath should not be empty");
+                string appDataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                Assert(path.Contains("CollationModifier") || path.Contains(appDataFolder), "LogFilePath should be inside ApplicationData CollationModifier folder");
+            }
+
+            string customPath = Path.Combine(Path.GetTempPath(), "custom_log_test.log");
+            using (var customLogger = new LoggerService(customPath))
+            {
+                Assert(customLogger.LogFilePath == customPath, "LogFilePath should match custom log path");
+            }
         }
 
         static void Assert(bool condition, string message)
