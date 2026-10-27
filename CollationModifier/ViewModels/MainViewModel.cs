@@ -198,6 +198,7 @@ namespace CollationModifier.ViewModels
                     }
 
                     await LoadDatabasesAsync();
+                    await LoadCollationsAsync();
                     StatusMessage = "Ready";
                 }
                 else
@@ -228,6 +229,24 @@ namespace CollationModifier.ViewModels
             catch (Exception ex)
             {
                 StatusMessage = $"Failed to load databases: {ex.Message}";
+            }
+        }
+
+        private async Task LoadCollationsAsync()
+        {
+            try
+            {
+                var collations = await _databaseService.GetSupportedCollationsAsync();
+                SupportedCollations.Clear();
+                foreach (var collation in collations)
+                {
+                    SupportedCollations.Add(collation);
+                }
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to load supported collations.", ex);
             }
         }
 
