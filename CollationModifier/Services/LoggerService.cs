@@ -20,6 +20,11 @@ namespace CollationModifier.Services
             Log("INFO", message);
         }
 
+        public void LogWarning(string message)
+        {
+            Log("WARN", message);
+        }
+
         public void LogError(string message, Exception? ex = null)
         {
             Log("ERROR", $"{message}{(ex != null ? $" Exception: {ex.Message}\nStackTrace: {ex.StackTrace}" : "")}");
