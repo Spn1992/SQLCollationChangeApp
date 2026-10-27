@@ -182,6 +182,23 @@ namespace CollationModifier.Tests
             } // Dispose should complete without crashing
         }
 
+        static void TestLogFilePathProperty()
+        {
+            using (var logger = new LoggerService())
+            {
+                string path = logger.LogFilePath;
+                Assert(!string.IsNullOrWhiteSpace(path), "LogFilePath should not be empty");
+                string appDataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                Assert(path.Contains("CollationModifier") || path.Contains(appDataFolder), "LogFilePath should be inside ApplicationData CollationModifier folder");
+            }
+
+            string customPath = Path.Combine(Path.GetTempPath(), "custom_log_test.log");
+            using (var customLogger = new LoggerService(customPath))
+            {
+                Assert(customLogger.LogFilePath == customPath, "LogFilePath should match custom log path");
+            }
+        }
+
         static void Assert(bool condition, string message)
         {
             if (!condition)
