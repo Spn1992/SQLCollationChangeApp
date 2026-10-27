@@ -184,7 +184,19 @@ namespace CollationModifier.ViewModels
                 if (success)
                 {
                     IsConnected = true;
-                    StatusMessage = "Connected successfully. Fetching databases...";
+                    StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
+
+                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync();
+                    if (!string.IsNullOrWhiteSpace(serverBackupPath))
+                    {
+                        BackupDirectory = serverBackupPath;
+                        _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {serverBackupPath}");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
+                    }
+
                     await LoadDatabasesAsync();
                     StatusMessage = "Ready";
                 }
@@ -236,7 +248,7 @@ namespace CollationModifier.ViewModels
             {
                 // 1. Pre-flight
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name);
+                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";

@@ -103,8 +103,115 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public virtual async Task PreflightCheckAsync(string databaseName)
+        public async Task<string?> GetDefaultBackupDirectoryAsync()
         {
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+
+                    var query = @"
+                        DECLARE @path NVARCHAR(4000) = NULL;
+
+                        BEGIN TRY
+                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
+                        END TRY
+                        BEGIN CATCH
+                        END CATCH;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        SELECT ISNULL(@path, '') AS DefaultBackupPath;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        var result = await command.ExecuteScalarAsync();
+                        if (result != null && result != DBNull.Value)
+                        {
+                            var backupPath = result.ToString()?.Trim();
+                            if (!string.IsNullOrWhiteSpace(backupPath))
+                            {
+                                _logger.LogInfo($"Retrieved SQL Server default backup path: {backupPath}");
+                                return backupPath;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to retrieve default backup directory from server.", ex);
+            }
+
+            return null;
+        }
+
+        public static void ValidateBackupDirectoryPath(string backupDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(backupDirectory))
+            {
+                throw new ArgumentException("Backup directory path cannot be empty or whitespace.");
+            }
+
+            string trimmedPath = backupDirectory.Trim();
+
+            char[] invalidChars = new char[] { '|', '<', '>', '"', '?', '*' };
+            if (trimmedPath.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || trimmedPath.IndexOfAny(invalidChars) >= 0)
+            {
+                throw new ArgumentException($"Backup directory path contains invalid path characters: '{backupDirectory}'");
+            }
+
+            bool isWindowsDrive = System.Text.RegularExpressions.Regex.IsMatch(trimmedPath, @"^[a-zA-Z]:[\\/]");
+            bool isUncShare = trimmedPath.StartsWith(@"\\") || trimmedPath.StartsWith("//");
+            bool isLinuxRoot = trimmedPath.StartsWith("/");
+
+            if (!isWindowsDrive && !isUncShare && !isLinuxRoot && !Path.IsPathRooted(trimmedPath))
+            {
+                throw new ArgumentException($"Backup directory '{backupDirectory}' must be a valid absolute path or UNC share on the target SQL Server host.");
+            }
+        }
+
+        public async Task PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        {
+            if (!string.IsNullOrWhiteSpace(backupDirectory))
+            {
+                ValidateBackupDirectoryPath(backupDirectory);
+            }
+
             var safeDbName = databaseName.Replace("]", "]]");
             try
             {
@@ -149,6 +256,7 @@ namespace CollationModifier.Services
 
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
         {
+            ValidateBackupDirectoryPath(backupDirectory);
             try
             {
                 // Note: The backupDirectory must exist on the SQL Server machine, not the client running this app.
@@ -189,26 +297,17 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    // To restore, we must be in master and ensure exclusive access
-                    var commands = new[]
-                    {
-                        $"USE [master];",
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch restore workflow statements into a single command to minimize network roundtrips
+                    var query = $@"USE [master];
+ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            command.CommandTimeout = 3600;
-                            if (cmdText.Contains("@BackupFile"))
-                            {
-                                command.Parameters.AddWithValue("@BackupFile", backupFile);
-                            }
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        command.Parameters.AddWithValue("@BackupFile", backupFile);
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -216,6 +315,8 @@ namespace CollationModifier.Services
             catch (Exception ex)
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
+                // Attempt emergency MULTI_USER reset if batch execution failed
+                await TrySetMultiUserAsync(databaseName);
                 throw;
             }
         }
@@ -236,21 +337,15 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync();
 
-                    var commands = new[]
-                    {
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch collation change statements into a single command to minimize network roundtrips
+                    var query = $@"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            // Collation change can take time
-                            command.CommandTimeout = 3600;
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
