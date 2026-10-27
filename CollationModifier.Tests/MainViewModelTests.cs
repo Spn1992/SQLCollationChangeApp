@@ -17,20 +17,47 @@ namespace CollationModifier.Tests
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
+        public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
+        public bool ShouldAlterCollationThrow { get; set; } = false;
+        public bool ShouldTrySetMultiUserFail { get; set; } = false;
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public Task<bool> TestConnectionAsync() => Task.FromResult(true);
+        public virtual Task<bool> TestConnectionAsync() => Task.FromResult(true);
+
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
         public Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
             GetDatabasesCount++;
+            if (ThrowOnGetDatabases)
+            {
+                throw new InvalidOperationException("Failed to reach database catalog.");
+            }
             return Task.FromResult(DatabasesToReturn);
         }
 
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+
+        public Exception? TrySetMultiUserExceptionToThrow { get; set; }
+        public Exception? AlterCollationExceptionToThrow { get; set; }
+        public Exception? RestoreExceptionToThrow { get; set; }
+
+        public Task TrySetMultiUserAsync(string databaseName)
+        {
+            if (TrySetMultiUserExceptionToThrow != null)
+            {
+                throw TrySetMultiUserExceptionToThrow;
+            }
+            return Task.CompletedTask;
+        }
+
+        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
@@ -44,15 +71,58 @@ namespace CollationModifier.Tests
             return Task.FromResult("/tmp/mock.bak");
         }
 
-        public Task RestoreDatabaseAsync(string databaseName, string backupFile) => Task.CompletedTask;
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        {
+            if (RestoreExceptionToThrow != null)
+            {
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException($"Restore failed for database '{databaseName}' and emergency MULTI_USER reset also failed. Database may remain in SINGLE_USER mode.", RestoreExceptionToThrow, resetEx);
+                }
+                throw RestoreExceptionToThrow;
+            }
+        }
 
-        public Task AlterCollationAsync(string databaseName, string newCollation)
+        public async Task AlterCollationAsync(string databaseName, string newCollation)
         {
             AlterCollationCount++;
             LastAlteredDatabase = databaseName;
             LastTargetCollation = newCollation;
+            if (ShouldAlterCollationThrow)
+            {
+                var primaryEx = new InvalidOperationException("Table constraint violation during collation alter.");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    throw new AggregateException(
+                        $"Failed to alter collation for database '{databaseName}' ({primaryEx.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        primaryEx, resetEx);
+                }
+                throw primaryEx;
+            }
+        }
+
+        public Task TrySetMultiUserAsync(string databaseName)
+        {
+            TrySetMultiUserCount++;
+            if (ShouldTrySetMultiUserFail)
+            {
+                throw new InvalidOperationException("Connection reset failed during emergency MULTI_USER command.");
+            }
             return Task.CompletedTask;
         }
+    }
+
+    public class FailingMockDatabaseService : MockDatabaseService
+    {
+        public override Task<bool> TestConnectionAsync() => Task.FromResult(false);
     }
 
     public static class MainViewModelTestsRunner
@@ -61,7 +131,7 @@ namespace CollationModifier.Tests
         {
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
-            RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
+            await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
                 var db = new DatabaseInfo
                 {
@@ -146,11 +216,61 @@ namespace CollationModifier.Tests
                     collectionChangedCount++;
                 };
 
-                await vm.LoadDatabasesAsync();
+                bool result = await vm.LoadDatabasesAsync();
 
+                Assert(result == true, "Expected LoadDatabasesAsync to return true");
                 Assert(collectionChangedCount == 1, $"Expected collectionChangedCount 1, got {collectionChangedCount}");
                 Assert(vm.Databases.Count == 3, $"Expected 3 databases in collection, got {vm.Databases.Count}");
                 Assert(mockService.GetDatabasesCount == 1, $"Expected GetDatabasesCount 1, got {mockService.GetDatabasesCount}");
+            });
+
+            await RunAsyncTest("LoadDatabasesAsync_WhenExceptionThrown_ClearsDatabasesAndReturnsFalse", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    ThrowOnGetDatabases = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.Databases.Add(new DatabaseInfo { Name = "OldDB" });
+
+                bool result = await vm.LoadDatabasesAsync();
+
+                Assert(result == false, "Expected LoadDatabasesAsync to return false on exception");
+                Assert(vm.Databases.Count == 0, $"Expected Databases to be cleared, but count was {vm.Databases.Count}");
+                Assert(vm.StatusMessage.Contains("Failed to load databases"), $"Expected StatusMessage to contain error details, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenLoadDatabasesFails_DefersIsConnectedToFalseAndPreservesErrorStatus", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    ThrowOnGetDatabases = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(vm.IsConnected == false, "Expected IsConnected to be false initially");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected == false, "Expected IsConnected to remain false when database load fails");
+                Assert(vm.StatusMessage.Contains("Failed to load databases"), $"Expected StatusMessage to retain database error, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenLoadDatabasesSucceeds_SetsIsConnectedToTrueAndStatusReady", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "DB1" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(vm.IsConnected == false, "Expected IsConnected to be false initially");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected == true, "Expected IsConnected to be true when connection and database load succeed");
+                Assert(vm.StatusMessage == "Ready", $"Expected StatusMessage to be 'Ready', got '{vm.StatusMessage}'");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_UpdatesCollationInMemory_WithoutCallingLoadDatabasesAsync", async () =>
@@ -162,6 +282,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 int getDatabasesCallCountAfterLoad = mockService.GetDatabasesCount;
 
@@ -183,6 +304,40 @@ namespace CollationModifier.Tests
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
             });
 
+            RunSyncTest("MainViewModel_IsConnected_DefaultsToFalse_AndNotifiesPropertyChanged", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(vm.IsConnected == false, "Expected IsConnected to default to false");
+
+                string? notifiedProperty = null;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    notifiedProperty = args.PropertyName;
+                };
+
+                vm.IsConnected = true;
+
+                Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
+                Assert(notifiedProperty == nameof(MainViewModel.IsConnected), $"Expected PropertyChanged for 'IsConnected', got '{notifiedProperty}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                Assert(vm.IsConnected == false, "IsConnected should be false initially");
+
+                await vm.ConnectAsync();
+                Assert(vm.IsConnected == true, "IsConnected should be true after successful connect");
+
+                // Test failure
+                var failingService = new FailingMockDatabaseService();
+                var failingVm = new MainViewModel(failingService);
+                await failingVm.ConnectAsync();
+                Assert(failingVm.IsConnected == false, "IsConnected should be false after failed connect");
+            });
+
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
             {
                 var initialDb = new DatabaseInfo { Name = "ActiveDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
@@ -199,6 +354,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 vm.SelectedDatabase = vm.Databases[0];
                 vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
@@ -227,6 +383,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 vm.SelectedDatabase = vm.Databases[0];
                 vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
@@ -259,6 +416,91 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_DisplaysExplicitWarning_WhenMultiUserResetFails", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "LockDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called during emergency recovery!");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include explicit SINGLE_USER lock warning, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Status message should include secondary reset failure details, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ConfirmsMultiUserRestored_WhenEmergencyResetSucceeds", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "RecoverDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called during recovery!");
+                Assert(vm.StatusMessage.Contains("Database restored to MULTI_USER mode successfully"), $"Status message should confirm MULTI_USER restoration, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ThrowsException_WhenConnectionFails", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                bool exceptionThrown = false;
+                try
+                {
+                    await dbService.TrySetMultiUserAsync("TestDB");
+                }
+                catch (Exception)
+                {
+                    exceptionThrown = true;
+                }
+
+                Assert(exceptionThrown, "TrySetMultiUserAsync must throw an exception when reset command fails (no swallowed exceptions).");
+            });
+
+            await RunAsyncTest("DatabaseService_AlterCollationAsync_RaisesAggregateException_WhenResetAlsoFails", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                AggregateException? caughtAggEx = null;
+                try
+                {
+                    await dbService.AlterCollationAsync("TestDB", "Latin1_General_100_CI_AS");
+                }
+                catch (AggregateException aggEx)
+                {
+                    caughtAggEx = aggEx;
+                }
+
+                Assert(caughtAggEx != null, "AlterCollationAsync must raise an AggregateException when both primary collation and emergency reset fail.");
+                Assert(caughtAggEx!.InnerExceptions.Count == 2, $"AggregateException should contain 2 inner exceptions (primary and reset failure), got {caughtAggEx.InnerExceptions.Count}.");
+                Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
+            });
+
             Console.WriteLine("\nTest Run Finished: All tests passed!");
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
@@ -271,11 +513,11 @@ namespace CollationModifier.Tests
                 catch (Exception ex)
                 {
                     Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    throw;
+                    failed++;
                 }
             }
 
-            void RunSyncTest(string name, Action testAction)
+            Task RunSyncTest(string name, Action testAction)
             {
                 try
                 {
@@ -285,8 +527,9 @@ namespace CollationModifier.Tests
                 catch (Exception ex)
                 {
                     Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    throw;
+                    failed++;
                 }
+                return Task.CompletedTask;
             }
 
             void Assert(bool condition, string message)

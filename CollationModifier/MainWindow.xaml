@@ -15,12 +15,17 @@
     <Grid>
         <!-- Status Bar at the bottom -->
         <Border Background="#E2E8F0" Height="30" VerticalAlignment="Bottom" Grid.ZIndex="10">
-            <StackPanel Orientation="Horizontal" Margin="10,0" VerticalAlignment="Center">
-                <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
-                <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
-                             AutomationProperties.Name="Operation Progress"
-                             Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
-            </StackPanel>
+            <DockPanel Margin="10,0">
+                <Button x:Name="btnOpenLog" Content="Open Log File" Command="{Binding OpenLogCommand}"
+                        DockPanel.Dock="Right" VerticalAlignment="Center" Height="22" Padding="8,2"
+                        AutomationProperties.Name="Open Log File" ToolTip="Open execution log file or folder" />
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
+                    <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
+                                 AutomationProperties.Name="Operation Progress"
+                                 Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                </StackPanel>
+            </DockPanel>
         </Border>
 
         <!-- Main Content Area -->
@@ -85,7 +90,7 @@
                                    Foreground="#64748B" FontSize="16" />
                     </Border>
 
-                    <StackPanel>
+                    <StackPanel IsEnabled="{Binding IsConnected}">
                         <Label Content="Database Operations" Style="{StaticResource CardHeader}" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->
@@ -142,6 +147,7 @@
                                 <TextBox x:Name="TargetCollationInput" Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
                                          AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
                                          AutomationProperties.Name="New Collation Name"
+                                         AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
                                          ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}" />
                             </StackPanel>
 
