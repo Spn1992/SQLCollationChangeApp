@@ -87,6 +87,7 @@ namespace CollationModifier.ViewModels
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
+        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
 
         private string _selectedAuthenticationType = string.Empty;
         public string SelectedAuthenticationType
@@ -129,9 +130,7 @@ namespace CollationModifier.ViewModels
         }
 
         // Dashboard Properties
-        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
-        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase

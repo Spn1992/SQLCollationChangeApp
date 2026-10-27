@@ -123,7 +123,6 @@ namespace CollationModifier
                 UpdateUIState();
                 return;
             }
-
             _isBusy = true;
             statusLabel.Text = "Connecting to server...";
             UpdateUIState();

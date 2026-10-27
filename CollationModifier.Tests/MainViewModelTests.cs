@@ -20,6 +20,7 @@ namespace CollationModifier.Tests
         public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
+        public bool ThrowOnGetDatabases { get; set; } = false;
         public bool ShouldAlterCollationThrow { get; set; } = false;
         public bool ShouldTrySetMultiUserFail { get; set; } = false;
 
@@ -42,7 +43,6 @@ namespace CollationModifier.Tests
         public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
@@ -50,14 +50,17 @@ namespace CollationModifier.Tests
 
         public Task TrySetMultiUserAsync(string databaseName)
         {
+            TrySetMultiUserCount++;
             if (TrySetMultiUserExceptionToThrow != null)
             {
                 throw TrySetMultiUserExceptionToThrow;
             }
+            if (ShouldTrySetMultiUserFail)
+            {
+                throw new InvalidOperationException("Connection reset failed during emergency MULTI_USER command.");
+            }
             return Task.CompletedTask;
         }
-
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
@@ -108,16 +111,6 @@ namespace CollationModifier.Tests
                 throw primaryEx;
             }
         }
-
-        public Task TrySetMultiUserAsync(string databaseName)
-        {
-            TrySetMultiUserCount++;
-            if (ShouldTrySetMultiUserFail)
-            {
-                throw new InvalidOperationException("Connection reset failed during emergency MULTI_USER command.");
-            }
-            return Task.CompletedTask;
-        }
     }
 
     public class FailingMockDatabaseService : MockDatabaseService
@@ -127,8 +120,11 @@ namespace CollationModifier.Tests
 
     public static class MainViewModelTestsRunner
     {
+        public static Task RunAllTestsAsync() => RunTestsAsync();
+
         public static async Task RunTestsAsync()
         {
+            int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
             await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
@@ -501,7 +497,11 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
             });
 
-            Console.WriteLine("\nTest Run Finished: All tests passed!");
+            Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
+            if (failed > 0)
+            {
+                throw new InvalidOperationException($"MainViewModel tests failed with {failed} failures.");
+            }
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
             {
