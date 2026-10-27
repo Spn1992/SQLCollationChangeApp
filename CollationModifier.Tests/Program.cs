@@ -47,6 +47,16 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            try
+            {
+                await MainViewModelTests.RunTests();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTests - {ex}");
+                failed++;
+            }
+
             if (failed == 0)
             {
                 Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");

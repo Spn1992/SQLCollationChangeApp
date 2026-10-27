@@ -8,8 +8,9 @@ namespace CollationModifier.Services
     {
         void SetConnectionString(string server, string authType, string username, string password);
         Task<bool> TestConnectionAsync();
+        Task<string?> GetDefaultBackupDirectoryAsync();
         Task<List<DatabaseInfo>> GetDatabasesAsync();
-        Task PreflightCheckAsync(string databaseName);
+        Task PreflightCheckAsync(string databaseName, string backupDirectory = "");
         Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory);
         Task RestoreDatabaseAsync(string databaseName, string backupFile);
         Task AlterCollationAsync(string databaseName, string newCollation);
