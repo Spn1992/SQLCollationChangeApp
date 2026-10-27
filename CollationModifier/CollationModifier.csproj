@@ -5,7 +5,7 @@
     <OutputType Condition="'$(OS)' != 'Windows_NT'">Library</OutputType>
     <TargetFramework Condition="'$(OS)' == 'Windows_NT'">net48</TargetFramework>
     <TargetFramework Condition="'$(OS)' != 'Windows_NT'">net8.0</TargetFramework>
-    <UseWPF Condition="'$(OS)' == 'Windows_NT'">true</UseWPF>
+    <UseWindowsForms Condition="'$(OS)' == 'Windows_NT'">true</UseWindowsForms>
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -24,6 +24,9 @@
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
     <Compile Remove="App.xaml.cs" />
     <Compile Remove="MainWindow.xaml.cs" />
+    <Compile Remove="MainForm.cs" />
+    <Compile Remove="MainForm.Designer.cs" />
+    <Compile Remove="Program.cs" />
     <Page Remove="App.xaml" />
     <Page Remove="MainWindow.xaml" />
   </ItemGroup>
