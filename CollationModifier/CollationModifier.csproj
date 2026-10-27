@@ -5,7 +5,7 @@
     <OutputType Condition="'$(OS)' != 'Windows_NT'">Library</OutputType>
     <TargetFramework Condition="'$(OS)' == 'Windows_NT'">net48</TargetFramework>
     <TargetFramework Condition="'$(OS)' != 'Windows_NT'">net8.0</TargetFramework>
-    <UseWPF Condition="'$(OS)' == 'Windows_NT'">true</UseWPF>
+    <UseWindowsForms Condition="'$(OS)' == 'Windows_NT'">true</UseWindowsForms>
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -17,11 +17,10 @@
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
-    <Reference Include="System.Configuration" />
-  </ItemGroup>
-
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
+    <Compile Remove="MainForm.cs" />
+    <Compile Remove="MainForm.Designer.cs" />
+    <Compile Remove="Program.cs" />
     <Compile Remove="App.xaml.cs" />
     <Compile Remove="MainWindow.xaml.cs" />
     <Page Remove="App.xaml" />
