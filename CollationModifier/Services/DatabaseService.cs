@@ -1,13 +1,13 @@
 using CollationModifier.Models;
 using System;
 using System.Collections.Generic;
-using System.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using System.IO;
 using System.Threading.Tasks;
 
 namespace CollationModifier.Services
 {
-    public class DatabaseService
+    public class DatabaseService : IDatabaseService
     {
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
@@ -17,13 +17,14 @@ namespace CollationModifier.Services
             _logger = logger;
         }
 
-        public void SetConnectionString(string server, string authType, string username, string password)
+        public virtual void SetConnectionString(string server, string authType, string username, string password)
         {
             var builder = new SqlConnectionStringBuilder
             {
                 DataSource = server,
                 InitialCatalog = "master",
-                ApplicationName = "CollationModifier"
+                ApplicationName = "CollationModifier",
+                TrustServerCertificate = true
             };
 
             if (authType == "Windows Authentication")
@@ -39,7 +40,7 @@ namespace CollationModifier.Services
             _connectionString = builder.ConnectionString;
         }
 
-        public async Task<bool> TestConnectionAsync()
+        public virtual async Task<bool> TestConnectionAsync()
         {
             try
             {
@@ -56,7 +57,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task<List<DatabaseInfo>> GetDatabasesAsync()
+        public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
             var databases = new List<DatabaseInfo>();
             try
@@ -72,8 +73,15 @@ namespace CollationModifier.Services
                             d.collation_name,
                             d.compatibility_level,
                             SUSER_SNAME(d.owner_sid) as owner,
-                            (SELECT SUM(CAST(size AS bigint)) * 8 / 1024 FROM sys.master_files WHERE database_id = d.database_id) as size_mb
+                            mf.size_mb
                         FROM sys.databases d
+                        LEFT JOIN (
+                            SELECT
+                                database_id,
+                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
+                            FROM sys.master_files
+                            GROUP BY database_id
+                        ) mf ON d.database_id = mf.database_id
                         WHERE d.database_id > 4";
 
                     using (var command = new SqlCommand(query, connection))
@@ -87,7 +95,7 @@ namespace CollationModifier.Services
                                 Collation = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
                                 CompatibilityLevel = reader.GetByte(2).ToString(),
                                 Owner = reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
-                                Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt32(4)} MB"
+                                Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt64(4)} MB"
                             });
                         }
                     }
@@ -102,52 +110,364 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        public async Task PreflightCheckAsync(string databaseName)
+        public virtual async Task<List<string>> GetSupportedCollationsAsync()
         {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
+        public async Task<string?> GetDefaultBackupDirectoryAsync()
+        {
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+
+                    var query = @"
+                        DECLARE @path NVARCHAR(4000) = NULL;
+
+                        BEGIN TRY
+                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
+                        END TRY
+                        BEGIN CATCH
+                        END CATCH;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        SELECT ISNULL(@path, '') AS DefaultBackupPath;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        var result = await command.ExecuteScalarAsync();
+                        if (result != null && result != DBNull.Value)
+                        {
+                            var backupPath = result.ToString()?.Trim();
+                            if (!string.IsNullOrWhiteSpace(backupPath))
+                            {
+                                _logger.LogInfo($"Retrieved SQL Server default backup path: {backupPath}");
+                                return backupPath;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to retrieve default backup directory from server.", ex);
+            }
+
+            return null;
+        }
+
+        public static void ValidateBackupDirectoryPath(string backupDirectory)
+        {
+            if (string.IsNullOrWhiteSpace(backupDirectory))
+            {
+                throw new ArgumentException("Backup directory path cannot be empty or whitespace.");
+            }
+
+            string trimmedPath = backupDirectory.Trim();
+
+            char[] invalidChars = new char[] { '|', '<', '>', '"', '?', '*' };
+            if (trimmedPath.IndexOfAny(Path.GetInvalidPathChars()) >= 0 || trimmedPath.IndexOfAny(invalidChars) >= 0)
+            {
+                throw new ArgumentException($"Backup directory path contains invalid path characters: '{backupDirectory}'");
+            }
+
+            bool isWindowsDrive = System.Text.RegularExpressions.Regex.IsMatch(trimmedPath, @"^[a-zA-Z]:[\\/]");
+            bool isUncShare = trimmedPath.StartsWith(@"\\") || trimmedPath.StartsWith("//");
+            bool isLinuxRoot = trimmedPath.StartsWith("/");
+
+            if (!isWindowsDrive && !isUncShare && !isLinuxRoot && !Path.IsPathRooted(trimmedPath))
+            {
+                throw new ArgumentException($"Backup directory '{backupDirectory}' must be a valid absolute path or UNC share on the target SQL Server host.");
+            }
+        }
+
+        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        {
+            var report = new PreflightReport
+            {
+                DatabaseName = databaseName
+            };
+
+            if (!string.IsNullOrWhiteSpace(backupDirectory))
+            {
+                try
+                {
+                    ValidateBackupDirectoryPath(backupDirectory);
+                }
+                catch (Exception ex)
+                {
+                    report.ValidationErrors.Add($"Invalid backup directory: {ex.Message}");
+                }
+            }
+
             var safeDbName = databaseName.Replace("]", "]]");
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    // Basic check to see if user has alter/backup/restore permissions
-                    // (Note: fn_my_permissions works on the current database context)
 
-                    var query = $@"
-                        USE [{safeDbName}];
-                        SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')
-                        WHERE permission_name IN ('BACKUP DATABASE', 'BACKUP LOG', 'ALTER');";
-
-                    var permissions = new List<string>();
-                    using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
+                    // 1. Check permissions in target database context
+                    try
                     {
-                        while (await reader.ReadAsync())
+                        var permQuery = $@"
+                            USE [{safeDbName}];
+                            SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')
+                            WHERE permission_name IN ('BACKUP DATABASE', 'BACKUP LOG', 'ALTER');";
+
+                        var permissions = new List<string>();
+                        using (var command = new SqlCommand(permQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync())
                         {
-                            permissions.Add(reader.GetString(0));
+                            while (await reader.ReadAsync())
+                            {
+                                permissions.Add(reader.GetString(0));
+                            }
+                        }
+
+                        if (!permissions.Contains("ALTER"))
+                        {
+                            report.MissingPermissions.Add("User does not have ALTER permission on the database.");
                         }
                     }
-
-                    if (!permissions.Contains("ALTER"))
+                    catch (Exception ex)
                     {
-                        throw new UnauthorizedAccessException($"User does not have ALTER permissions on database {databaseName}.");
+                        report.ValidationErrors.Add($"Failed to verify database permissions: {ex.Message}");
                     }
-                    if (!permissions.Contains("BACKUP DATABASE") && !permissions.Contains("BACKUP LOG")) // Sometimes backup log is needed or just backup db is enough depending on recovery model, but checking BACKUP DATABASE is primary
+
+                    // 2. Check active user sessions (excluding current connection context @@SPID)
+                    try
                     {
-                        // We will allow it to proceed as sysadmin might not explicitly show BACKUP DATABASE via fn_my_permissions sometimes depending on context,
-                        // but ideally we'd strictly enforce it here. For robustness, if they lack ALTER, we stop.
+                        var sessionsQuery = @"
+                            SELECT 
+                                s.session_id,
+                                ISNULL(s.login_name, '') as login_name,
+                                ISNULL(s.host_name, '') as host_name,
+                                ISNULL(s.program_name, '') as program_name,
+                                ISNULL(s.status, '') as status
+                            FROM sys.dm_exec_sessions s
+                            WHERE s.database_id = DB_ID(@DbName)
+                              AND s.session_id <> @@SPID
+                              AND s.is_user_process = 1;";
+
+                        using (var command = new SqlCommand(sessionsQuery, connection))
+                        {
+                            command.Parameters.AddWithValue("@DbName", databaseName);
+                            using (var reader = await command.ExecuteReaderAsync())
+                            {
+                                while (await reader.ReadAsync())
+                                {
+                                    report.ActiveSessions.Add(new ActiveSessionInfo
+                                    {
+                                        SessionId = reader.GetInt16(0),
+                                        LoginName = reader.GetString(1),
+                                        HostName = reader.GetString(2),
+                                        ProgramName = reader.GetString(3),
+                                        Status = reader.GetString(4)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning($"Failed to query active sessions: {ex.Message}");
+                    }
+
+                    // 3. Check schema dependencies in target database context
+                    try
+                    {
+                        using (var useCmd = new SqlCommand($"USE [{safeDbName}];", connection))
+                        {
+                            await useCmd.ExecuteNonQueryAsync();
+                        }
+
+                        // 3a. Schema-bound views / modules
+                        var schemaBoundQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                o.name AS object_name,
+                                o.type_desc AS object_type
+                            FROM sys.sql_modules m
+                            JOIN sys.objects o ON m.object_id = o.object_id
+                            JOIN sys.schemas s ON o.schema_id = s.schema_id
+                            WHERE m.is_schema_bound = 1;";
+
+                        using (var command = new SqlCommand(schemaBoundQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = reader.GetString(1),
+                                    ObjectType = "Schema-Bound Object",
+                                    Details = $"Definition is schema-bound ({reader.GetString(2)})."
+                                });
+                            }
+                        }
+
+                        // 3b. Computed columns
+                        var computedColsQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                t.name AS table_name,
+                                c.name AS column_name,
+                                ISNULL(c.definition, '') AS expression
+                            FROM sys.computed_columns c
+                            JOIN sys.tables t ON c.object_id = t.object_id
+                            JOIN sys.schemas s ON t.schema_id = s.schema_id;";
+
+                        using (var command = new SqlCommand(computedColsQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = $"{reader.GetString(1)}.{reader.GetString(2)}",
+                                    ObjectType = "Computed Column",
+                                    Details = $"Computed column expression: {reader.GetString(3)}"
+                                });
+                            }
+                        }
+
+                        // 3c. Foreign Keys
+                        var fkQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                fk.name AS constraint_name,
+                                t.name AS parent_table,
+                                rt.name AS referenced_table
+                            FROM sys.foreign_keys fk
+                            JOIN sys.tables t ON fk.parent_object_id = t.object_id
+                            JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
+                            JOIN sys.schemas s ON fk.schema_id = s.schema_id;";
+
+                        using (var command = new SqlCommand(fkQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = reader.GetString(1),
+                                    ObjectType = "Foreign Key Constraint",
+                                    Details = $"Table '{reader.GetString(2)}' references '{reader.GetString(3)}'."
+                                });
+                            }
+                        }
+
+                        // 3d. Check Constraints
+                        var checkQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                chk.name AS constraint_name,
+                                t.name AS table_name,
+                                ISNULL(chk.definition, '') AS expression
+                            FROM sys.check_constraints chk
+                            JOIN sys.tables t ON chk.parent_object_id = t.object_id
+                            JOIN sys.schemas s ON chk.schema_id = s.schema_id;";
+
+                        using (var command = new SqlCommand(checkQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = reader.GetString(1),
+                                    ObjectType = "Check Constraint",
+                                    Details = $"Check constraint on table '{reader.GetString(2)}': {reader.GetString(3)}"
+                                });
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        report.ValidationErrors.Add($"Failed to inspect database schema dependencies: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError($"Preflight check failed for {databaseName}", ex);
-                throw;
+                report.ValidationErrors.Add($"Database connection or pre-flight query error: {ex.Message}");
             }
+
+            return report;
         }
 
-        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
+        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory)
         {
+            ValidateBackupDirectoryPath(backupDirectory);
             try
             {
                 // Note: The backupDirectory must exist on the SQL Server machine, not the client running this app.
@@ -180,7 +500,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
         {
             var safeDbName = databaseName.Replace("]", "]]");
             try
@@ -188,26 +508,17 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    // To restore, we must be in master and ensure exclusive access
-                    var commands = new[]
-                    {
-                        $"USE [master];",
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch restore workflow statements into a single command to minimize network roundtrips
+                    var query = $@"USE [master];
+ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            command.CommandTimeout = 3600;
-                            if (cmdText.Contains("@BackupFile"))
-                            {
-                                command.Parameters.AddWithValue("@BackupFile", backupFile);
-                            }
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        command.Parameters.AddWithValue("@BackupFile", backupFile);
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -215,11 +526,13 @@ namespace CollationModifier.Services
             catch (Exception ex)
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
+                // Attempt emergency MULTI_USER reset if batch execution failed
+                await TrySetMultiUserAsync(databaseName);
                 throw;
             }
         }
 
-        public async Task AlterCollationAsync(string databaseName, string newCollation)
+        public virtual async Task AlterCollationAsync(string databaseName, string newCollation)
         {
             // Validate the collation to prevent SQL Injection
             if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
@@ -235,21 +548,15 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync();
 
-                    var commands = new[]
-                    {
-                        $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;",
-                        $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};",
-                        $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;"
-                    };
+                    // Batch collation change statements into a single command to minimize network roundtrips
+                    var query = $@"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
+ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-                    foreach (var cmdText in commands)
+                    using (var command = new SqlCommand(query, connection))
                     {
-                        using (var command = new SqlCommand(cmdText, connection))
-                        {
-                            // Collation change can take time
-                            command.CommandTimeout = 3600;
-                            await command.ExecuteNonQueryAsync();
-                        }
+                        command.CommandTimeout = 3600;
+                        await command.ExecuteNonQueryAsync();
                     }
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
