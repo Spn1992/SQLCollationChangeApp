@@ -10,7 +10,7 @@ using System.Windows.Input;
 
 namespace CollationModifier.ViewModels
 {
-    public class MainViewModel : ViewModelBase
+    public class MainViewModel : ViewModelBase, IDisposable
     {
         private readonly IDatabaseService _databaseService;
         private readonly LoggerService _logger;
@@ -294,5 +294,10 @@ namespace CollationModifier.ViewModels
         }
 
         #endregion
+
+        public void Dispose()
+        {
+            _logger?.Dispose();
+        }
     }
 }
