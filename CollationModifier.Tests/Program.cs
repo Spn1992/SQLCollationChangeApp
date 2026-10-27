@@ -47,6 +47,9 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            int vmFailed = await MainViewModelTestsRunner.RunTestsAsync();
+            failed += vmFailed;
+
             if (failed == 0)
             {
                 Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
