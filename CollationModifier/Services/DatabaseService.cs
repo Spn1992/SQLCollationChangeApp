@@ -219,6 +219,38 @@ namespace CollationModifier.Services
             return null;
         }
 
+        public virtual async Task<List<string>> GetSupportedCollationsAsync()
+        {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
         public static void ValidateBackupDirectoryPath(string backupDirectory)
         {
             if (string.IsNullOrWhiteSpace(backupDirectory))
@@ -263,7 +295,7 @@ namespace CollationModifier.Services
                 }
             }
 
-            var safeDbName = databaseName.Replace("]", "]]");
+            var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
@@ -471,7 +503,7 @@ namespace CollationModifier.Services
             try
             {
                 // Note: The backupDirectory must exist on the SQL Server machine, not the client running this app.
-                var safeDbName = databaseName.Replace("]", "]]");
+                var safeDbName = EscapeIdentifier(databaseName);
                 var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 // Clean the database name for file path safety
                 var safeFileName = string.Join("_", databaseName.Split(Path.GetInvalidFileNameChars()));
@@ -481,14 +513,7 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync();
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
-
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        // Needs longer timeout for backup
-                        command.CommandTimeout = 3600;
-                        command.Parameters.AddWithValue("@BackupFile", backupFile);
-                        await command.ExecuteNonQueryAsync();
-                    }
+                    await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
                 }
                 _logger.LogInfo($"Successfully backed up {databaseName} to {backupFile}");
                 return backupFile;
@@ -500,26 +525,51 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task<List<string>> GetSupportedCollationsAsync()
         {
-            var safeDbName = databaseName.Replace("]", "]]");
+            var collations = new List<string>();
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    // Batch restore workflow statements into a single command to minimize network roundtrips
-                    var query = $@"USE [master];
-ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;
-ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
 
                     using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync())
                     {
-                        command.CommandTimeout = 3600;
-                        command.Parameters.AddWithValue("@BackupFile", backupFile);
-                        await command.ExecuteNonQueryAsync();
+                        while (await reader.ReadAsync())
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
                     }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+                throw;
+            }
+
+            return collations;
+        }
+
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync();
+                    await ExecuteNonQueryAsync(connection, "USE [master];");
+                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
+                    var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;";
+                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, new SqlParameter("@BackupFile", backupFile));
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
             }
@@ -527,7 +577,17 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
                 // Attempt emergency MULTI_USER reset if batch execution failed
-                await TrySetMultiUserAsync(databaseName);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following restore error on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Failed to restore database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        ex, resetEx);
+                }
                 throw;
             }
         }
@@ -540,24 +600,17 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
                 throw new ArgumentException("Invalid collation name format. Only alphanumeric characters and underscores are allowed.");
             }
 
-            var safeDbName = databaseName.Replace("]", "]]");
+            var safeDbName = EscapeIdentifier(databaseName);
 
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-
-                    // Batch collation change statements into a single command to minimize network roundtrips
-                    var query = $@"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
-ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
-ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
-
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        command.CommandTimeout = 3600;
-                        await command.ExecuteNonQueryAsync();
-                    }
+                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
+                    var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
+                    await ExecuteNonQueryAsync(connection, query, 3600);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
             }
@@ -565,30 +618,68 @@ ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
             {
                 _logger.LogError($"Failed to alter collation for database: {databaseName}", ex);
                 // Attempt to put it back to multi-user if it failed mid-way
-                await TrySetMultiUserAsync(databaseName);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following collation error on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Failed to alter collation for database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        ex, resetEx);
+                }
                 throw;
             }
         }
 
-        private async Task TrySetMultiUserAsync(string databaseName)
+        public virtual async Task TrySetMultiUserAsync(string databaseName)
         {
-            var safeDbName = databaseName.Replace("]", "]]");
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync();
-                    var query = $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
-                    using (var command = new SqlCommand(query, connection))
-                    {
-                        await command.ExecuteNonQueryAsync();
-                    }
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
             }
             catch (Exception ex)
             {
                  _logger.LogError($"Failed emergency MULTI_USER reset for database: {databaseName}", ex);
+                 throw;
             }
+        }
+
+        private static string EscapeIdentifier(string identifier)
+        {
+            return identifier.Replace("]", "]]");
+        }
+
+        private static async Task<int> ExecuteNonQueryAsync(
+            SqlConnection connection,
+            string commandText,
+            int timeoutSeconds = 3600,
+            params SqlParameter[] parameters)
+        {
+            using (var command = new SqlCommand(commandText, connection))
+            {
+                command.CommandTimeout = timeoutSeconds;
+                if (parameters != null && parameters.Length > 0)
+                {
+                    command.Parameters.AddRange(parameters);
+                }
+                return await command.ExecuteNonQueryAsync();
+            }
+        }
+
+        private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            string query = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase)
+                ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
+                : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
+
+            await ExecuteNonQueryAsync(connection, query);
         }
     }
 }
