@@ -22,6 +22,7 @@ namespace CollationModifier.Tests
         public string? LastTargetCollation { get; private set; }
         public bool ShouldAlterCollationThrow { get; set; } = false;
         public bool ShouldTrySetMultiUserFail { get; set; } = false;
+        public bool ThrowOnGetDatabases { get; set; } = false;
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
@@ -41,23 +42,9 @@ namespace CollationModifier.Tests
 
         public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
-        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
-
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
-
-        public Task TrySetMultiUserAsync(string databaseName)
-        {
-            if (TrySetMultiUserExceptionToThrow != null)
-            {
-                throw TrySetMultiUserExceptionToThrow;
-            }
-            return Task.CompletedTask;
-        }
-
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
         {
@@ -116,6 +103,10 @@ namespace CollationModifier.Tests
             {
                 throw new InvalidOperationException("Connection reset failed during emergency MULTI_USER command.");
             }
+            if (TrySetMultiUserExceptionToThrow != null)
+            {
+                throw TrySetMultiUserExceptionToThrow;
+            }
             return Task.CompletedTask;
         }
     }
@@ -127,11 +118,14 @@ namespace CollationModifier.Tests
 
     public static class MainViewModelTestsRunner
     {
+        public static Task RunAllTestsAsync() => RunTestsAsync();
+
         public static async Task RunTestsAsync()
         {
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
+            int failed = 0;
 
-            await RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
+            RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
                 var db = new DatabaseInfo
                 {
@@ -300,16 +294,17 @@ namespace CollationModifier.Tests
                 var vm = new MainViewModel(new MockDatabaseService());
                 Assert(vm.IsConnected == false, "Expected IsConnected to default to false");
 
-                string? notifiedProperty = null;
+                var notifiedProperties = new List<string>();
                 vm.PropertyChanged += (sender, args) =>
                 {
-                    notifiedProperty = args.PropertyName;
+                    if (args.PropertyName != null)
+                        notifiedProperties.Add(args.PropertyName);
                 };
 
                 vm.IsConnected = true;
 
                 Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
-                Assert(notifiedProperty == nameof(MainViewModel.IsConnected), $"Expected PropertyChanged for 'IsConnected', got '{notifiedProperty}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnected)), $"Expected PropertyChanged for 'IsConnected'");
             });
 
             await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
@@ -490,6 +485,11 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
             });
 
+            if (failed > 0)
+            {
+                throw new InvalidOperationException($"{failed} test(s) failed in MainViewModelTestsRunner.");
+            }
+
             Console.WriteLine("\nTest Run Finished: All tests passed!");
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
@@ -506,7 +506,7 @@ namespace CollationModifier.Tests
                 }
             }
 
-            Task RunSyncTest(string name, Action testAction)
+            void RunSyncTest(string name, Action testAction)
             {
                 try
                 {
@@ -518,7 +518,6 @@ namespace CollationModifier.Tests
                     Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
                     failed++;
                 }
-                return Task.CompletedTask;
             }
 
             void Assert(bool condition, string message)

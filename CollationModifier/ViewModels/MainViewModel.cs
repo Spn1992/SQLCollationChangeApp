@@ -131,7 +131,6 @@ namespace CollationModifier.ViewModels
         // Dashboard Properties
         public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
         public ObservableRangeCollection<DatabaseInfo> Databases { get; }
-        public ObservableCollection<string> SupportedCollations { get; }
 
         private DatabaseInfo? _selectedDatabase;
         public DatabaseInfo? SelectedDatabase
@@ -332,6 +331,28 @@ namespace CollationModifier.ViewModels
                 _logger.LogError("Failed to load databases.", ex);
                 StatusMessage = $"Failed to load databases: {ex.Message}";
                 return false;
+            }
+        }
+
+        public async Task LoadCollationsAsync()
+        {
+            try
+            {
+                var collations = await _databaseService.GetSupportedCollationsAsync();
+                SupportedCollations.Clear();
+                if (collations != null)
+                {
+                    foreach (var collation in collations)
+                    {
+                        SupportedCollations.Add(collation);
+                    }
+                }
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (Exception ex)
+            {
+                SupportedCollations.Clear();
+                _logger.LogError("Failed to load supported collations.", ex);
             }
         }
 

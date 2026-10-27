@@ -219,38 +219,6 @@ namespace CollationModifier.Services
             return null;
         }
 
-        public virtual async Task<List<string>> GetSupportedCollationsAsync()
-        {
-            var collations = new List<string>();
-            try
-            {
-                using (var connection = new SqlConnection(_connectionString))
-                {
-                    await connection.OpenAsync();
-                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
-
-                    using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
-                    {
-                        while (await reader.ReadAsync())
-                        {
-                            if (!reader.IsDBNull(0))
-                            {
-                                collations.Add(reader.GetString(0));
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Failed to fetch supported collations.", ex);
-                throw;
-            }
-
-            return collations;
-        }
-
         public static void ValidateBackupDirectoryPath(string backupDirectory)
         {
             if (string.IsNullOrWhiteSpace(backupDirectory))
@@ -530,38 +498,6 @@ namespace CollationModifier.Services
                 _logger.LogError($"Backup failed for database: {databaseName}", ex);
                 throw;
             }
-        }
-
-        public virtual async Task<List<string>> GetSupportedCollationsAsync()
-        {
-            var collations = new List<string>();
-            try
-            {
-                using (var connection = new SqlConnection(_connectionString))
-                {
-                    await connection.OpenAsync();
-                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
-
-                    using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync())
-                    {
-                        while (await reader.ReadAsync())
-                        {
-                            if (!reader.IsDBNull(0))
-                            {
-                                collations.Add(reader.GetString(0));
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Failed to fetch supported collations.", ex);
-                throw;
-            }
-
-            return collations;
         }
 
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
