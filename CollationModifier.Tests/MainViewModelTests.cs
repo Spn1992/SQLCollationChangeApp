@@ -274,6 +274,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 int getDatabasesCallCountAfterLoad = mockService.GetDatabasesCount;
 
@@ -345,6 +346,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 vm.SelectedDatabase = vm.Databases[0];
                 vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
@@ -373,6 +375,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 vm.SelectedDatabase = vm.Databases[0];
                 vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";

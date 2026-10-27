@@ -335,6 +335,33 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        public Func<string, string, bool>? ConfirmCollationChangeHandler { get; set; }
+
+        private bool DefaultConfirmCollationChange(string databaseName, string targetCollation)
+        {
+#if NETFRAMEWORK
+            string message = $"Are you sure you want to change the collation of database '{databaseName}' to '{targetCollation}'?\n\nWARNING: This process will close all active database connections and force the database into SINGLE_USER mode.";
+            string title = "Confirm Collation Change";
+
+            try
+            {
+                var result = System.Windows.MessageBox.Show(
+                    message,
+                    title,
+                    System.Windows.MessageBoxButton.YesNo,
+                    System.Windows.MessageBoxImage.Warning,
+                    System.Windows.MessageBoxResult.No);
+                return result == System.Windows.MessageBoxResult.Yes;
+            }
+            catch
+            {
+                return true;
+            }
+#else
+            return true;
+#endif
+        }
+
         private bool CanProcessCollationChange()
         {
             return IsConnected && !IsBusy && SelectedDatabase != null && !string.IsNullOrWhiteSpace(TargetCollation);
@@ -343,6 +370,17 @@ namespace CollationModifier.ViewModels
         public async Task ProcessCollationChangeAsync()
         {
             if (SelectedDatabase == null) return;
+
+            bool confirmed = ConfirmCollationChangeHandler != null
+                ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
+                : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
+
+            if (!confirmed)
+            {
+                _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
+                StatusMessage = "Collation change operation cancelled.";
+                return;
+            }
 
             IsBusy = true;
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
