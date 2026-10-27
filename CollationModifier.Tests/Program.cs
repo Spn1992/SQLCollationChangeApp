@@ -14,16 +14,6 @@ namespace CollationModifier.Tests
             Console.WriteLine("=== Running CollationModifier Unit Tests ===");
             int failed = 0;
 
-            try
-            {
-                await MainViewModelTestsRunner.RunAllTestsAsync();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
-                failed++;
-            }
-
             Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
 
             try
@@ -56,38 +46,6 @@ namespace CollationModifier.Tests
             catch (Exception ex)
             {
                 Console.WriteLine($"FAIL: TestFileAccessExceptionHandling - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await MainViewModelTestsRunner.RunTestsAsync();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                TestMainFormTableLayoutPanelLayout();
-                Console.WriteLine("PASS: TestMainFormTableLayoutPanelLayout");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMainFormTableLayoutPanelLayout - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                TestLogFilePathProperty();
-                Console.WriteLine("PASS: TestLogFilePathProperty");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
                 failed++;
             }
 

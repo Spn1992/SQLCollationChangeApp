@@ -26,7 +26,9 @@ namespace CollationModifier.Tests
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public Task<bool> TestConnectionAsync() => Task.FromResult(true);
+        public virtual Task<bool> TestConnectionAsync() => Task.FromResult(true);
+
+        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
 
         public Task<List<DatabaseInfo>> GetDatabasesAsync()
         {
@@ -111,6 +113,11 @@ namespace CollationModifier.Tests
         }
     }
 
+    public class FailingMockDatabaseService : MockDatabaseService
+    {
+        public override Task<bool> TestConnectionAsync() => Task.FromResult(false);
+    }
+
     public static class MainViewModelTestsRunner
     {
         public static Task RunAllTestsAsync() => RunTestsAsync();
@@ -138,6 +145,14 @@ namespace CollationModifier.Tests
 
                 Assert(nameof(DatabaseInfo.Collation) == changedProperty, $"Expected property name 'Collation', got '{changedProperty}'");
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
+            });
+
+            RunSyncTest("DatabaseService_EscapeIdentifier_EscapesRightBracketsCorrectly", () =>
+            {
+                var method = typeof(DatabaseService).GetMethod("EscapeIdentifier", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(method != null, "EscapeIdentifier method not found");
+                string result = (string)method!.Invoke(null, new object[] { "Test]Db]Name" })!;
+                Assert(result == "Test]]Db]]Name", $"Expected 'Test]]Db]]Name', got '{result}'");
             });
 
             RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
@@ -263,6 +278,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 int getDatabasesCallCountAfterLoad = mockService.GetDatabasesCount;
 
@@ -284,6 +300,40 @@ namespace CollationModifier.Tests
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
             });
 
+            RunSyncTest("MainViewModel_IsConnected_DefaultsToFalse_AndNotifiesPropertyChanged", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(vm.IsConnected == false, "Expected IsConnected to default to false");
+
+                string? notifiedProperty = null;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    notifiedProperty = args.PropertyName;
+                };
+
+                vm.IsConnected = true;
+
+                Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
+                Assert(notifiedProperty == nameof(MainViewModel.IsConnected), $"Expected PropertyChanged for 'IsConnected', got '{notifiedProperty}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                Assert(vm.IsConnected == false, "IsConnected should be false initially");
+
+                await vm.ConnectAsync();
+                Assert(vm.IsConnected == true, "IsConnected should be true after successful connect");
+
+                // Test failure
+                var failingService = new FailingMockDatabaseService();
+                var failingVm = new MainViewModel(failingService);
+                await failingVm.ConnectAsync();
+                Assert(failingVm.IsConnected == false, "IsConnected should be false after failed connect");
+            });
+
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
             {
                 var initialDb = new DatabaseInfo { Name = "ActiveDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
@@ -300,6 +350,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 vm.SelectedDatabase = vm.Databases[0];
                 vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
@@ -328,6 +379,7 @@ namespace CollationModifier.Tests
                 };
 
                 var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
                 await vm.LoadDatabasesAsync();
                 vm.SelectedDatabase = vm.Databases[0];
                 vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
