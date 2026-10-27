@@ -96,7 +96,7 @@ namespace CollationModifier.Services
                                 Collation = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
                                 CompatibilityLevel = reader.GetByte(2).ToString(),
                                 Owner = reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
-                                Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt32(4)} MB"
+                                Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt64(4)} MB"
                             });
                         }
                     }
@@ -109,6 +109,38 @@ namespace CollationModifier.Services
             }
 
             return databases;
+        }
+
+        public virtual async Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            var collations = new List<string>();
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+                    var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                    {
+                        while (await reader.ReadAsync(cancellationToken))
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                collations.Add(reader.GetString(0));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to fetch supported collations.", ex);
+                throw;
+            }
+
+            return collations;
         }
 
         public async Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default)
@@ -188,32 +220,6 @@ namespace CollationModifier.Services
             return null;
         }
 
-        public virtual async Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
-        {
-            var collations = new List<string>();
-            try
-            {
-                using (var connection = new SqlConnection(_connectionString))
-                {
-                    await connection.OpenAsync(cancellationToken);
-                    var query = "SELECT name FROM sys.fn_helpcollations();";
-                    using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
-                    {
-                        while (await reader.ReadAsync(cancellationToken))
-                        {
-                            collations.Add(reader.GetString(0));
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Failed to load supported collations.", ex);
-            }
-            return collations;
-        }
-
         public static void ValidateBackupDirectoryPath(string backupDirectory)
         {
             if (string.IsNullOrWhiteSpace(backupDirectory))
@@ -239,11 +245,23 @@ namespace CollationModifier.Services
             }
         }
 
-        public async Task PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
+        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
         {
+            var report = new PreflightReport
+            {
+                DatabaseName = databaseName
+            };
+
             if (!string.IsNullOrWhiteSpace(backupDirectory))
             {
-                ValidateBackupDirectoryPath(backupDirectory);
+                try
+                {
+                    ValidateBackupDirectoryPath(backupDirectory);
+                }
+                catch (Exception ex)
+                {
+                    report.ValidationErrors.Add($"Invalid backup directory: {ex.Message}");
+                }
             }
 
             var safeDbName = databaseName.Replace("]", "]]");
@@ -253,32 +271,199 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync(cancellationToken);
 
-                    var query = $@"
-                        USE [{safeDbName}];
-                        SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')
-                        WHERE permission_name IN ('BACKUP DATABASE', 'BACKUP LOG', 'ALTER');";
-
-                    var permissions = new List<string>();
-                    using (var command = new SqlCommand(query, connection))
-                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                    // 1. Check permissions in target database context
+                    try
                     {
-                        while (await reader.ReadAsync(cancellationToken))
+                        var permQuery = $@"
+                            USE [{safeDbName}];
+                            SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')
+                            WHERE permission_name IN ('BACKUP DATABASE', 'BACKUP LOG', 'ALTER');";
+
+                        var permissions = new List<string>();
+                        using (var command = new SqlCommand(permQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            permissions.Add(reader.GetString(0));
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                permissions.Add(reader.GetString(0));
+                            }
+                        }
+
+                        if (!permissions.Contains("ALTER"))
+                        {
+                            report.MissingPermissions.Add("User does not have ALTER permission on the database.");
                         }
                     }
-
-                    if (!permissions.Contains("ALTER"))
+                    catch (Exception ex)
                     {
-                        throw new UnauthorizedAccessException($"User does not have ALTER permissions on database {databaseName}.");
+                        report.ValidationErrors.Add($"Failed to verify database permissions: {ex.Message}");
+                    }
+
+                    // 2. Check active user sessions (excluding current connection context @@SPID)
+                    try
+                    {
+                        var sessionsQuery = @"
+                            SELECT 
+                                s.session_id,
+                                ISNULL(s.login_name, '') as login_name,
+                                ISNULL(s.host_name, '') as host_name,
+                                ISNULL(s.program_name, '') as program_name,
+                                ISNULL(s.status, '') as status
+                            FROM sys.dm_exec_sessions s
+                            WHERE s.database_id = DB_ID(@DbName)
+                              AND s.session_id <> @@SPID
+                              AND s.is_user_process = 1;";
+
+                        using (var command = new SqlCommand(sessionsQuery, connection))
+                        {
+                            command.Parameters.AddWithValue("@DbName", databaseName);
+                            using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                            {
+                                while (await reader.ReadAsync(cancellationToken))
+                                {
+                                    report.ActiveSessions.Add(new ActiveSessionInfo
+                                    {
+                                        SessionId = reader.GetInt16(0),
+                                        LoginName = reader.GetString(1),
+                                        HostName = reader.GetString(2),
+                                        ProgramName = reader.GetString(3),
+                                        Status = reader.GetString(4)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning($"Failed to query active sessions: {ex.Message}");
+                    }
+
+                    // 3. Check schema dependencies in target database context
+                    try
+                    {
+                        using (var useCmd = new SqlCommand($"USE [{safeDbName}];", connection))
+                        {
+                            await useCmd.ExecuteNonQueryAsync(cancellationToken);
+                        }
+
+                        // 3a. Schema-bound views / modules
+                        var schemaBoundQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                o.name AS object_name,
+                                o.type_desc AS object_type
+                            FROM sys.sql_modules m
+                            JOIN sys.objects o ON m.object_id = o.object_id
+                            JOIN sys.schemas s ON o.schema_id = s.schema_id
+                            WHERE m.is_schema_bound = 1;";
+
+                        using (var command = new SqlCommand(schemaBoundQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = reader.GetString(1),
+                                    ObjectType = "Schema-Bound Object",
+                                    Details = $"Definition is schema-bound ({reader.GetString(2)})."
+                                });
+                            }
+                        }
+
+                        // 3b. Computed columns
+                        var computedColsQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                t.name AS table_name,
+                                c.name AS column_name,
+                                ISNULL(c.definition, '') AS expression
+                            FROM sys.computed_columns c
+                            JOIN sys.tables t ON c.object_id = t.object_id
+                            JOIN sys.schemas s ON t.schema_id = s.schema_id;";
+
+                        using (var command = new SqlCommand(computedColsQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = $"{reader.GetString(1)}.{reader.GetString(2)}",
+                                    ObjectType = "Computed Column",
+                                    Details = $"Computed column expression: {reader.GetString(3)}"
+                                });
+                            }
+                        }
+
+                        // 3c. Foreign Keys
+                        var fkQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                fk.name AS constraint_name,
+                                t.name AS parent_table,
+                                rt.name AS referenced_table
+                            FROM sys.foreign_keys fk
+                            JOIN sys.tables t ON fk.parent_object_id = t.object_id
+                            JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
+                            JOIN sys.schemas s ON fk.schema_id = s.schema_id;";
+
+                        using (var command = new SqlCommand(fkQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = reader.GetString(1),
+                                    ObjectType = "Foreign Key Constraint",
+                                    Details = $"Table '{reader.GetString(2)}' references '{reader.GetString(3)}'."
+                                });
+                            }
+                        }
+
+                        // 3d. Check Constraints
+                        var checkQuery = @"
+                            SELECT 
+                                s.name AS schema_name,
+                                chk.name AS constraint_name,
+                                t.name AS table_name,
+                                ISNULL(chk.definition, '') AS expression
+                            FROM sys.check_constraints chk
+                            JOIN sys.tables t ON chk.parent_object_id = t.object_id
+                            JOIN sys.schemas s ON chk.schema_id = s.schema_id;";
+
+                        using (var command = new SqlCommand(checkQuery, connection))
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                                {
+                                    SchemaName = reader.GetString(0),
+                                    ObjectName = reader.GetString(1),
+                                    ObjectType = "Check Constraint",
+                                    Details = $"Check constraint on table '{reader.GetString(2)}': {reader.GetString(3)}"
+                                });
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        report.ValidationErrors.Add($"Failed to inspect database schema dependencies: {ex.Message}");
                     }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError($"Preflight check failed for {databaseName}", ex);
-                throw;
+                report.ValidationErrors.Add($"Database connection or pre-flight query error: {ex.Message}");
             }
+
+            return report;
         }
 
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
