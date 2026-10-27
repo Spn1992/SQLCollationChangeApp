@@ -151,6 +151,14 @@ namespace CollationModifier.Tests
                 Assert(db.Collation == "Latin1_General_100_CI_AS", $"Expected Collation 'Latin1_General_100_CI_AS', got '{db.Collation}'");
             });
 
+            RunSyncTest("DatabaseService_EscapeIdentifier_EscapesRightBracketsCorrectly", () =>
+            {
+                var method = typeof(DatabaseService).GetMethod("EscapeIdentifier", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(method != null, "EscapeIdentifier method not found");
+                string result = (string)method!.Invoke(null, new object[] { "Test]Db]Name" })!;
+                Assert(result == "Test]]Db]]Name", $"Expected 'Test]]Db]]Name', got '{result}'");
+            });
+
             RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
             {
                 long largeSizeMb = 3000000000L;
