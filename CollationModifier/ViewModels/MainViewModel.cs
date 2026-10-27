@@ -80,6 +80,13 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusMessage, value);
         }
 
+        private string? _statusToolTip;
+        public string? StatusToolTip
+        {
+            get => _statusToolTip;
+            set => SetProperty(ref _statusToolTip, value);
+        }
+
         // Authentication Properties
         private string _serverName = "localhost";
         public string ServerName
@@ -321,7 +328,7 @@ namespace CollationModifier.ViewModels
                 else
                 {
                     IsConnected = false;
-                    StatusMessage = "Connection failed. Check credentials and server name.";
+                    SetStatus("Connection failed. Check credentials and server name.");
                 }
             }
             catch (OperationCanceledException)
@@ -333,7 +340,8 @@ namespace CollationModifier.ViewModels
             catch (Exception ex)
             {
                 IsConnected = false;
-                StatusMessage = $"Error: {ex.Message}";
+                var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
+                SetStatus(statusText, toolTipText);
             }
             finally
             {
@@ -447,7 +455,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                StatusMessage = "Collation changed successfully!";
+                SetStatus("Collation changed successfully!");
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()
