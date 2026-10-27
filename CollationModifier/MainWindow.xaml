@@ -18,6 +18,7 @@
             <StackPanel Orientation="Horizontal" Margin="10,0" VerticalAlignment="Center">
                 <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
                 <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
+                             AutomationProperties.Name="Operation Progress"
                              Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
             </StackPanel>
         </Border>
@@ -34,18 +35,29 @@
                 <StackPanel>
                     <Label Content="Authentication" Style="{StaticResource CardHeader}" />
 
-                    <TextBlock Text="Server Name" Margin="0,0,0,4" />
-                    <TextBox Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,16" IsEnabled="{Binding IsNotBusy}" />
+                    <TextBlock x:Name="ServerNameLabel" Text="Server Name" Margin="0,0,0,4" />
+                    <TextBox x:Name="ServerNameInput" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.LabeledBy="{Binding ElementName=ServerNameLabel}"
+                             AutomationProperties.Name="Server Name"
+                             Margin="0,0,0,16" IsEnabled="{Binding IsNotBusy}" />
 
-                    <TextBlock Text="Authentication Type" Margin="0,0,0,4" />
-                    <ComboBox ItemsSource="{Binding AuthenticationTypes}" SelectedItem="{Binding SelectedAuthenticationType}" Margin="0,0,0,16" IsEnabled="{Binding IsNotBusy}" />
+                    <TextBlock x:Name="AuthTypeLabel" Text="Authentication Type" Margin="0,0,0,4" />
+                    <ComboBox x:Name="AuthTypeInput" ItemsSource="{Binding AuthenticationTypes}"
+                              SelectedItem="{Binding SelectedAuthenticationType}"
+                              AutomationProperties.LabeledBy="{Binding ElementName=AuthTypeLabel}"
+                              AutomationProperties.Name="Authentication Type"
+                              Margin="0,0,0,16" IsEnabled="{Binding IsNotBusy}" />
 
-                    <TextBlock Text="Username" Margin="0,0,0,4" />
-                    <TextBox Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,16"
-                             IsEnabled="{Binding IsSqlServerAuth}" />
+                    <TextBlock x:Name="UsernameLabel" Text="Username" Margin="0,0,0,4" />
+                    <TextBox x:Name="UsernameInput" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.LabeledBy="{Binding ElementName=UsernameLabel}"
+                             AutomationProperties.Name="Username"
+                             Margin="0,0,0,16" IsEnabled="{Binding IsSqlServerAuth}" />
 
-                    <TextBlock Text="Password" Margin="0,0,0,4" />
+                    <TextBlock x:Name="PasswordLabel" Text="Password" Margin="0,0,0,4" />
                     <PasswordBox x:Name="PasswordBoxInput" Margin="0,0,0,24"
+                                 AutomationProperties.LabeledBy="{Binding ElementName=PasswordLabel}"
+                                 AutomationProperties.Name="Password"
                                  IsEnabled="{Binding IsSqlServerAuth}"
                                  PasswordChanged="PasswordBox_PasswordChanged" />
 
@@ -77,9 +89,12 @@
                         <Label Content="Database Operations" Style="{StaticResource CardHeader}" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->
-                        <TextBlock Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
-                        <ComboBox ItemsSource="{Binding Databases}" SelectedItem="{Binding SelectedDatabase}"
-                                  DisplayMemberPath="Name" Margin="0,0,0,24" IsEnabled="{Binding IsNotBusy}" />
+                        <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
+                        <ComboBox x:Name="SelectDatabaseInput" ItemsSource="{Binding Databases}"
+                                  SelectedItem="{Binding SelectedDatabase}" DisplayMemberPath="Name"
+                                  AutomationProperties.LabeledBy="{Binding ElementName=SelectDatabaseLabel}"
+                                  AutomationProperties.Name="Select Database"
+                                  Margin="0,0,0,24" IsEnabled="{Binding IsNotBusy}" />
 
                         <!-- Metadata Panel -->
                         <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
@@ -123,8 +138,10 @@
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0" Margin="0,0,16,0">
-                                <TextBlock Text="New Collation Name" Margin="0,0,0,4" />
-                                <TextBox Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
+                                <TextBlock x:Name="TargetCollationLabel" Text="New Collation Name" Margin="0,0,0,4" />
+                                <TextBox x:Name="TargetCollationInput" Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
+                                         AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
+                                         AutomationProperties.Name="New Collation Name"
                                          ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}" />
                             </StackPanel>
 
