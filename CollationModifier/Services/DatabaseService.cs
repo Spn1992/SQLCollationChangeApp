@@ -247,11 +247,6 @@ namespace CollationModifier.Services
                     {
                         throw new UnauthorizedAccessException($"User does not have ALTER permissions on database {databaseName}.");
                     }
-                    if (!permissions.Contains("BACKUP DATABASE") && !permissions.Contains("BACKUP LOG")) // Sometimes backup log is needed or just backup db is enough depending on recovery model, but checking BACKUP DATABASE is primary
-                    {
-                        // We will allow it to proceed as sysadmin might not explicitly show BACKUP DATABASE via fn_my_permissions sometimes depending on context,
-                        // but ideally we'd strictly enforce it here. For robustness, if they lack ALTER, we stop.
-                    }
                 }
             }
             catch (Exception ex)
