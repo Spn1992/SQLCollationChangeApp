@@ -1,4 +1,5 @@
 using CollationModifier.Collections;
+using CollationModifier.Exceptions;
 using CollationModifier.Models;
 using CollationModifier.Services;
 using System;
@@ -198,7 +199,7 @@ namespace CollationModifier.ViewModels
                     }
 
                     await LoadDatabasesAsync();
-                    await LoadSupportedCollationsAsync();
+                    await LoadCollationsAsync();
                     StatusMessage = "Ready";
                 }
                 else
@@ -232,7 +233,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        private async Task LoadSupportedCollationsAsync()
+        private async Task LoadCollationsAsync()
         {
             try
             {
@@ -242,12 +243,11 @@ namespace CollationModifier.ViewModels
                 {
                     SupportedCollations.Add(collation);
                 }
-                _logger.LogInfo($"Fetched and populated {SupportedCollations.Count} supported collations into selector.");
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
             }
             catch (Exception ex)
             {
                 _logger.LogError("Failed to load supported collations.", ex);
-                StatusMessage = $"Warning: Failed to fetch supported collations: {ex.Message}";
             }
         }
 
@@ -268,7 +268,13 @@ namespace CollationModifier.ViewModels
             {
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory);
+                if (preflightReport.HasBlockingConditions)
+                {
+                    var summary = preflightReport.GetDiagnosticSummary();
+                    _logger.LogWarning($"Pre-flight validation failed for {SelectedDatabase.Name}:\n{summary}");
+                    throw new PreflightValidationException(preflightReport);
+                }
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
