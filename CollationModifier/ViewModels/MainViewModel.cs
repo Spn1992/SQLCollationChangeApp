@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -147,7 +147,9 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _isConnected, value))
                 {
-                    OnPropertyChanged(nameof(CanEditConnection));
+                    OnPropertyChanged(nameof(ConnectButtonText));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                 }
             }
         }
@@ -279,7 +281,7 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
-        public async Task ConnectAsync()
+        public void Disconnect()
         {
             if (IsConnected)
             {
@@ -287,8 +289,16 @@ namespace CollationModifier.ViewModels
                 Databases.Clear();
                 SupportedCollations.Clear();
                 SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
+                StatusMessage = "Disconnected from server.";
                 _logger.LogInfo("Disconnected from server.");
+            }
+        }
+
+        public async Task ConnectAsync()
+        {
+            if (IsConnected)
+            {
+                Disconnect();
                 return;
             }
 
@@ -333,7 +343,7 @@ namespace CollationModifier.ViewModels
                 else
                 {
                     IsConnected = false;
-                    SetStatus("Connection failed. Check credentials and server name.");
+                    StatusMessage = "Connection failed. Check credentials and server name.";
                 }
             }
             catch (OperationCanceledException)
@@ -346,7 +356,7 @@ namespace CollationModifier.ViewModels
             {
                 IsConnected = false;
                 var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
-                SetStatus(statusText, toolTipText);
+                StatusMessage = statusText;
             }
             finally
             {
@@ -356,7 +366,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task<bool> LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
@@ -479,7 +489,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                SetStatus("Collation changed successfully!");
+                StatusMessage = "Collation changed successfully!";
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()

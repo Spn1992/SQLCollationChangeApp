@@ -497,14 +497,14 @@ namespace CollationModifier.Services
 
 
 
-        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     await ExecuteNonQueryAsync(connection, "USE [master];");
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
                     var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;";
@@ -519,7 +519,7 @@ namespace CollationModifier.Services
                 // Attempt emergency MULTI_USER reset if batch execution failed
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName);
+                    await TrySetMultiUserAsync(databaseName, cancellationToken);
                 }
                 catch (Exception resetEx)
                 {
@@ -545,7 +545,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
                     var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
                     await ExecuteNonQueryAsync(connection, query, 3600);
@@ -559,7 +559,7 @@ namespace CollationModifier.Services
                 // Attempt to put it back to multi-user if it failed mid-way
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName);
+                    await TrySetMultiUserAsync(databaseName, cancellationToken);
                 }
                 catch (Exception resetEx)
                 {
@@ -572,13 +572,13 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task TrySetMultiUserAsync(string databaseName)
+        public virtual async Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
             }
