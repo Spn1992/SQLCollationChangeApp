@@ -38,7 +38,7 @@ namespace CollationModifier.ViewModels
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
-            SupportedCollations = new ObservableCollection<string>();
+            SupportedCollations = new ObservableRangeCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -102,7 +102,7 @@ namespace CollationModifier.ViewModels
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
-        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
+        public ObservableRangeCollection<string> SupportedCollations { get; } = new ObservableRangeCollection<string>();
 
         private string _selectedAuthenticationType = string.Empty;
         public string SelectedAuthenticationType
@@ -154,6 +154,9 @@ namespace CollationModifier.ViewModels
                 if (SetProperty(ref _isConnected, value))
                 {
                     OnPropertyChanged(nameof(CanEditConnection));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
+                    OnPropertyChanged(nameof(ConnectButtonText));
                 }
             }
         }
@@ -405,11 +408,7 @@ namespace CollationModifier.ViewModels
             try
             {
                 var collations = await _databaseService.GetSupportedCollationsAsync();
-                SupportedCollations.Clear();
-                foreach (var collation in collations)
-                {
-                    SupportedCollations.Add(collation);
-                }
+                SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
             }
             catch (Exception ex)

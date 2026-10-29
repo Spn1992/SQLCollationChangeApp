@@ -48,7 +48,8 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
@@ -143,6 +144,39 @@ namespace CollationModifier.Tests
         {
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
+
+
+            await RunAsyncTest("LoadCollationsAsync_FiresSingleCollectionChangedResetEvent", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = new List<string>
+                    {
+                        "SQL_Latin1_General_CP1_CI_AS",
+                        "Latin1_General_100_CI_AS",
+                        "Japanese_CI_AS",
+                        "French_CI_AS"
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                int collectionChangedCount = 0;
+                NotifyCollectionChangedAction? lastAction = null;
+
+                vm.SupportedCollations.CollectionChanged += (s, e) =>
+                {
+                    collectionChangedCount++;
+                    lastAction = e.Action;
+                };
+
+                await vm.LoadCollationsAsync();
+
+                Assert(collectionChangedCount == 1, $"Expected collectionChangedCount 1, got {collectionChangedCount}");
+                Assert(lastAction == NotifyCollectionChangedAction.Reset, $"Expected Reset action, got {lastAction}");
+                Assert(vm.SupportedCollations.Count == 4, $"Expected 4 collations in collection, got {vm.SupportedCollations.Count}");
+                Assert(vm.SupportedCollations[0] == "SQL_Latin1_General_CP1_CI_AS", "First collation mismatch");
+                Assert(vm.SupportedCollations[3] == "French_CI_AS", "Fourth collation mismatch");
+            });
 
             RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
@@ -325,7 +359,8 @@ namespace CollationModifier.Tests
                 var notifiedProperties = new List<string>();
                 vm.PropertyChanged += (sender, args) =>
                 {
-                    if (args.PropertyName != null) notifiedProperties.Add(args.PropertyName);
+                    if (args.PropertyName != null)
+                        notifiedProperties.Add(args.PropertyName);
                 };
 
                 vm.IsConnected = true;
