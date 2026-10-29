@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -85,6 +85,12 @@ namespace CollationModifier.ViewModels
         {
             get => _statusToolTip;
             set => SetProperty(ref _statusToolTip, value);
+        }
+
+        public void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
         }
 
         // Authentication Properties
@@ -147,7 +153,11 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _isConnected, value))
                 {
+                    OnPropertyChanged(nameof(ConnectButtonText));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                     OnPropertyChanged(nameof(CanEditConnection));
+                    OnPropertyChanged(nameof(IsConnected));
                 }
             }
         }
@@ -287,7 +297,7 @@ namespace CollationModifier.ViewModels
                 Databases.Clear();
                 SupportedCollations.Clear();
                 SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
+                StatusMessage = "Disconnected from server.";
                 _logger.LogInfo("Disconnected from server.");
                 return;
             }
@@ -319,9 +329,10 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    bool dbLoaded = await LoadDatabasesAsync();
+                    bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
+                        await LoadCollationsAsync(token);
                         IsConnected = true;
                         StatusMessage = "Ready";
                     }
@@ -356,7 +367,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task<bool> LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
@@ -380,11 +391,11 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadCollationsAsync()
+        public async Task LoadCollationsAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
+                var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.Clear();
                 foreach (var collation in collations)
                 {
@@ -459,7 +470,7 @@ namespace CollationModifier.ViewModels
 
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();

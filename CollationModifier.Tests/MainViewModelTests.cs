@@ -16,25 +16,27 @@ namespace CollationModifier.Tests
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
         public List<string> CollationsToReturn { get; set; } = new();
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
-        public bool ThrowOnGetDatabases { get; set; }
+        public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
+        public int GetCollationsCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
         public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
-        public bool ThrowOnGetDatabases { get; set; } = false;
         public bool ShouldAlterCollationThrow { get; set; } = false;
         public bool ShouldTrySetMultiUserFail { get; set; } = false;
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
+        public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
+        public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public virtual Task<bool> TestConnectionAsync() => Task.FromResult(true);
+        public virtual Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
-        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+        public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
         public Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
@@ -47,11 +49,12 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
-
-        public Exception? TrySetMultiUserExceptionToThrow { get; set; }
-        public Exception? AlterCollationExceptionToThrow { get; set; }
-        public Exception? RestoreExceptionToThrow { get; set; }
+        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetCollationsCount++;
+            return Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+        }
 
         public Task TrySetMultiUserAsync(string databaseName)
         {
@@ -67,7 +70,7 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
@@ -101,7 +104,7 @@ namespace CollationModifier.Tests
             }
         }
 
-        public async Task AlterCollationAsync(string databaseName, string newCollation)
+        public async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
             if (OnAlterCollation != null)
             {
@@ -131,7 +134,7 @@ namespace CollationModifier.Tests
 
     public class FailingMockDatabaseService : MockDatabaseService
     {
-        public override Task<bool> TestConnectionAsync() => Task.FromResult(false);
+        public override Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
     public static class MainViewModelTestsRunner
@@ -142,7 +145,6 @@ namespace CollationModifier.Tests
         {
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
-            int failed = 0;
 
             RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
@@ -471,7 +473,7 @@ namespace CollationModifier.Tests
                 Assert(vm.Databases.Count == 2, $"Expected 2 databases, got {vm.Databases.Count}");
                 vm.SelectedDatabase = vm.Databases[0];
 
-                vm.Disconnect();
+                await vm.ConnectAsync();
 
                 Assert(!vm.IsConnected, "IsConnected should be false after disconnect");
                 Assert(vm.Databases.Count == 0, "Databases should be cleared after disconnect");
@@ -613,6 +615,57 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx != null, "AlterCollationAsync must raise an AggregateException when both primary collation and emergency reset fail.");
                 Assert(caughtAggEx!.InnerExceptions.Count == 2, $"AggregateException should contain 2 inner exceptions (primary and reset failure), got {caughtAggEx.InnerExceptions.Count}.");
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
+            });
+
+            await RunAsyncTest("LoadCollationsAsync_PopulatesSupportedCollations", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_SC" }
+                };
+                var vm = new MainViewModel(mockService);
+
+                await vm.LoadCollationsAsync();
+
+                Assert(vm.SupportedCollations.Count == 2, $"Expected 2 collations, got {vm.SupportedCollations.Count}");
+                Assert(vm.SupportedCollations[0] == "SQL_Latin1_General_CP1_CI_AS", $"Expected 'SQL_Latin1_General_CP1_CI_AS', got '{vm.SupportedCollations[0]}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_InvokesLoadCollationsAsync_OnSuccessfulConnection", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } },
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_BIN" }
+                };
+                var vm = new MainViewModel(mockService);
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "IsConnected should be true after successful connect");
+                Assert(mockService.GetCollationsCount > 0, $"Expected GetSupportedCollationsAsync to be invoked, count was {mockService.GetCollationsCount}");
+                Assert(vm.SupportedCollations.Count == 2, $"Expected 2 supported collations in VM, got {vm.SupportedCollations.Count}");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndRejectsInvalidFormat", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "Invalid;Collation!DropTable");
+
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions for invalid collation format.");
+                Assert(report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should report invalid collation format error.");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndAcceptsValidFormat", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+
+                Assert(!report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should not report format error for valid collation format.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

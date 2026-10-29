@@ -247,7 +247,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
+        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
             {
@@ -266,12 +266,42 @@ namespace CollationModifier.Services
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(targetCollation))
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                {
+                    report.ValidationErrors.Add($"Invalid target collation format: '{targetCollation}'. Collation names must contain only alphanumeric characters and underscores.");
+                }
+            }
+
             var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync(cancellationToken);
+
+                    // 0. Check target collation against sys.fn_helpcollations()
+                    if (!string.IsNullOrWhiteSpace(targetCollation) && System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                    {
+                        try
+                        {
+                            var collationQuery = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @TargetCollation;";
+                            using (var collationCmd = new SqlCommand(collationQuery, connection))
+                            {
+                                collationCmd.Parameters.AddWithValue("@TargetCollation", targetCollation);
+                                var count = Convert.ToInt32(await collationCmd.ExecuteScalarAsync(cancellationToken));
+                                if (count == 0)
+                                {
+                                    report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
+                        }
+                    }
 
                     // 1. Check permissions in target database context
                     try

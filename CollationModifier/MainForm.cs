@@ -202,7 +202,7 @@ namespace CollationModifier
             {
                 // 1. Pre-flight
                 statusLabel.Text = "Running pre-flight checks...";
-                await _databaseService.PreflightCheckAsync(selectedDb.Name);
+                await _databaseService.PreflightCheckAsync(selectedDb.Name, backupDir, targetCollation);
 
                 // 2. Automated Backup
                 statusLabel.Text = "Starting automated backup...";
