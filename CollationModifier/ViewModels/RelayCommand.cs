@@ -28,6 +28,7 @@ namespace CollationModifier.ViewModels
         {
             add
             {
+#if NETFRAMEWORK
                 try
                 {
                     CommandManager.RequerySuggested += value;
@@ -36,9 +37,11 @@ namespace CollationModifier.ViewModels
                 {
                     // Ignore outside WPF runtime environment
                 }
+#endif
             }
             remove
             {
+#if NETFRAMEWORK
                 try
                 {
                     CommandManager.RequerySuggested -= value;
@@ -47,6 +50,7 @@ namespace CollationModifier.ViewModels
                 {
                     // Ignore outside WPF runtime environment
                 }
+#endif
             }
         }
     }
