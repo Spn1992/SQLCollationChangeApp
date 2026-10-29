@@ -21,7 +21,7 @@
                         AutomationProperties.Name="Open Log File" ToolTip="Open execution log file or folder" />
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
-                    <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
+                    <ProgressBar Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsIndeterminateProgress}" Minimum="0" Maximum="100" Width="100" Height="10" Margin="10,0,0,0"
                                  AutomationProperties.Name="Operation Progress"
                                  Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </StackPanel>

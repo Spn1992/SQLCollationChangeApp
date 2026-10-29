@@ -16,25 +16,29 @@ namespace CollationModifier.Tests
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
         public List<string> CollationsToReturn { get; set; } = new();
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
-        public bool ThrowOnGetDatabases { get; set; }
+        public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
+        public int RestoreCount { get; private set; }
         public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
-        public bool ThrowOnGetDatabases { get; set; } = false;
         public bool ShouldAlterCollationThrow { get; set; } = false;
         public bool ShouldTrySetMultiUserFail { get; set; } = false;
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
+        public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
+        public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
+        public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
+        public Action<IProgress<int>?>? RestoreProgressSimulator { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public virtual Task<bool> TestConnectionAsync() => Task.FromResult(true);
+        public virtual Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
-        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+        public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
         public Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
@@ -47,11 +51,7 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
-
-        public Exception? TrySetMultiUserExceptionToThrow { get; set; }
-        public Exception? AlterCollationExceptionToThrow { get; set; }
-        public Exception? RestoreExceptionToThrow { get; set; }
+        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task TrySetMultiUserAsync(string databaseName)
         {
@@ -67,26 +67,30 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
             return Task.FromResult(PreflightReportToReturn);
         }
 
-        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             if (OnBackupDatabase != null)
             {
                 await OnBackupDatabase(cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            BackupProgressSimulator?.Invoke(progress);
             BackupCount++;
             return "/tmp/mock.bak";
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            RestoreCount++;
+            RestoreProgressSimulator?.Invoke(progress);
             if (RestoreExceptionToThrow != null)
             {
                 try
@@ -101,7 +105,7 @@ namespace CollationModifier.Tests
             }
         }
 
-        public async Task AlterCollationAsync(string databaseName, string newCollation)
+        public async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
             if (OnAlterCollation != null)
             {
@@ -131,7 +135,43 @@ namespace CollationModifier.Tests
 
     public class FailingMockDatabaseService : MockDatabaseService
     {
-        public override Task<bool> TestConnectionAsync() => Task.FromResult(false);
+        public override Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    }
+
+    public class SynchronousSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            var prev = Current;
+            try
+            {
+                SetSynchronizationContext(this);
+                d(state);
+            }
+            finally
+            {
+                SetSynchronizationContext(prev);
+            }
+        }
+
+        public override void Send(SendOrPostCallback d, object? state)
+        {
+            var prev = Current;
+            try
+            {
+                SetSynchronizationContext(this);
+                d(state);
+            }
+            finally
+            {
+                SetSynchronizationContext(prev);
+            }
+        }
+
+        public override SynchronizationContext CreateCopy()
+        {
+            return this;
+        }
     }
 
     public static class MainViewModelTestsRunner
@@ -140,9 +180,9 @@ namespace CollationModifier.Tests
 
         public static async Task RunTestsAsync()
         {
+            SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
-            int failed = 0;
 
             RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
@@ -322,16 +362,19 @@ namespace CollationModifier.Tests
                 var vm = new MainViewModel(new MockDatabaseService());
                 Assert(vm.IsConnected == false, "Expected IsConnected to default to false");
 
-                string? notifiedProperty = null;
+                var notifiedProperties = new List<string>();
                 vm.PropertyChanged += (sender, args) =>
                 {
-                    notifiedProperty = args.PropertyName;
+                    if (args.PropertyName != null)
+                    {
+                        notifiedProperties.Add(args.PropertyName);
+                    }
                 };
 
                 vm.IsConnected = true;
 
                 Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
-                Assert(notifiedProperty == nameof(MainViewModel.IsConnected), $"Expected PropertyChanged for 'IsConnected', got '{notifiedProperty}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnected)), $"Expected PropertyChanged for 'IsConnected', got '{string.Join(", ", notifiedProperties)}'");
             });
 
             await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
@@ -615,6 +658,104 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_ReportsBackupProgressPercentagesAndUpdatesUI", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "ProgressDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    BackupProgressSimulator = progress =>
+                    {
+                        progress?.Report(30);
+                        progress?.Report(70);
+                        progress?.Report(100);
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                var reportedPercents = new List<int>();
+                bool wasDeterminateDuringProgress = false;
+                string? statusFor100Percent = null;
+
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent))
+                    {
+                        reportedPercents.Add(vm.ProgressPercent);
+                        if (!vm.IsIndeterminateProgress)
+                        {
+                            wasDeterminateDuringProgress = true;
+                        }
+                    }
+                    if (args.PropertyName == nameof(MainViewModel.StatusMessage) && vm.StatusMessage.Contains("100%"))
+                    {
+                        statusFor100Percent = vm.StatusMessage;
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(reportedPercents.Contains(30) && reportedPercents.Contains(70) && reportedPercents.Contains(100), $"Expected reported percents to contain 30, 70, 100, got [{string.Join(", ", reportedPercents)}]");
+                Assert(wasDeterminateDuringProgress, "Expected IsIndeterminateProgress to be false during progress reporting");
+                Assert(statusFor100Percent != null && statusFor100Percent.Contains("100%"), $"Expected status message during progress to contain 100%, got '{statusFor100Percent}'");
+                Assert(vm.ProgressPercent == 0, $"Expected ProgressPercent to reset to 0 after process completes, got {vm.ProgressPercent}");
+                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after process completes");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ReportsRestoreProgressPercentagesOnFailure", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "RestoreDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    RestoreProgressSimulator = progress =>
+                    {
+                        progress?.Report(50);
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                int restoreReportedPercent = -1;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent) && vm.ProgressPercent == 50)
+                    {
+                        restoreReportedPercent = vm.ProgressPercent;
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
+                Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
+                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+            });
+
+            RunSyncTest("DatabaseService_ParsePercentProcessedFromSqlInfoMessage_RegexPattern", () =>
+            {
+                var regex = new System.Text.RegularExpressions.Regex(@"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                var match1 = regex.Match("10 percent processed.");
+                Assert(match1.Success && match1.Groups[1].Value == "10", "Failed to parse '10 percent processed.'");
+
+                var match2 = regex.Match("50 PERCENT PROCESSED");
+                Assert(match2.Success && match2.Groups[1].Value == "50", "Failed to parse '50 PERCENT PROCESSED'");
+
+                var match3 = regex.Match("Processed 100 percent.");
+                Assert(!regex.Match("Non matching info string").Success, "Non-matching string incorrectly matched");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
@@ -625,6 +766,7 @@ namespace CollationModifier.Tests
             {
                 try
                 {
+                    SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
                     await testAction();
                     Console.WriteLine($"  [PASS] {name}");
                 }

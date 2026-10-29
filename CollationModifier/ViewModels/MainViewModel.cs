@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -85,6 +85,20 @@ namespace CollationModifier.ViewModels
         {
             get => _statusToolTip;
             set => SetProperty(ref _statusToolTip, value);
+        }
+
+        private int _progressPercent;
+        public int ProgressPercent
+        {
+            get => _progressPercent;
+            set => SetProperty(ref _progressPercent, value);
+        }
+
+        private bool _isIndeterminateProgress = true;
+        public bool IsIndeterminateProgress
+        {
+            get => _isIndeterminateProgress;
+            set => SetProperty(ref _isIndeterminateProgress, value);
         }
 
         // Authentication Properties
@@ -148,6 +162,8 @@ namespace CollationModifier.ViewModels
                 if (SetProperty(ref _isConnected, value))
                 {
                     OnPropertyChanged(nameof(CanEditConnection));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(ConnectButtonText));
                 }
             }
         }
@@ -279,16 +295,21 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
+        public void Disconnect()
+        {
+            IsConnected = false;
+            Databases.Clear();
+            SupportedCollations.Clear();
+            SelectedDatabase = null;
+            StatusMessage = "Disconnected from server.";
+            _logger.LogInfo("Disconnected from server.");
+        }
+
         public async Task ConnectAsync()
         {
             if (IsConnected)
             {
-                IsConnected = false;
-                Databases.Clear();
-                SupportedCollations.Clear();
-                SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
-                _logger.LogInfo("Disconnected from server.");
+                Disconnect();
                 return;
             }
 
@@ -356,7 +377,13 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task<bool> LoadDatabasesAsync()
+        private void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+        }
+
+        public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
@@ -453,6 +480,9 @@ namespace CollationModifier.ViewModels
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
 
+            ProgressPercent = 0;
+            IsIndeterminateProgress = true;
+
             try
             {
                 token.ThrowIfCancellationRequested();
@@ -471,7 +501,13 @@ namespace CollationModifier.ViewModels
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
-                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var backupProgress = new Progress<int>(percent =>
+                {
+                    ProgressPercent = percent;
+                    IsIndeterminateProgress = false;
+                    StatusMessage = $"Backing up database... {percent}%";
+                });
+                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, backupProgress, token);
 
                 token.ThrowIfCancellationRequested();
 
@@ -502,7 +538,13 @@ namespace CollationModifier.ViewModels
                     StatusMessage = $"Process failed: {formattedError}. Attempting to restore from backup...";
                     try
                     {
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, token);
                         if (ex is AggregateException)
                         {
                             StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
@@ -536,6 +578,8 @@ namespace CollationModifier.ViewModels
             {
                 _cts?.Dispose();
                 _cts = null;
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
                 IsBusy = false;
             }
         }
