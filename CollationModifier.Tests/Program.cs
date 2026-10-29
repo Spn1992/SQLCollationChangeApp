@@ -107,7 +107,7 @@ namespace CollationModifier.Tests
 
             try
             {
-                await MainViewModelTestsRunner.RunTestsAsync();
+                await MainViewModelTestsRunner.RunAllTestsAsync();
             }
             catch (Exception ex)
             {
