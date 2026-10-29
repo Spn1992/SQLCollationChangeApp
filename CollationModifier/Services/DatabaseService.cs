@@ -497,14 +497,14 @@ namespace CollationModifier.Services
 
 
 
-        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync();
+                    await connection.OpenAsync(cancellationToken);
                     await ExecuteNonQueryAsync(connection, "USE [master];");
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
                     var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;";
@@ -572,7 +572,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task TrySetMultiUserAsync(string databaseName)
+        public virtual async Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
             try
             {

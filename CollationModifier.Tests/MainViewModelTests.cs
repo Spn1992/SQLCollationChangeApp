@@ -49,7 +49,7 @@ namespace CollationModifier.Tests
 
         public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
-        public Task TrySetMultiUserAsync(string databaseName)
+        public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
             TrySetMultiUserCount++;
             if (TrySetMultiUserExceptionToThrow != null)
@@ -81,13 +81,13 @@ namespace CollationModifier.Tests
             return "/tmp/mock.bak";
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
         {
             if (RestoreExceptionToThrow != null)
             {
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName);
+                    await TrySetMultiUserAsync(databaseName, cancellationToken);
                 }
                 catch (Exception resetEx)
                 {
@@ -112,7 +112,7 @@ namespace CollationModifier.Tests
                 var primaryEx = new InvalidOperationException("Table constraint violation during collation alter.");
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName);
+                    await TrySetMultiUserAsync(databaseName, cancellationToken);
                 }
                 catch (Exception resetEx)
                 {

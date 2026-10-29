@@ -200,6 +200,12 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
+        private void SetStatus(string text, string? toolTip = null)
+        {
+            StatusMessage = text;
+            StatusToolTip = toolTip;
+        }
+
         private static string FormatExceptionMessage(Exception ex)
         {
             if (ex is AggregateException aggEx)
@@ -375,14 +381,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        private void SetStatus(string message, string? toolTip = null)
-        {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
-        }
-
         public async Task ToggleConnectionAsync() => await ConnectAsync();
-
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
