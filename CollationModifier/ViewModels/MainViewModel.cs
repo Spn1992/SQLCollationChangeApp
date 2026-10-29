@@ -33,9 +33,10 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
+            ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
             SupportedCollations = new ObservableCollection<string>();
@@ -66,7 +67,8 @@ namespace CollationModifier.ViewModels
                 if (SetProperty(ref _isBusy, value))
                 {
                     OnPropertyChanged(nameof(IsNotBusy));
-                    OnPropertyChanged(nameof(CanEditConnection));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                     InvalidateRequerySuggested();
                 }
             }
@@ -85,6 +87,29 @@ namespace CollationModifier.ViewModels
         {
             get => _statusToolTip;
             set => SetProperty(ref _statusToolTip, value);
+        }
+
+        private string? _detailedError;
+        public string? DetailedError
+        {
+            get => _detailedError;
+            set
+            {
+                if (SetProperty(ref _detailedError, value))
+                {
+                    OnPropertyChanged(nameof(HasDetailedError));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasDetailedError => !string.IsNullOrEmpty(DetailedError);
+
+        public void SetStatus(string message, string? toolTip = null, string? detailedError = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+            DetailedError = detailedError;
         }
 
         // Authentication Properties
@@ -147,7 +172,9 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _isConnected, value))
                 {
-                    OnPropertyChanged(nameof(CanEditConnection));
+                    OnPropertyChanged(nameof(ConnectButtonText));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                 }
             }
         }
@@ -239,6 +266,41 @@ namespace CollationModifier.ViewModels
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
         public ICommand OpenLogCommand { get; }
+        public ICommand ShowErrorDetailsCommand { get; }
+
+        public Action<string>? ShowErrorDetailsHandler { get; set; }
+
+        public void ShowErrorDetails()
+        {
+            if (!HasDetailedError || string.IsNullOrEmpty(DetailedError)) return;
+
+            if (ShowErrorDetailsHandler != null)
+            {
+                ShowErrorDetailsHandler(DetailedError);
+            }
+            else
+            {
+                DefaultShowErrorDetails(DetailedError);
+            }
+        }
+
+        private void DefaultShowErrorDetails(string errorDetails)
+        {
+#if NETFRAMEWORK
+            try
+            {
+                var window = new ErrorDetailsWindow(errorDetails)
+                {
+                    Owner = System.Windows.Application.Current?.MainWindow
+                };
+                window.ShowDialog();
+            }
+            catch
+            {
+                System.Windows.MessageBox.Show(errorDetails, "Error Details", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Error);
+            }
+#endif
+        }
 
         public void OpenLogFile()
         {
@@ -279,16 +341,21 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
+        public void Disconnect()
+        {
+            IsConnected = false;
+            Databases.Clear();
+            SupportedCollations.Clear();
+            SelectedDatabase = null;
+            SetStatus("Disconnected from server.");
+            _logger.LogInfo("Disconnected from server.");
+        }
+
         public async Task ConnectAsync()
         {
             if (IsConnected)
             {
-                IsConnected = false;
-                Databases.Clear();
-                SupportedCollations.Clear();
-                SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
-                _logger.LogInfo("Disconnected from server.");
+                Disconnect();
                 return;
             }
 
@@ -306,7 +373,7 @@ namespace CollationModifier.ViewModels
 
                 if (success)
                 {
-                    StatusMessage = "Connected successfully. Querying default backup directory and fetching databases...";
+                    SetStatus("Connected successfully. Querying default backup directory and fetching databases...");
 
                     string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync(token);
                     if (!string.IsNullOrWhiteSpace(serverBackupPath))
@@ -323,7 +390,7 @@ namespace CollationModifier.ViewModels
                     if (dbLoaded)
                     {
                         IsConnected = true;
-                        StatusMessage = "Ready";
+                        SetStatus("Ready");
                     }
                     else
                     {
@@ -333,20 +400,25 @@ namespace CollationModifier.ViewModels
                 else
                 {
                     IsConnected = false;
-                    SetStatus("Connection failed. Check credentials and server name.");
+                    SetStatus(
+                        "Connection failed. Check credentials and server name.",
+                        "Connection failed. Verify server name, authentication type, and credentials.",
+                        "Connection failed: Unable to connect to the specified SQL Server host. Please verify server name and credentials."
+                    );
                 }
             }
             catch (OperationCanceledException)
             {
                 IsConnected = false;
                 _logger.LogInfo("Connect operation was cancelled by user.");
-                StatusMessage = "Operation cancelled by user.";
+                SetStatus("Operation cancelled by user.");
             }
             catch (Exception ex)
             {
                 IsConnected = false;
-                var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
-                SetStatus(statusText, toolTipText);
+                _logger.LogError("Connection failed.", ex);
+                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatConnectionError(ex);
+                SetStatus(statusText, toolTipText, detailedError);
             }
             finally
             {
@@ -360,7 +432,7 @@ namespace CollationModifier.ViewModels
         {
             try
             {
-                var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
+                var dbs = await _databaseService.GetDatabasesAsync();
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
@@ -368,14 +440,15 @@ namespace CollationModifier.ViewModels
             catch (OperationCanceledException)
             {
                 _logger.LogInfo("Load databases operation was cancelled by user.");
-                StatusMessage = "Operation cancelled by user.";
+                SetStatus("Operation cancelled by user.");
                 throw;
             }
             catch (Exception ex)
             {
                 Databases.Clear();
                 _logger.LogError("Failed to load databases.", ex);
-                StatusMessage = $"Failed to load databases: {ex.Message}";
+                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatLoadDatabasesError(ex);
+                SetStatus(statusText, toolTipText, detailedError);
                 return false;
             }
         }
@@ -488,48 +561,31 @@ namespace CollationModifier.ViewModels
             catch (OperationCanceledException)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
-                StatusMessage = "Operation cancelled by user.";
+                SetStatus("Operation cancelled by user.");
             }
             catch (Exception ex)
             {
                 _logger.LogError("Process collation change failed.", ex);
 
-                string formattedError = FormatExceptionMessage(ex);
-                bool isSingleUser = IsSingleUserLockState(ex);
-
                 if (backupFile != null)
                 {
-                    StatusMessage = $"Process failed: {formattedError}. Attempting to restore from backup...";
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
-                        if (ex is AggregateException)
-                        {
-                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
-                        }
-                        else
-                        {
-                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
-                        }
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, null, true);
+                        SetStatus(statusText, toolTipText, detailedError);
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        bool isSingleUserLocked = ex is AggregateException || restoreEx is AggregateException;
-                        string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
-                        StatusMessage = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}.{lockWarning}";
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx, true);
+                        SetStatus(statusText, toolTipText, detailedError);
                     }
                 }
                 else
                 {
-                    if (ex is AggregateException)
-                    {
-                        StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
-                    }
-                    else
-                    {
-                        StatusMessage = $"Process failed before backup: {ex.Message}";
-                    }
+                    var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, null);
+                    SetStatus(statusText, toolTipText, detailedError);
                 }
             }
             finally

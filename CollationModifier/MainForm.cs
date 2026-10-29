@@ -31,6 +31,7 @@ namespace CollationModifier
 
         private void InitializeFormState()
         {
+            statusStrip.ShowItemToolTips = true;
             cmbAuthType.Items.Clear();
             cmbAuthType.Items.Add("Windows Authentication");
             cmbAuthType.Items.Add("SQL Server Authentication");
@@ -42,6 +43,90 @@ namespace CollationModifier
             );
 
             UpdateUIState();
+        }
+
+        private void SetStatus(string message, string? toolTipText = null)
+        {
+            statusLabel.Text = message;
+            statusLabel.ToolTipText = toolTipText ?? message;
+        }
+
+        private void ShowErrorDetailsDialog(string title, string details)
+        {
+#if NETFRAMEWORK
+            try
+            {
+                using (var form = new Form())
+                {
+                    form.Text = title;
+                    form.Size = new Size(550, 420);
+                    form.StartPosition = FormStartPosition.CenterParent;
+                    form.MinimizeBox = false;
+                    form.MaximizeBox = false;
+
+                    var txtBox = new TextBox
+                    {
+                        Multiline = true,
+                        ReadOnly = true,
+                        ScrollBars = ScrollBars.Both,
+                        Dock = DockStyle.Fill,
+                        Text = details,
+                        Font = new Font("Consolas", 9.5f)
+                    };
+
+                    var panelButtons = new Panel
+                    {
+                        Dock = DockStyle.Bottom,
+                        Height = 45
+                    };
+
+                    var btnCopy = new Button
+                    {
+                        Text = "Copy Details",
+                        Width = 110,
+                        Height = 30,
+                        Left = 12,
+                        Top = 8
+                    };
+                    btnCopy.Click += (s, e) =>
+                    {
+                        try
+                        {
+                            Clipboard.SetText(details);
+                            MessageBox.Show("Error details copied to clipboard.", "Copied", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        catch (Exception clipEx)
+                        {
+                            MessageBox.Show($"Unable to copy to clipboard: {clipEx.Message}", "Clipboard Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    };
+
+                    var btnClose = new Button
+                    {
+                        Text = "Close",
+                        Width = 85,
+                        Height = 30,
+                        Left = 435,
+                        Top = 8,
+                        DialogResult = DialogResult.OK
+                    };
+
+                    panelButtons.Controls.Add(btnCopy);
+                    panelButtons.Controls.Add(btnClose);
+
+                    form.Controls.Add(txtBox);
+                    form.Controls.Add(panelButtons);
+                    form.AcceptButton = btnClose;
+                    form.CancelButton = btnClose;
+
+                    form.ShowDialog(this);
+                }
+            }
+            catch
+            {
+                MessageBox.Show(details, title, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+#endif
         }
 
         private void cmbAuthType_SelectedIndexChanged(object sender, EventArgs e)
@@ -155,7 +240,9 @@ namespace CollationModifier
             catch (Exception ex)
             {
                 _isConnected = false;
-                statusLabel.Text = $"Error: {ex.Message}";
+                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatConnectionError(ex);
+                SetStatus(statusText, toolTipText);
+                ShowErrorDetailsDialog("Connection Error", detailedError);
             }
             finally
             {
@@ -182,7 +269,9 @@ namespace CollationModifier
             }
             catch (Exception ex)
             {
-                statusLabel.Text = $"Failed to load databases: {ex.Message}";
+                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatLoadDatabasesError(ex);
+                SetStatus(statusText, toolTipText);
+                ShowErrorDetailsDialog("Load Databases Error", detailedError);
             }
         }
 
@@ -212,7 +301,7 @@ namespace CollationModifier
                 statusLabel.Text = "Altering database collation... This may take a while.";
                 await _databaseService.AlterCollationAsync(selectedDb.Name, targetCollation);
 
-                statusLabel.Text = "Collation changed successfully!";
+                SetStatus("Collation changed successfully!");
                 _logger.LogInfo($"Collation change process completed successfully for {selectedDb.Name}");
 
                 // Refresh data
@@ -231,21 +320,26 @@ namespace CollationModifier
 
                 if (backupFile != null)
                 {
-                    statusLabel.Text = $"Process failed: {ex.Message}. Attempting to restore from backup...";
                     try
                     {
                         await _databaseService.RestoreDatabaseAsync(selectedDb.Name, backupFile);
-                        statusLabel.Text = $"Process failed: {ex.Message}. Database restored successfully.";
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, null, true);
+                        SetStatus(statusText, toolTipText);
+                        ShowErrorDetailsDialog("Operation Failed", detailedError);
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        statusLabel.Text = $"Process failed: {ex.Message}. CRITICAL: Auto-restore also failed: {restoreEx.Message}";
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx, true);
+                        SetStatus(statusText, toolTipText);
+                        ShowErrorDetailsDialog("Critical Operation Failure", detailedError);
                     }
                 }
                 else
                 {
-                    statusLabel.Text = $"Process failed before backup: {ex.Message}";
+                    var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, null);
+                    SetStatus(statusText, toolTipText);
+                    ShowErrorDetailsDialog("Operation Failed", detailedError);
                 }
             }
             finally

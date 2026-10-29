@@ -1,0 +1,34 @@
+<Window x:Class="CollationModifier.ErrorDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Error Details" Height="400" Width="600"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResizeWithGrip">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="An error occurred during operation. Details below:"
+                   FontWeight="SemiBold" Margin="0,0,0,8" Foreground="#334155" />
+
+        <TextBox x:Name="txtErrorDetails" Grid.Row="1" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto" TextWrapping="Wrap" FontFamily="Consolas, Monospace"
+                 Margin="0,0,0,12" Padding="8" Background="#F8FAFC" BorderBrush="#CBD5E1"
+                 AutomationProperties.Name="Error Details Text" />
+
+        <DockPanel Grid.Row="2">
+            <Button x:Name="btnCopy" Content="Copy Details" Click="BtnCopy_Click" DockPanel.Dock="Left"
+                    Width="110" Height="28" Padding="8,4"
+                    AutomationProperties.Name="Copy Error Details to Clipboard" ToolTip="Copy error details to clipboard" />
+            <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                <TextBlock x:Name="lblCopiedStatus" Text="Copied to clipboard!" Foreground="#16A34A"
+                           FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0" Visibility="Collapsed" />
+                <Button x:Name="btnClose" Content="Close" Click="BtnClose_Click" IsCancel="True" IsDefault="True"
+                        Width="80" Height="28" Padding="8,4"
+                        AutomationProperties.Name="Close Error Details Dialog" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</Window>
