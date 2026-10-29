@@ -367,6 +367,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        public async Task ToggleConnectionAsync() => await ConnectAsync();
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
