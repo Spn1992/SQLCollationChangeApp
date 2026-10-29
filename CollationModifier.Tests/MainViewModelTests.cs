@@ -206,6 +206,20 @@ namespace CollationModifier.Tests
                 Assert(result == "Test]]Db]]Name", $"Expected 'Test]]Db]]Name', got '{result}'");
             });
 
+            await RunAsyncTest("DatabaseService_PreflightCheckAsync_HandlesConnectionErrorGracefully", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                var report = await dbService.PreflightCheckAsync("TestDB");
+
+                Assert(report != null, "Report should not be null");
+                Assert(report!.DatabaseName == "TestDB", "Report DatabaseName should match requested database");
+                Assert(report.ValidationErrors.Count > 0, "PreflightReport should contain validation error when server connection fails");
+                Assert(report.ValidationErrors[0].Contains("Database connection or pre-flight query error"), $"Expected error message to mention connection error, got '{report.ValidationErrors[0]}'");
+            });
+
             RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
             {
                 long largeSizeMb = 3000000000L;

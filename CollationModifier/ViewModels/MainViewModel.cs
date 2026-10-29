@@ -153,6 +153,9 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _isConnected, value))
                 {
+                    OnPropertyChanged(nameof(ConnectButtonText));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                     OnPropertyChanged(nameof(CanEditConnection));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
@@ -321,6 +324,12 @@ namespace CollationModifier.ViewModels
                 _logger.LogError("Failed to open log file.", ex);
                 StatusMessage = $"Unable to open log file: {ex.Message}";
             }
+        }
+
+        public void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
         }
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
