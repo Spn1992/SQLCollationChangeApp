@@ -38,6 +38,11 @@ namespace CollationModifier.ViewModels
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            Databases.CollectionChanged += (s, e) =>
+            {
+                OnPropertyChanged(nameof(HasDatabases));
+                OnPropertyChanged(nameof(MetadataEmptyStateText));
+            };
             SupportedCollations = new ObservableCollection<string>();
         }
 
@@ -167,8 +172,31 @@ namespace CollationModifier.ViewModels
             get => _selectedDatabase;
             set
             {
-                SetProperty(ref _selectedDatabase, value);
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _selectedDatabase, value))
+                {
+                    OnPropertyChanged(nameof(HasSelectedDatabase));
+                    OnPropertyChanged(nameof(MetadataEmptyStateText));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasSelectedDatabase => SelectedDatabase != null;
+        public bool HasDatabases => Databases != null && Databases.Count > 0;
+
+        public string MetadataEmptyStateText
+        {
+            get
+            {
+                if (!HasDatabases)
+                {
+                    return "No candidate databases found on this server.";
+                }
+                if (!HasSelectedDatabase)
+                {
+                    return "Select a database to view its metadata.";
+                }
+                return string.Empty;
             }
         }
 
@@ -279,16 +307,29 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
+        private void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+        }
+
+        public Task ToggleConnectionAsync() => ConnectAsync();
+
+        public void Disconnect()
+        {
+            IsConnected = false;
+            Databases.Clear();
+            SupportedCollations.Clear();
+            SelectedDatabase = null;
+            StatusMessage = "Disconnected from server.";
+            _logger.LogInfo("Disconnected from server.");
+        }
+
         public async Task ConnectAsync()
         {
             if (IsConnected)
             {
-                IsConnected = false;
-                Databases.Clear();
-                SupportedCollations.Clear();
-                SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
-                _logger.LogInfo("Disconnected from server.");
+                Disconnect();
                 return;
             }
 
@@ -319,7 +360,7 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    bool dbLoaded = await LoadDatabasesAsync();
+                    bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
                         IsConnected = true;
@@ -356,7 +397,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task<bool> LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
             {

@@ -52,6 +52,16 @@ namespace CollationModifier.Tests
 
             try
             {
+                await MainViewModelTestsRunner.RunAllTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                failed++;
+            }
+
+            try
+            {
                 TestMainFormTableLayoutPanelLayout();
                 Console.WriteLine("PASS: TestMainFormTableLayoutPanelLayout");
             }
