@@ -83,6 +83,7 @@ namespace CollationModifier.Tests
             try
             {
                 await MainViewModelTestsRunner.RunAllTestsAsync();
+                Console.WriteLine("PASS: MainViewModelTestsRunner");
             }
             catch (Exception ex)
             {
