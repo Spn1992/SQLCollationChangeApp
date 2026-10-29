@@ -48,16 +48,7 @@ namespace CollationModifier.ViewModels
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
         {
-            try
-            {
-                var type = Type.GetType("CollationModifier.Services.DatabaseService, CollationModifier");
-                if (type != null)
-                {
-                    return (IDatabaseService)Activator.CreateInstance(type, logger)!;
-                }
-            }
-            catch { }
-            throw new InvalidOperationException("No IDatabaseService implementation was provided or found.");
+            return new DatabaseService(logger);
         }
 
         #region Properties
@@ -324,13 +315,17 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public void SetStatus(string message, string? toolTip = null)
+        public async Task ToggleConnectionAsync()
         {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
+            if (IsConnected)
+            {
+                Disconnect();
+            }
+            else
+            {
+                await ConnectAsync();
+            }
         }
-
-        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public void Disconnect()
         {
@@ -344,6 +339,8 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo("Disconnected from server.");
             }
         }
+
+        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
@@ -383,6 +380,7 @@ namespace CollationModifier.ViewModels
                     bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
+                        await LoadCollationsAsync(token);
                         IsConnected = true;
                         StatusMessage = "Ready";
                     }
@@ -417,7 +415,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync() => await ConnectAsync();
+
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
@@ -442,11 +440,11 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadCollationsAsync()
+        public async Task LoadCollationsAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
+                var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
             }
@@ -520,7 +518,7 @@ namespace CollationModifier.ViewModels
 
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();

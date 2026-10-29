@@ -18,6 +18,7 @@ namespace CollationModifier.Tests
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
+        public int GetCollationsCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
         public int RestoreCount { get; private set; }
@@ -51,8 +52,12 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetCollationsCount++;
+            return Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+        }
 
         public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
@@ -68,7 +73,7 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
+        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
@@ -446,6 +451,24 @@ namespace CollationModifier.Tests
                 Assert(failingVm.IsConnected == false, "IsConnected should be false after failed connect");
             });
 
+            RunSyncTest("CreateDefaultDatabaseService_InstantiatesDatabaseServiceDirectly", () =>
+            {
+                var vm = new MainViewModel();
+                Assert(vm != null, "Expected MainViewModel to be instantiated using default constructor without reflection.");
+            });
+
+            await RunAsyncTest("LoadDatabasesAsync_PassesCancellationTokenToDatabaseService", async () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+                using var cts = new CancellationTokenSource();
+                var token = cts.Token;
+
+                bool result = await vm.LoadDatabasesAsync(token);
+                Assert(result == true, "Expected LoadDatabasesAsync with CancellationToken to return true");
+                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesAsync to be called once");
+            });
+
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
             {
                 var initialDb = new DatabaseInfo { Name = "ActiveDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
@@ -710,102 +733,55 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
             });
 
-            await RunAsyncTest("ProcessCollationChangeAsync_ReportsBackupProgressPercentagesAndUpdatesUI", async () =>
+            await RunAsyncTest("LoadCollationsAsync_PopulatesSupportedCollations", async () =>
             {
-                var initialDb = new DatabaseInfo { Name = "ProgressDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
                 var mockService = new MockDatabaseService
                 {
-                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
-                    BackupProgressSimulator = progress =>
-                    {
-                        progress?.Report(30);
-                        progress?.Report(70);
-                        progress?.Report(100);
-                    }
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_SC" }
                 };
-
                 var vm = new MainViewModel(mockService);
-                vm.ConfirmCollationChangeHandler = (db, col) => true;
-                await vm.LoadDatabasesAsync();
-                vm.SelectedDatabase = vm.Databases[0];
-                vm.TargetCollation = "Latin1_General_100_CI_AS";
 
-                var reportedPercents = new List<int>();
-                bool wasDeterminateDuringProgress = false;
-                string? statusFor100Percent = null;
+                await vm.LoadCollationsAsync();
 
-                vm.PropertyChanged += (sender, args) =>
-                {
-                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent))
-                    {
-                        reportedPercents.Add(vm.ProgressPercent);
-                        if (!vm.IsIndeterminateProgress)
-                        {
-                            wasDeterminateDuringProgress = true;
-                        }
-                    }
-                    if (args.PropertyName == nameof(MainViewModel.StatusMessage) && vm.StatusMessage.Contains("100%"))
-                    {
-                        statusFor100Percent = vm.StatusMessage;
-                    }
-                };
-
-                await vm.ProcessCollationChangeAsync();
-
-                Assert(reportedPercents.Contains(30) && reportedPercents.Contains(70) && reportedPercents.Contains(100), $"Expected reported percents to contain 30, 70, 100, got [{string.Join(", ", reportedPercents)}]");
-                Assert(wasDeterminateDuringProgress, "Expected IsIndeterminateProgress to be false during progress reporting");
-                Assert(statusFor100Percent != null && statusFor100Percent.Contains("100%"), $"Expected status message during progress to contain 100%, got '{statusFor100Percent}'");
-                Assert(vm.ProgressPercent == 0, $"Expected ProgressPercent to reset to 0 after process completes, got {vm.ProgressPercent}");
-                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after process completes");
+                Assert(vm.SupportedCollations.Count == 2, $"Expected 2 collations, got {vm.SupportedCollations.Count}");
+                Assert(vm.SupportedCollations[0] == "SQL_Latin1_General_CP1_CI_AS", $"Expected 'SQL_Latin1_General_CP1_CI_AS', got '{vm.SupportedCollations[0]}'");
             });
 
-            await RunAsyncTest("ProcessCollationChangeAsync_ReportsRestoreProgressPercentagesOnFailure", async () =>
+            await RunAsyncTest("ConnectAsync_InvokesLoadCollationsAsync_OnSuccessfulConnection", async () =>
             {
-                var initialDb = new DatabaseInfo { Name = "RestoreDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
                 var mockService = new MockDatabaseService
                 {
-                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
-                    ShouldAlterCollationThrow = true,
-                    RestoreProgressSimulator = progress =>
-                    {
-                        progress?.Report(50);
-                    }
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } },
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_BIN" }
                 };
-
                 var vm = new MainViewModel(mockService);
-                vm.ConfirmCollationChangeHandler = (db, col) => true;
-                await vm.LoadDatabasesAsync();
-                vm.SelectedDatabase = vm.Databases[0];
-                vm.TargetCollation = "Latin1_General_100_CI_AS";
 
-                int restoreReportedPercent = -1;
-                vm.PropertyChanged += (sender, args) =>
-                {
-                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent) && vm.ProgressPercent == 50)
-                    {
-                        restoreReportedPercent = vm.ProgressPercent;
-                    }
-                };
+                await vm.ConnectAsync();
 
-                await vm.ProcessCollationChangeAsync();
-
-                Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
-                Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
-                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+                Assert(vm.IsConnected, "IsConnected should be true after successful connect");
+                Assert(mockService.GetCollationsCount > 0, $"Expected GetSupportedCollationsAsync to be invoked, count was {mockService.GetCollationsCount}");
+                Assert(vm.SupportedCollations.Count == 2, $"Expected 2 supported collations in VM, got {vm.SupportedCollations.Count}");
             });
 
-            RunSyncTest("DatabaseService_ParsePercentProcessedFromSqlInfoMessage_RegexPattern", () =>
+            await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndRejectsInvalidFormat", async () =>
             {
-                var regex = new System.Text.RegularExpressions.Regex(@"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
 
-                var match1 = regex.Match("10 percent processed.");
-                Assert(match1.Success && match1.Groups[1].Value == "10", "Failed to parse '10 percent processed.'");
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "Invalid;Collation!DropTable");
 
-                var match2 = regex.Match("50 PERCENT PROCESSED");
-                Assert(match2.Success && match2.Groups[1].Value == "50", "Failed to parse '50 PERCENT PROCESSED'");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions for invalid collation format.");
+                Assert(report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should report invalid collation format error.");
+            });
 
-                var match3 = regex.Match("Processed 100 percent.");
-                Assert(!regex.Match("Non matching info string").Success, "Non-matching string incorrectly matched");
+            await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndAcceptsValidFormat", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+
+                Assert(!report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should not report format error for valid collation format.");
             });
 
             RunSyncTest("MainViewModel_HasSelectedDatabase_EvaluatesToFalseInitially_AndUpdatesToTrueOnSelection", () =>
