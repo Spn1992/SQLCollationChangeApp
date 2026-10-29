@@ -38,7 +38,12 @@ namespace CollationModifier.ViewModels
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
-            SupportedCollations = new ObservableCollection<string>();
+            Databases.CollectionChanged += (s, e) =>
+            {
+                OnPropertyChanged(nameof(HasDatabases));
+                OnPropertyChanged(nameof(MetadataEmptyStateText));
+            };
+            SupportedCollations = new ObservableRangeCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
@@ -110,7 +115,7 @@ namespace CollationModifier.ViewModels
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
-        public ObservableCollection<string> SupportedCollations { get; } = new ObservableCollection<string>();
+        public ObservableRangeCollection<string> SupportedCollations { get; } = new ObservableRangeCollection<string>();
 
         private string _selectedAuthenticationType = string.Empty;
         public string SelectedAuthenticationType
@@ -161,9 +166,10 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _isConnected, value))
                 {
-                    OnPropertyChanged(nameof(CanEditConnection));
-                    OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(ConnectButtonText));
+                    OnPropertyChanged(nameof(CanEditConnectionParameters));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
+                    OnPropertyChanged(nameof(CanEditConnection));
                 }
             }
         }
@@ -183,8 +189,31 @@ namespace CollationModifier.ViewModels
             get => _selectedDatabase;
             set
             {
-                SetProperty(ref _selectedDatabase, value);
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _selectedDatabase, value))
+                {
+                    OnPropertyChanged(nameof(HasSelectedDatabase));
+                    OnPropertyChanged(nameof(MetadataEmptyStateText));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasSelectedDatabase => SelectedDatabase != null;
+        public bool HasDatabases => Databases != null && Databases.Count > 0;
+
+        public string MetadataEmptyStateText
+        {
+            get
+            {
+                if (!HasDatabases)
+                {
+                    return "No candidate databases found on this server.";
+                }
+                if (!HasSelectedDatabase)
+                {
+                    return "Select a database to view its metadata.";
+                }
+                return string.Empty;
             }
         }
 
@@ -238,6 +267,7 @@ namespace CollationModifier.ViewModels
 
         private void InvalidateRequerySuggested()
         {
+#if NETFRAMEWORK
             try
             {
                 CommandManager.InvalidateRequerySuggested();
@@ -246,6 +276,7 @@ namespace CollationModifier.ViewModels
             {
                 // Safe fallthrough when running in test environment outside WPF runtime
             }
+#endif
         }
 
         #endregion
@@ -293,16 +324,25 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        public void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+        }
+
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public void Disconnect()
         {
-            IsConnected = false;
-            Databases.Clear();
-            SupportedCollations.Clear();
-            SelectedDatabase = null;
-            StatusMessage = "Disconnected from server.";
-            _logger.LogInfo("Disconnected from server.");
+            if (IsConnected)
+            {
+                IsConnected = false;
+                Databases.Clear();
+                SupportedCollations.Clear();
+                SelectedDatabase = null;
+                StatusMessage = "Disconnected from server.";
+                _logger.LogInfo("Disconnected from server.");
+            }
         }
 
         public async Task ConnectAsync()
@@ -354,7 +394,7 @@ namespace CollationModifier.ViewModels
                 else
                 {
                     IsConnected = false;
-                    SetStatus("Connection failed. Check credentials and server name.");
+                    StatusMessage = "Connection failed. Check credentials and server name.";
                 }
             }
             catch (OperationCanceledException)
@@ -367,7 +407,7 @@ namespace CollationModifier.ViewModels
             {
                 IsConnected = false;
                 var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
-                SetStatus(statusText, toolTipText);
+                StatusMessage = statusText;
             }
             finally
             {
@@ -375,12 +415,6 @@ namespace CollationModifier.ViewModels
                 _cts = null;
                 IsBusy = false;
             }
-        }
-
-        private void SetStatus(string message, string? toolTip = null)
-        {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
         }
 
         public async Task ToggleConnectionAsync() => await ConnectAsync();
@@ -413,11 +447,7 @@ namespace CollationModifier.ViewModels
             try
             {
                 var collations = await _databaseService.GetSupportedCollationsAsync();
-                SupportedCollations.Clear();
-                foreach (var collation in collations)
-                {
-                    SupportedCollations.Add(collation);
-                }
+                SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
             }
             catch (Exception ex)
@@ -516,7 +546,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                SetStatus("Collation changed successfully!");
+                StatusMessage = "Collation changed successfully!";
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()

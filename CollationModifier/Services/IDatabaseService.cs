@@ -17,6 +17,6 @@ namespace CollationModifier.Services
         Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
         Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
         Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default);
-        Task TrySetMultiUserAsync(string databaseName);
+        Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default);
     }
 }

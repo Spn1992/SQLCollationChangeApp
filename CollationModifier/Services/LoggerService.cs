@@ -98,13 +98,44 @@ namespace CollationModifier.Services
 
         private async Task ProcessQueueAsync()
         {
+            StreamWriter? writer = null;
+
             try
             {
                 while (await _logChannel.Reader.WaitToReadAsync().ConfigureAwait(false))
                 {
                     while (_logChannel.Reader.TryRead(out var logEntry))
                     {
-                        WriteLogToFile(logEntry);
+                        if (writer == null)
+                        {
+                            writer = CreateStreamWriter();
+                        }
+
+                        if (writer != null)
+                        {
+                            try
+                            {
+                                await writer.WriteAsync(logEntry).ConfigureAwait(false);
+                            }
+                            catch (Exception ex)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"Failed to write log entry: {ex.Message}");
+                                DisposeWriter(ref writer);
+                            }
+                        }
+                    }
+
+                    if (writer != null)
+                    {
+                        try
+                        {
+                            await writer.FlushAsync().ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Failed to flush log stream: {ex.Message}");
+                            DisposeWriter(ref writer);
+                        }
                     }
                 }
             }
@@ -112,18 +143,90 @@ namespace CollationModifier.Services
             {
                 System.Diagnostics.Debug.WriteLine($"Logger background worker encountered error: {ex.Message}");
             }
+            finally
+            {
+                while (_logChannel.Reader.TryRead(out var logEntry))
+                {
+                    if (writer == null)
+                    {
+                        writer = CreateStreamWriter();
+                    }
+
+                    if (writer != null)
+                    {
+                        try
+                        {
+                            await writer.WriteAsync(logEntry).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            System.Diagnostics.Debug.WriteLine($"Failed to write remaining log entry during cleanup: {ex.Message}");
+                            DisposeWriter(ref writer);
+                        }
+                    }
+                }
+
+                if (writer != null)
+                {
+                    try
+                    {
+                        await writer.FlushAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Error flushing log stream during cleanup: {ex.Message}");
+                    }
+                    finally
+                    {
+                        DisposeWriter(ref writer);
+                    }
+                }
+            }
         }
 
-        private void WriteLogToFile(string logEntry)
+        private StreamWriter? CreateStreamWriter()
         {
             try
             {
-                File.AppendAllText(_logFilePath, logEntry);
+                var directory = Path.GetDirectoryName(_logFilePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var fileStream = new FileStream(
+                    _logFilePath,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.ReadWrite,
+                    bufferSize: 4096,
+                    useAsync: true);
+
+                return new StreamWriter(fileStream, System.Text.Encoding.UTF8);
             }
             catch (Exception ex)
             {
-                // Fallback for logger failure (e.g., file access error) so worker loop continues running
-                System.Diagnostics.Debug.WriteLine($"Failed to write log entry to file: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Failed to create StreamWriter for log file '{_logFilePath}': {ex.Message}");
+                return null;
+            }
+        }
+
+        private static void DisposeWriter(ref StreamWriter? writer)
+        {
+            if (writer != null)
+            {
+                try
+                {
+                    writer.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Error disposing StreamWriter: {ex.Message}");
+                }
+                finally
+                {
+                    writer = null;
+                }
             }
         }
 
