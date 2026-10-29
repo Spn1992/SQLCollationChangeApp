@@ -650,6 +650,72 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
             });
 
+            RunSyncTest("MainViewModel_HasSelectedDatabase_EvaluatesToFalseInitially_AndUpdatesToTrueOnSelection", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false initially.");
+
+                var db = new DatabaseInfo { Name = "TestDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(db);
+
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false before database selection.");
+
+                vm.SelectedDatabase = db;
+                Assert(vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be true after selecting a database.");
+
+                vm.SelectedDatabase = null;
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false after clearing selection.");
+            });
+
+            RunSyncTest("MainViewModel_MetadataEmptyStateText_ProvidesContextSensitiveGuidance", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+
+                // 1. When Databases is empty (Databases.Count == 0)
+                Assert(!vm.HasDatabases, "Expected HasDatabases to be false when list is empty.");
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false.");
+                Assert(vm.MetadataEmptyStateText.Contains("No candidate databases found"), $"Expected empty state text to mention no candidate databases, got: '{vm.MetadataEmptyStateText}'");
+
+                // 2. When Databases is populated but no database selected
+                var db = new DatabaseInfo { Name = "DB1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(db);
+                Assert(vm.HasDatabases, "Expected HasDatabases to be true when list has items.");
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false.");
+                Assert(vm.MetadataEmptyStateText.Contains("Select a database"), $"Expected empty state text to request database selection, got: '{vm.MetadataEmptyStateText}'");
+
+                // 3. When a database is selected
+                vm.SelectedDatabase = db;
+                Assert(vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be true.");
+                Assert(string.IsNullOrEmpty(vm.MetadataEmptyStateText), $"Expected empty state text to be empty when database selected, got: '{vm.MetadataEmptyStateText}'");
+            });
+
+            RunSyncTest("MainViewModel_RaisesPropertyChanged_ForEmptyStateProperties", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                var changedProperties = new List<string>();
+
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        changedProperties.Add(args.PropertyName);
+                    }
+                };
+
+                var db = new DatabaseInfo { Name = "NotifyDB" };
+                vm.Databases.Add(db);
+
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasDatabases)), "Expected PropertyChanged for HasDatabases on collection change.");
+                Assert(changedProperties.Contains(nameof(MainViewModel.MetadataEmptyStateText)), "Expected PropertyChanged for MetadataEmptyStateText on collection change.");
+
+                changedProperties.Clear();
+                vm.SelectedDatabase = db;
+
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasSelectedDatabase)), "Expected PropertyChanged for HasSelectedDatabase on selection.");
+                Assert(changedProperties.Contains(nameof(MainViewModel.MetadataEmptyStateText)), "Expected PropertyChanged for MetadataEmptyStateText on selection.");
+            });
+
             RunSyncTest("AppXaml_FocusVisualStyle_ImplicitStyles_Configured", () =>
             {
                 string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));

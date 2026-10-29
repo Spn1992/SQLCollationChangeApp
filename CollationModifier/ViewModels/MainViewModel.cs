@@ -176,8 +176,31 @@ namespace CollationModifier.ViewModels
             get => _selectedDatabase;
             set
             {
-                SetProperty(ref _selectedDatabase, value);
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _selectedDatabase, value))
+                {
+                    OnPropertyChanged(nameof(HasSelectedDatabase));
+                    OnPropertyChanged(nameof(MetadataEmptyStateText));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasSelectedDatabase => SelectedDatabase != null;
+        public bool HasDatabases => Databases != null && Databases.Count > 0;
+
+        public string MetadataEmptyStateText
+        {
+            get
+            {
+                if (!HasDatabases)
+                {
+                    return "No candidate databases found on this server.";
+                }
+                if (!HasSelectedDatabase)
+                {
+                    return "Select a database to view its metadata.";
+                }
+                return string.Empty;
             }
         }
 
