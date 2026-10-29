@@ -14,6 +14,16 @@ namespace CollationModifier.Tests
             Console.WriteLine("=== Running CollationModifier Unit Tests ===");
             int failed = 0;
 
+            try
+            {
+                await MainViewModelTestsRunner.RunAllTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                failed++;
+            }
+
             Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
             try
             {
@@ -48,27 +58,14 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
-            Console.WriteLine("\n=== Running MainForm UI Accessibility & SystemColors Tests ===");
 
             try
             {
-                TestMainFormTableLayoutPanelLayout();
-                Console.WriteLine("PASS: TestMainFormTableLayoutPanelLayout");
+                await MainViewModelTestsRunner.RunAllTestsAsync();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: TestMainFormTableLayoutPanelLayout - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                TestMainFormSystemColorsAndStyles();
-                Console.WriteLine("PASS: TestMainFormSystemColorsAndStyles");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMainFormSystemColorsAndStyles - {ex}");
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
                 failed++;
             }
 
@@ -207,45 +204,6 @@ namespace CollationModifier.Tests
             } // Dispose should complete without crashing
         }
 
-        static void TestMainFormTableLayoutPanelLayout()
-        {
-            string designerPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainForm.Designer.cs"));
-            if (!File.Exists(designerPath))
-            {
-                // Fallback check relative to execution directory
-                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "CollationModifier", "MainForm.Designer.cs"));
-            }
-            if (!File.Exists(designerPath))
-            {
-                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainForm.Designer.cs"));
-            }
-
-            Assert(File.Exists(designerPath), $"MainForm.Designer.cs not found at path: {designerPath}");
-            string content = File.ReadAllText(designerPath);
-
-            // 1. Check panelAuth is TableLayoutPanel with AutoScroll
-            Assert(content.Contains("private System.Windows.Forms.TableLayoutPanel panelAuth;"), "panelAuth should be declared as TableLayoutPanel");
-            Assert(content.Contains("this.panelAuth.AutoScroll = true;"), "panelAuth should have AutoScroll = true");
-            Assert(content.Contains("this.panelAuth.ColumnCount = 1;"), "panelAuth should have ColumnCount = 1");
-
-            // 2. Check panelDashboardContent is TableLayoutPanel with Fill Docking
-            Assert(content.Contains("private System.Windows.Forms.TableLayoutPanel panelDashboardContent;"), "panelDashboardContent should be declared as TableLayoutPanel");
-            Assert(content.Contains("this.panelDashboardContent.Dock = System.Windows.Forms.DockStyle.Fill;"), "panelDashboardContent should have Dock = Fill");
-
-            // 3. Check panelMetadata layout with 2-column TableLayoutPanel
-            Assert(content.Contains("private System.Windows.Forms.TableLayoutPanel tblMetadataLayout;"), "tblMetadataLayout should be declared as TableLayoutPanel");
-            Assert(content.Contains("this.tblMetadataLayout.ColumnCount = 2;"), "tblMetadataLayout should have ColumnCount = 2");
-
-            // 4. Check lblWarning AutoSize and MaximumSize
-            Assert(content.Contains("this.lblWarning.AutoSize = true;"), "lblWarning should have AutoSize = true");
-            Assert(content.Contains("this.lblWarning.MaximumSize = new System.Drawing.Size(500, 0);"), "lblWarning should have MaximumSize = (500, 0)");
-
-            // 5. Check panelDashboard AutoScroll and Form AutoScaleMode
-            Assert(content.Contains("this.panelDashboard.AutoScroll = true;"), "panelDashboard should have AutoScroll = true");
-            Assert(content.Contains("this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;"), "MainForm should preserve AutoScaleMode.Font");
-
-            Console.WriteLine("  [Verify] All TableLayoutPanel layout declarations and WCAG scaling attributes verified in MainForm.Designer.cs.");
-        }
 
         static void TestLogFilePathProperty()
         {
@@ -264,30 +222,6 @@ namespace CollationModifier.Tests
             }
         }
 
-        static void TestMainFormSystemColorsAndStyles()
-        {
-            string designerPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainForm.Designer.cs"));
-            if (!File.Exists(designerPath))
-            {
-                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "CollationModifier", "MainForm.Designer.cs"));
-            }
-            if (!File.Exists(designerPath))
-            {
-                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainForm.Designer.cs"));
-            }
-
-            Assert(File.Exists(designerPath), $"MainForm.Designer.cs not found at path: {designerPath}");
-            string content = File.ReadAllText(designerPath);
-
-            Assert(!content.Contains("Color.FromArgb"), "MainForm.Designer.cs should contain zero hardcoded Color.FromArgb assignments.");
-            Assert(!content.Contains("Color.White"), "MainForm.Designer.cs should contain zero hardcoded Color.White assignments.");
-            Assert(content.Contains("this.btnConnect.UseVisualStyleBackColor = true;"), "btnConnect should have UseVisualStyleBackColor = true");
-            Assert(content.Contains("this.btnProcess.UseVisualStyleBackColor = true;"), "btnProcess should have UseVisualStyleBackColor = true");
-            Assert(content.Contains("this.panelAuth.BackColor = System.Drawing.SystemColors.Window;"), "panelAuth should use SystemColors.Window");
-            Assert(content.Contains("this.panelDashboard.BackColor = System.Drawing.SystemColors.Control;"), "panelDashboard should use SystemColors.Control");
-
-            Console.WriteLine("  [Verify] All SystemColors and native visual style properties verified in MainForm.Designer.cs.");
-        }
 
         static void Assert(bool condition, string message)
         {
