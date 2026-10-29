@@ -123,7 +123,7 @@ namespace CollationModifier.Tests
             LastTargetCollation = newCollation;
             if (ShouldAlterCollationThrow)
             {
-                var primaryEx = new InvalidOperationException("Table constraint violation during collation alter.");
+                var primaryEx = AlterCollationExceptionToThrow ?? new InvalidOperationException("Table constraint violation during collation alter.");
                 try
                 {
                     await TrySetMultiUserAsync(databaseName, cancellationToken);
