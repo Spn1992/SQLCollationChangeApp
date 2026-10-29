@@ -1,31 +1,32 @@
 {
   "format": 1,
   "restore": {
-    "/app/CollationModifier/CollationModifier.csproj": {}
+    "/app/SQLCollationChangeApp/CollationModifier/CollationModifier.csproj": {}
   },
   "projects": {
-    "/app/CollationModifier/CollationModifier.csproj": {
+    "/app/SQLCollationChangeApp/CollationModifier/CollationModifier.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "/app/CollationModifier/CollationModifier.csproj",
+        "projectUniqueName": "/app/SQLCollationChangeApp/CollationModifier/CollationModifier.csproj",
         "projectName": "CollationModifier",
-        "projectPath": "/app/CollationModifier/CollationModifier.csproj",
+        "projectPath": "/app/SQLCollationChangeApp/CollationModifier/CollationModifier.csproj",
         "packagesPath": "/home/jules/.nuget/packages/",
-        "outputPath": "/app/CollationModifier/obj/",
+        "outputPath": "/app/SQLCollationChangeApp/CollationModifier/obj/",
         "projectStyle": "PackageReference",
         "configFilePaths": [
+          "/app/SQLCollationChangeApp/nuget.config",
           "/home/jules/.nuget/NuGet/NuGet.Config"
         ],
         "originalTargetFrameworks": [
-          "net48"
+          "net8.0"
         ],
         "sources": {
           "/usr/lib/dotnet/library-packs": {},
-          "https://api.nuget.org/v3/index.json": {}
+          "https://www.nuget.org/api/v2": {}
         },
         "frameworks": {
-          "net48": {
-            "targetAlias": "net48",
+          "net8.0": {
+            "targetAlias": "net8.0",
             "projectReferences": {}
           }
         },
@@ -42,21 +43,35 @@
         "SdkAnalysisLevel": "10.0.100"
       },
       "frameworks": {
-        "net48": {
-          "targetAlias": "net48",
+        "net8.0": {
+          "targetAlias": "net8.0",
           "dependencies": {
-            "Microsoft.NETFramework.ReferenceAssemblies": {
-              "suppressParent": "All",
+            "Microsoft.Data.SqlClient": {
               "target": "Package",
-              "version": "[1.0.3, )",
-              "autoReferenced": true
+              "version": "[5.2.2, )"
             },
-            "System.Data.SqlClient": {
+            "System.Threading.Channels": {
               "target": "Package",
-              "version": "[4.8.6, )"
+              "version": "[8.0.0, )"
             }
           },
-          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/10.0.103/RuntimeIdentifierGraph.json"
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/usr/lib/dotnet/sdk/10.0.113/PortableRuntimeIdentifierGraph.json"
         }
       }
     }

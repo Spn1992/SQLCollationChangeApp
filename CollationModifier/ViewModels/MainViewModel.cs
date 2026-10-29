@@ -327,12 +327,15 @@ namespace CollationModifier.ViewModels
 
         public void Disconnect()
         {
-            IsConnected = false;
-            Databases.Clear();
-            SupportedCollations.Clear();
-            SelectedDatabase = null;
-            StatusMessage = "Disconnected from server.";
-            _logger.LogInfo("Disconnected from server.");
+            if (IsConnected)
+            {
+                IsConnected = false;
+                Databases.Clear();
+                SupportedCollations.Clear();
+                SelectedDatabase = null;
+                StatusMessage = "Disconnected from server.";
+                _logger.LogInfo("Disconnected from server.");
+            }
         }
 
         public async Task ConnectAsync()
@@ -384,7 +387,7 @@ namespace CollationModifier.ViewModels
                 else
                 {
                     IsConnected = false;
-                    SetStatus("Connection failed. Check credentials and server name.");
+                    StatusMessage = "Connection failed. Check credentials and server name.";
                 }
             }
             catch (OperationCanceledException)
@@ -397,7 +400,7 @@ namespace CollationModifier.ViewModels
             {
                 IsConnected = false;
                 var (statusText, toolTipText) = ErrorFormattingHelper.FormatConnectionError(ex);
-                SetStatus(statusText, toolTipText);
+                StatusMessage = statusText;
             }
             finally
             {
@@ -527,7 +530,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                SetStatus("Collation changed successfully!");
+                StatusMessage = "Collation changed successfully!";
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()
