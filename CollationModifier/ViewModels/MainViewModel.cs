@@ -87,7 +87,7 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
-        private void SetStatus(string message, string? toolTip = null)
+        public void SetStatus(string message, string? toolTip = null)
         {
             StatusMessage = message;
             StatusToolTip = toolTip;
