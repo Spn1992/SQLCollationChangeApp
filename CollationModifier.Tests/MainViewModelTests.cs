@@ -470,7 +470,7 @@ namespace CollationModifier.Tests
                 Assert(vm.Databases.Count == 2, $"Expected 2 databases, got {vm.Databases.Count}");
                 vm.SelectedDatabase = vm.Databases[0];
 
-                vm.Disconnect();
+                await vm.ConnectAsync();
 
                 Assert(!vm.IsConnected, "IsConnected should be false after disconnect");
                 Assert(vm.Databases.Count == 0, "Databases should be cleared after disconnect");

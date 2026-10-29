@@ -87,6 +87,12 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
+        public void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+        }
+
         // Authentication Properties
         private string _serverName = "localhost";
         public string ServerName
