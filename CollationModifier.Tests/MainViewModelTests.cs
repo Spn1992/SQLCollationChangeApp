@@ -51,7 +51,7 @@ namespace CollationModifier.Tests
         public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
-        public Task TrySetMultiUserAsync(string databaseName)
+        public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
             TrySetMultiUserCount++;
             if (TrySetMultiUserExceptionToThrow != null)
@@ -83,13 +83,13 @@ namespace CollationModifier.Tests
             return "/tmp/mock.bak";
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile)
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
         {
             if (RestoreExceptionToThrow != null)
             {
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName);
+                    await TrySetMultiUserAsync(databaseName, cancellationToken);
                 }
                 catch (Exception resetEx)
                 {
@@ -114,7 +114,7 @@ namespace CollationModifier.Tests
                 var primaryEx = AlterCollationExceptionToThrow ?? new InvalidOperationException("Table constraint violation during collation alter.");
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName);
+                    await TrySetMultiUserAsync(databaseName, cancellationToken);
                 }
                 catch (Exception resetEx)
                 {
@@ -123,6 +123,10 @@ namespace CollationModifier.Tests
                         primaryEx, resetEx);
                 }
                 throw primaryEx;
+            }
+            if (AlterCollationExceptionToThrow != null)
+            {
+                throw AlterCollationExceptionToThrow;
             }
         }
     }
@@ -151,6 +155,39 @@ namespace CollationModifier.Tests
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
+
+            await RunAsyncTest("LoadCollationsAsync_FiresSingleCollectionChangedResetEvent", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = new List<string>
+                    {
+                        "SQL_Latin1_General_CP1_CI_AS",
+                        "Latin1_General_100_CI_AS",
+                        "Japanese_CI_AS",
+                        "French_CI_AS"
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                int collectionChangedCount = 0;
+                NotifyCollectionChangedAction? lastAction = null;
+
+                vm.SupportedCollations.CollectionChanged += (s, e) =>
+                {
+                    collectionChangedCount++;
+                    lastAction = e.Action;
+                };
+
+                await vm.LoadCollationsAsync();
+
+                Assert(collectionChangedCount == 1, $"Expected collectionChangedCount 1, got {collectionChangedCount}");
+                Assert(lastAction == NotifyCollectionChangedAction.Reset, $"Expected Reset action, got {lastAction}");
+                Assert(vm.SupportedCollations.Count == 4, $"Expected 4 collations in collection, got {vm.SupportedCollations.Count}");
+                Assert(vm.SupportedCollations[0] == "SQL_Latin1_General_CP1_CI_AS", "First collation mismatch");
+                Assert(vm.SupportedCollations[3] == "French_CI_AS", "Fourth collation mismatch");
+            });
+
             RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {
                 var db = new DatabaseInfo
@@ -177,6 +214,20 @@ namespace CollationModifier.Tests
                 Assert(method != null, "EscapeIdentifier method not found");
                 string result = (string)method!.Invoke(null, new object[] { "Test]Db]Name" })!;
                 Assert(result == "Test]]Db]]Name", $"Expected 'Test]]Db]]Name', got '{result}'");
+            });
+
+            await RunAsyncTest("DatabaseService_PreflightCheckAsync_HandlesConnectionErrorGracefully", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                var report = await dbService.PreflightCheckAsync("TestDB");
+
+                Assert(report != null, "Report should not be null");
+                Assert(report!.DatabaseName == "TestDB", "Report DatabaseName should match requested database");
+                Assert(report.ValidationErrors.Count > 0, "PreflightReport should contain validation error when server connection fails");
+                Assert(report.ValidationErrors[0].Contains("Database connection or pre-flight query error"), $"Expected error message to mention connection error, got '{report.ValidationErrors[0]}'");
             });
 
             RunSyncTest("DatabaseInfo_DatabaseSizeFormatting_Handles64BitIntegerSizes", () =>
@@ -481,7 +532,7 @@ namespace CollationModifier.Tests
                 Assert(vm.Databases.Count == 2, $"Expected 2 databases, got {vm.Databases.Count}");
                 vm.SelectedDatabase = vm.Databases[0];
 
-                vm.Disconnect();
+                await vm.ConnectAsync();
 
                 Assert(!vm.IsConnected, "IsConnected should be false after disconnect");
                 Assert(vm.Databases.Count == 0, "Databases should be cleared after disconnect");
@@ -709,6 +760,72 @@ namespace CollationModifier.Tests
                 vm.ShowErrorDetailsCommand.Execute(null);
 
                 Assert(receivedErrorDetails == detailedMsg, $"ShowErrorDetailsHandler should receive detailed error message, got '{receivedErrorDetails}'");
+            });
+
+            RunSyncTest("MainViewModel_HasSelectedDatabase_EvaluatesToFalseInitially_AndUpdatesToTrueOnSelection", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false initially.");
+
+                var db = new DatabaseInfo { Name = "TestDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(db);
+
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false before database selection.");
+
+                vm.SelectedDatabase = db;
+                Assert(vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be true after selecting a database.");
+
+                vm.SelectedDatabase = null;
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false after clearing selection.");
+            });
+
+            RunSyncTest("MainViewModel_MetadataEmptyStateText_ProvidesContextSensitiveGuidance", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+
+                // 1. When Databases is empty (Databases.Count == 0)
+                Assert(!vm.HasDatabases, "Expected HasDatabases to be false when list is empty.");
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false.");
+                Assert(vm.MetadataEmptyStateText.Contains("No candidate databases found"), $"Expected empty state text to mention no candidate databases, got: '{vm.MetadataEmptyStateText}'");
+
+                // 2. When Databases is populated but no database selected
+                var db = new DatabaseInfo { Name = "DB1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(db);
+                Assert(vm.HasDatabases, "Expected HasDatabases to be true when list has items.");
+                Assert(!vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be false.");
+                Assert(vm.MetadataEmptyStateText.Contains("Select a database"), $"Expected empty state text to request database selection, got: '{vm.MetadataEmptyStateText}'");
+
+                // 3. When a database is selected
+                vm.SelectedDatabase = db;
+                Assert(vm.HasSelectedDatabase, "Expected HasSelectedDatabase to be true.");
+                Assert(string.IsNullOrEmpty(vm.MetadataEmptyStateText), $"Expected empty state text to be empty when database selected, got: '{vm.MetadataEmptyStateText}'");
+            });
+
+            RunSyncTest("MainViewModel_RaisesPropertyChanged_ForEmptyStateProperties", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                var changedProperties = new List<string>();
+
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        changedProperties.Add(args.PropertyName);
+                    }
+                };
+
+                var db = new DatabaseInfo { Name = "NotifyDB" };
+                vm.Databases.Add(db);
+
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasDatabases)), "Expected PropertyChanged for HasDatabases on collection change.");
+                Assert(changedProperties.Contains(nameof(MainViewModel.MetadataEmptyStateText)), "Expected PropertyChanged for MetadataEmptyStateText on collection change.");
+
+                changedProperties.Clear();
+                vm.SelectedDatabase = db;
+
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasSelectedDatabase)), "Expected PropertyChanged for HasSelectedDatabase on selection.");
+                Assert(changedProperties.Contains(nameof(MainViewModel.MetadataEmptyStateText)), "Expected PropertyChanged for MetadataEmptyStateText on selection.");
             });
 
             RunSyncTest("AppXaml_FocusVisualStyle_ImplicitStyles_Configured", () =>
