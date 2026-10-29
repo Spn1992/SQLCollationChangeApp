@@ -31,12 +31,18 @@
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
 
+        <!-- Implicit Default Button Style -->
+        <Style TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}" />
+        </Style>
+
         <Style TargetType="TextBox">
             <Setter Property="Padding" Value="8,6" />
             <Setter Property="BorderBrush" Value="#CBD5E1" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Background" Value="White" />
             <Setter Property="Foreground" Value="#0F172A" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}" />
             <Style.Resources>
                 <Style TargetType="Border">
                     <Setter Property="CornerRadius" Value="4" />
@@ -45,7 +51,6 @@
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
-                    <Setter Property="BorderThickness" Value="2" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -56,6 +61,7 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Background" Value="White" />
             <Setter Property="Foreground" Value="#0F172A" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}" />
             <Style.Resources>
                 <Style TargetType="Border">
                     <Setter Property="CornerRadius" Value="4" />
@@ -64,7 +70,6 @@
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
-                    <Setter Property="BorderThickness" Value="2" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -74,10 +79,10 @@
             <Setter Property="BorderBrush" Value="#CBD5E1" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Background" Value="White" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}" />
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
-                    <Setter Property="BorderThickness" Value="2" />
                 </Trigger>
             </Style.Triggers>
         </Style>

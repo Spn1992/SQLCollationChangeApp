@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -335,7 +335,7 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    bool dbLoaded = await LoadDatabasesAsync();
+                    bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
                         IsConnected = true;
@@ -371,6 +371,7 @@ namespace CollationModifier.ViewModels
                 IsBusy = false;
             }
         }
+
 
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
