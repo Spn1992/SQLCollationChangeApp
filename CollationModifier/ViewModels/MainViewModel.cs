@@ -38,21 +38,17 @@ namespace CollationModifier.ViewModels
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
+            Databases.CollectionChanged += (s, e) =>
+            {
+                OnPropertyChanged(nameof(HasDatabases));
+                OnPropertyChanged(nameof(MetadataEmptyStateText));
+            };
             SupportedCollations = new ObservableRangeCollection<string>();
         }
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
         {
-            try
-            {
-                var type = Type.GetType("CollationModifier.Services.DatabaseService, CollationModifier");
-                if (type != null)
-                {
-                    return (IDatabaseService)Activator.CreateInstance(type, logger)!;
-                }
-            }
-            catch { }
-            throw new InvalidOperationException("No IDatabaseService implementation was provided or found.");
+            return new DatabaseService(logger);
         }
 
         #region Properties
@@ -229,12 +225,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private void SetStatus(string text, string? toolTip = null)
-        {
-            StatusMessage = text;
-            StatusToolTip = toolTip;
-        }
-
         private static string FormatExceptionMessage(Exception ex)
         {
             if (ex is AggregateException aggEx)
@@ -259,12 +249,6 @@ namespace CollationModifier.ViewModels
             return msg.IndexOf("SINGLE_USER", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    msg.IndexOf("reset failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
                    msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        private void SetStatus(string message, string? toolTip = null)
-        {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
         }
 
         private void InvalidateRequerySuggested()
@@ -326,13 +310,17 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public void SetStatus(string message, string? toolTip = null)
+        public async Task ToggleConnectionAsync()
         {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
+            if (IsConnected)
+            {
+                Disconnect();
+            }
+            else
+            {
+                await ConnectAsync();
+            }
         }
-
-        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public void Disconnect()
         {
@@ -346,6 +334,8 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo("Disconnected from server.");
             }
         }
+
+        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
@@ -419,7 +409,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync() => await ConnectAsync();
+
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
