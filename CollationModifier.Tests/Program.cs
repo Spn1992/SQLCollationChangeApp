@@ -70,6 +70,16 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            try
+            {
+                await MainViewModelTestsRunner.RunAllTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                failed++;
+            }
+
             if (failed == 0)
             {
                 Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
