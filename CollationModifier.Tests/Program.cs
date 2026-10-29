@@ -48,6 +48,28 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            try
+            {
+                await TestBatchFlushOnQueueDrain();
+                Console.WriteLine("PASS: TestBatchFlushOnQueueDrain");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestBatchFlushOnQueueDrain - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                await TestConcurrentFileReadWithFileShareReadWrite();
+                Console.WriteLine("PASS: TestConcurrentFileReadWithFileShareReadWrite");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestConcurrentFileReadWithFileShareReadWrite - {ex}");
+                failed++;
+            }
+
             Console.WriteLine("\n=== Running MainForm UI Accessibility & SystemColors Tests ===");
 
             try
@@ -80,6 +102,16 @@ namespace CollationModifier.Tests
             catch (Exception ex)
             {
                 Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                await MainViewModelTestsRunner.RunTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
                 failed++;
             }
 
@@ -194,6 +226,103 @@ namespace CollationModifier.Tests
                 // Wait briefly for background loop to attempt write and handle exception
                 await Task.Delay(200);
             } // Dispose should complete without crashing
+        }
+
+        static async Task TestBatchFlushOnQueueDrain()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_test_batch_flush_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    for (int i = 0; i < 50; i++)
+                    {
+                        logger.LogInfo($"Batch 1 message {i}");
+                    }
+
+                    // Wait briefly for background queue loop to read and drain the channel, triggering batch flush
+                    await Task.Delay(150);
+
+                    // Verify lines were written to disk before disposing logger
+                    Assert(File.Exists(testLogPath), "Log file should exist before disposal after queue drain.");
+                    using (var fs = new FileStream(testLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var sr = new StreamReader(fs))
+                    {
+                        string text = await sr.ReadToEndAsync();
+                        string[] lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                        Assert(lines.Length == 50, $"Expected 50 lines flushed to disk on queue drain, found {lines.Length}.");
+                    }
+
+                    for (int i = 0; i < 50; i++)
+                    {
+                        logger.LogInfo($"Batch 2 message {i}");
+                    }
+
+                    await Task.Delay(150);
+
+                    using (var fs = new FileStream(testLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        using (var sr = new StreamReader(fs))
+                        {
+                            string text = await sr.ReadToEndAsync();
+                            string[] lines = text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+                            Assert(lines.Length == 100, $"Expected 100 lines flushed to disk on second queue drain, found {lines.Length}.");
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
+
+        static async Task TestConcurrentFileReadWithFileShareReadWrite()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_test_fileshare_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    logger.LogInfo("Initial log entry");
+                    await Task.Delay(100);
+
+                    // Concurrently read from log file using FileShare.ReadWrite while logger keeps stream open
+                    using (var stream = new FileStream(testLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var reader = new StreamReader(stream))
+                    {
+                        string content = await reader.ReadToEndAsync();
+                        Assert(content.Contains("Initial log entry"), "Concurrent reader should be able to read active log file.");
+                    }
+
+                    // Write more while reading
+                    for (int i = 0; i < 20; i++)
+                    {
+                        logger.LogInfo($"Concurrent message {i}");
+                    }
+
+                    await Task.Delay(100);
+
+                    using (var stream = new FileStream(testLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var reader = new StreamReader(stream))
+                    {
+                        string content = await reader.ReadToEndAsync();
+                        Assert(content.Contains("Concurrent message 19"), "Concurrent reader should read updated contents after batch flush.");
+                    }
+                }
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
         }
 
         static void TestMainFormTableLayoutPanelLayout()
