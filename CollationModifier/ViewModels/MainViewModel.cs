@@ -153,9 +153,6 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
                     OnPropertyChanged(nameof(CanEditConnection));
-                    OnPropertyChanged(nameof(CanEditConnectionParameters));
-                    OnPropertyChanged(nameof(CanEditSqlCredentials));
-                    OnPropertyChanged(nameof(ConnectButtonText));
                 }
             }
         }
@@ -375,6 +372,7 @@ namespace CollationModifier.ViewModels
                     bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
+                        await LoadCollationsAsync(token);
                         IsConnected = true;
                         StatusMessage = "Ready";
                     }
@@ -434,11 +432,11 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadCollationsAsync()
+        public async Task LoadCollationsAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
+                var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
             }
@@ -509,7 +507,7 @@ namespace CollationModifier.ViewModels
 
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();
