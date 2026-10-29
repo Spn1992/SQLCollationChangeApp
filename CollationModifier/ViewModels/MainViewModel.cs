@@ -87,6 +87,14 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
+        public void SetStatus(string statusText, string? toolTipText = null)
+        {
+            StatusMessage = statusText;
+            StatusToolTip = toolTipText;
+        }
+
+        public async Task ToggleConnectionAsync() => await ConnectAsync();
+
         // Authentication Properties
         private string _serverName = "localhost";
         public string ServerName
@@ -145,10 +153,13 @@ namespace CollationModifier.ViewModels
             get => _isConnected;
             set
             {
-                if (SetProperty(ref _isConnected, value))
-                {
-                    OnPropertyChanged(nameof(CanEditConnection));
-                }
+                if (_isConnected == value) return;
+                _isConnected = value;
+                OnPropertyChanged(nameof(CanEditConnection));
+                OnPropertyChanged(nameof(ConnectButtonText));
+                OnPropertyChanged(nameof(CanEditConnectionParameters));
+                OnPropertyChanged(nameof(CanEditSqlCredentials));
+                OnPropertyChanged(nameof(IsConnected));
             }
         }
 
@@ -279,16 +290,21 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
+        public void Disconnect()
+        {
+            IsConnected = false;
+            Databases.Clear();
+            SupportedCollations.Clear();
+            SelectedDatabase = null;
+            StatusMessage = "Disconnected from server.";
+            _logger.LogInfo("Disconnected from server.");
+        }
+
         public async Task ConnectAsync()
         {
             if (IsConnected)
             {
-                IsConnected = false;
-                Databases.Clear();
-                SupportedCollations.Clear();
-                SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
-                _logger.LogInfo("Disconnected from server.");
+                Disconnect();
                 return;
             }
 
@@ -356,7 +372,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task<bool> LoadDatabasesAsync()
+        public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
             {
