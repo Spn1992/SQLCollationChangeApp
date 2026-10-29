@@ -21,6 +21,7 @@ namespace CollationModifier.Tests
         public int GetCollationsCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
+        public int RestoreCount { get; private set; }
         public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
@@ -31,6 +32,8 @@ namespace CollationModifier.Tests
         public Exception? RestoreExceptionToThrow { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
+        public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
+        public Action<IProgress<int>?>? RestoreProgressSimulator { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
@@ -77,19 +80,23 @@ namespace CollationModifier.Tests
             return Task.FromResult(PreflightReportToReturn);
         }
 
-        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+        public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             if (OnBackupDatabase != null)
             {
                 await OnBackupDatabase(cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
+            BackupProgressSimulator?.Invoke(progress);
             BackupCount++;
             return "/tmp/mock.bak";
         }
 
-        public async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
+        public async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            RestoreCount++;
+            RestoreProgressSimulator?.Invoke(progress);
             if (RestoreExceptionToThrow != null)
             {
                 try
@@ -141,12 +148,49 @@ namespace CollationModifier.Tests
         public override Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
+    public class SynchronousSynchronizationContext : SynchronizationContext
+    {
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            var prev = Current;
+            try
+            {
+                SetSynchronizationContext(this);
+                d(state);
+            }
+            finally
+            {
+                SetSynchronizationContext(prev);
+            }
+        }
+
+        public override void Send(SendOrPostCallback d, object? state)
+        {
+            var prev = Current;
+            try
+            {
+                SetSynchronizationContext(this);
+                d(state);
+            }
+            finally
+            {
+                SetSynchronizationContext(prev);
+            }
+        }
+
+        public override SynchronizationContext CreateCopy()
+        {
+            return this;
+        }
+    }
+
     public static class MainViewModelTestsRunner
     {
         public static Task RunAllTestsAsync() => RunTestsAsync();
 
         public static async Task RunTestsAsync()
         {
+            SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
@@ -379,7 +423,9 @@ namespace CollationModifier.Tests
                 vm.PropertyChanged += (sender, args) =>
                 {
                     if (args.PropertyName != null)
+                    {
                         notifiedProperties.Add(args.PropertyName);
+                    }
                 };
 
                 vm.IsConnected = true;
@@ -836,6 +882,7 @@ namespace CollationModifier.Tests
             {
                 try
                 {
+                    SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
                     await testAction();
                     Console.WriteLine($"  [PASS] {name}");
                 }

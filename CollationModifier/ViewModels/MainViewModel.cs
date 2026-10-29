@@ -83,10 +83,18 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
-        public void SetStatus(string message, string? toolTip = null)
+        private int _progressPercent;
+        public int ProgressPercent
         {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
+            get => _progressPercent;
+            set => SetProperty(ref _progressPercent, value);
+        }
+
+        private bool _isIndeterminateProgress = true;
+        public bool IsIndeterminateProgress
+        {
+            get => _isIndeterminateProgress;
+            set => SetProperty(ref _isIndeterminateProgress, value);
         }
 
         // Authentication Properties
@@ -501,6 +509,9 @@ namespace CollationModifier.ViewModels
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
 
+            ProgressPercent = 0;
+            IsIndeterminateProgress = true;
+
             try
             {
                 token.ThrowIfCancellationRequested();
@@ -519,7 +530,13 @@ namespace CollationModifier.ViewModels
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
-                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var backupProgress = new Progress<int>(percent =>
+                {
+                    ProgressPercent = percent;
+                    IsIndeterminateProgress = false;
+                    StatusMessage = $"Backing up database... {percent}%";
+                });
+                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, backupProgress, token);
 
                 token.ThrowIfCancellationRequested();
 
@@ -550,7 +567,13 @@ namespace CollationModifier.ViewModels
                     StatusMessage = $"Process failed: {formattedError}. Attempting to restore from backup...";
                     try
                     {
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, token);
                         if (ex is AggregateException)
                         {
                             StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
@@ -584,6 +607,8 @@ namespace CollationModifier.ViewModels
             {
                 _cts?.Dispose();
                 _cts = null;
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
                 IsBusy = false;
             }
         }
