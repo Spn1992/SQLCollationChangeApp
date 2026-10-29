@@ -16,25 +16,26 @@ namespace CollationModifier.Tests
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
         public List<string> CollationsToReturn { get; set; } = new();
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
-        public bool ThrowOnGetDatabases { get; set; }
+        public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
         public int AlterCollationCount { get; private set; }
         public int BackupCount { get; private set; }
         public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
-        public bool ThrowOnGetDatabases { get; set; } = false;
         public bool ShouldAlterCollationThrow { get; set; } = false;
         public bool ShouldTrySetMultiUserFail { get; set; } = false;
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
+        public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
+        public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public virtual Task<bool> TestConnectionAsync() => Task.FromResult(true);
+        public virtual Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
 
-        public Task<string?> GetDefaultBackupDirectoryAsync() => Task.FromResult<string?>(null);
+        public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
         public Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
@@ -47,11 +48,7 @@ namespace CollationModifier.Tests
             return Task.FromResult(DatabasesToReturn);
         }
 
-        public Task<List<string>> GetSupportedCollationsAsync() => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
-
-        public Exception? TrySetMultiUserExceptionToThrow { get; set; }
-        public Exception? AlterCollationExceptionToThrow { get; set; }
-        public Exception? RestoreExceptionToThrow { get; set; }
+        public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default) => Task.FromResult(new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
 
         public Task TrySetMultiUserAsync(string databaseName)
         {
@@ -67,7 +64,7 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "")
+        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
@@ -101,7 +98,7 @@ namespace CollationModifier.Tests
             }
         }
 
-        public async Task AlterCollationAsync(string databaseName, string newCollation)
+        public async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
             if (OnAlterCollation != null)
             {
@@ -131,7 +128,7 @@ namespace CollationModifier.Tests
 
     public class FailingMockDatabaseService : MockDatabaseService
     {
-        public override Task<bool> TestConnectionAsync() => Task.FromResult(false);
+        public override Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
     public static class MainViewModelTestsRunner
@@ -142,7 +139,6 @@ namespace CollationModifier.Tests
         {
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
-            int failed = 0;
 
             RunSyncTest("DatabaseInfo_RaisesPropertyChanged_WhenCollationChanges", () =>
             {

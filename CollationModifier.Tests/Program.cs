@@ -74,6 +74,17 @@ namespace CollationModifier.Tests
 
             try
             {
+                TestMainFormAccessKeys();
+                Console.WriteLine("PASS: TestMainFormAccessKeys");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMainFormAccessKeys - {ex}");
+                failed++;
+            }
+
+            try
+            {
                 TestLogFilePathProperty();
                 Console.WriteLine("PASS: TestLogFilePathProperty");
             }
@@ -276,6 +287,34 @@ namespace CollationModifier.Tests
             Assert(content.Contains("this.panelDashboard.BackColor = System.Drawing.SystemColors.Control;"), "panelDashboard should use SystemColors.Control");
 
             Console.WriteLine("  [Verify] All SystemColors and native visual style properties verified in MainForm.Designer.cs.");
+        }
+
+        static void TestMainFormAccessKeys()
+        {
+            string designerPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainForm.Designer.cs"));
+            if (!File.Exists(designerPath))
+            {
+                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "CollationModifier", "MainForm.Designer.cs"));
+            }
+            if (!File.Exists(designerPath))
+            {
+                designerPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainForm.Designer.cs"));
+            }
+
+            Assert(File.Exists(designerPath), $"MainForm.Designer.cs not found at path: {designerPath}");
+            string content = File.ReadAllText(designerPath);
+
+            Assert(content.Contains("this.lblServerName.Text = \"&Server Name\";"), "lblServerName should have shortcut &Server Name");
+            Assert(content.Contains("this.lblAuthType.Text = \"&Authentication Type\";"), "lblAuthType should have shortcut &Authentication Type");
+            Assert(content.Contains("this.lblUsername.Text = \"&Username\";"), "lblUsername should have shortcut &Username");
+            Assert(content.Contains("this.lblPassword.Text = \"Pass&word\";"), "lblPassword should have shortcut Pass&word");
+            Assert(content.Contains("this.btnConnect.Text = \"&Connect\";"), "btnConnect should have shortcut &Connect");
+            Assert(content.Contains("this.lblSelectDb.Text = \"Select &Database\";"), "lblSelectDb should have shortcut Select &Database");
+            Assert(content.Contains("this.lblTargetCollation.Text = \"&New Collation Name\";"), "lblTargetCollation should have shortcut &New Collation Name");
+            Assert(content.Contains("this.lblBackupDir.Text = \"&Backup Directory\";"), "lblBackupDir should have shortcut &Backup Directory");
+            Assert(content.Contains("this.btnProcess.Text = \"&Process Collation Change\";"), "btnProcess should have shortcut &Process Collation Change");
+
+            Console.WriteLine("  [Verify] All WinForms access keys (&) verified in MainForm.Designer.cs.");
         }
 
         static void Assert(bool condition, string message)
