@@ -332,7 +332,7 @@ namespace CollationModifier.ViewModels
                         _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                     }
 
-                    bool dbLoaded = await LoadDatabasesAsync();
+                    bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
                         IsConnected = true;
@@ -368,6 +368,14 @@ namespace CollationModifier.ViewModels
                 IsBusy = false;
             }
         }
+
+        private void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+        }
+
+        public async Task ToggleConnectionAsync() => await ConnectAsync();
 
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
