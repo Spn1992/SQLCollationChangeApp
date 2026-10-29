@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -213,6 +213,7 @@ namespace CollationModifier.ViewModels
 
         private void InvalidateRequerySuggested()
         {
+#if NETFRAMEWORK
             try
             {
                 CommandManager.InvalidateRequerySuggested();
@@ -221,6 +222,7 @@ namespace CollationModifier.ViewModels
             {
                 // Safe fallthrough when running in test environment outside WPF runtime
             }
+#endif
         }
 
         #endregion
@@ -302,12 +304,7 @@ namespace CollationModifier.ViewModels
         {
             if (IsConnected)
             {
-                IsConnected = false;
-                Databases.Clear();
-                SupportedCollations.Clear();
-                SelectedDatabase = null;
-                StatusMessage = "Disconnected.";
-                _logger.LogInfo("Disconnected from server.");
+                Disconnect();
                 return;
             }
 
