@@ -123,6 +123,10 @@ namespace CollationModifier.Tests
                 }
                 throw primaryEx;
             }
+            if (AlterCollationExceptionToThrow != null)
+            {
+                throw AlterCollationExceptionToThrow;
+            }
         }
     }
 
