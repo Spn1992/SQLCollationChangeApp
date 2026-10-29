@@ -33,7 +33,7 @@ namespace CollationModifier.ViewModels
             };
             SelectedAuthenticationType = AuthenticationTypes[0];
 
-            ConnectCommand = new RelayCommand(async _ => await ToggleConnectionAsync(), _ => !IsBusy);
+            ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
 
@@ -307,14 +307,6 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
-        private void SetStatus(string message, string? toolTip = null)
-        {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
-        }
-
-        public Task ToggleConnectionAsync() => ConnectAsync();
-
         public void Disconnect()
         {
             IsConnected = false;
@@ -396,6 +388,14 @@ namespace CollationModifier.ViewModels
                 IsBusy = false;
             }
         }
+
+        private void SetStatus(string message, string? toolTip = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+        }
+
+        public async Task ToggleConnectionAsync() => await ConnectAsync();
 
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
