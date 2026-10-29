@@ -48,16 +48,7 @@ namespace CollationModifier.ViewModels
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
         {
-            try
-            {
-                var type = Type.GetType("CollationModifier.Services.DatabaseService, CollationModifier");
-                if (type != null)
-                {
-                    return (IDatabaseService)Activator.CreateInstance(type, logger)!;
-                }
-            }
-            catch { }
-            throw new InvalidOperationException("No IDatabaseService implementation was provided or found.");
+            return new DatabaseService(logger);
         }
 
         #region Properties
@@ -316,7 +307,17 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public bool CanEditConnection => !IsBusy && !IsConnected;
+        public async Task ToggleConnectionAsync()
+        {
+            if (IsConnected)
+            {
+                Disconnect();
+            }
+            else
+            {
+                await ConnectAsync();
+            }
+        }
 
         public void Disconnect()
         {
@@ -330,6 +331,8 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo("Disconnected from server.");
             }
         }
+
+        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
@@ -404,7 +407,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync() => await ConnectAsync();
+
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try

@@ -405,6 +405,24 @@ namespace CollationModifier.Tests
                 Assert(failingVm.IsConnected == false, "IsConnected should be false after failed connect");
             });
 
+            RunSyncTest("CreateDefaultDatabaseService_InstantiatesDatabaseServiceDirectly", () =>
+            {
+                var vm = new MainViewModel();
+                Assert(vm != null, "Expected MainViewModel to be instantiated using default constructor without reflection.");
+            });
+
+            await RunAsyncTest("LoadDatabasesAsync_PassesCancellationTokenToDatabaseService", async () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+                using var cts = new CancellationTokenSource();
+                var token = cts.Token;
+
+                bool result = await vm.LoadDatabasesAsync(token);
+                Assert(result == true, "Expected LoadDatabasesAsync with CancellationToken to return true");
+                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesAsync to be called once");
+            });
+
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
             {
                 var initialDb = new DatabaseInfo { Name = "ActiveDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
