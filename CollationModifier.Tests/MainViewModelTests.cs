@@ -22,7 +22,6 @@ namespace CollationModifier.Tests
         public int TrySetMultiUserCount { get; private set; }
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
-        public bool ThrowOnGetDatabases { get; set; } = false;
         public bool ShouldAlterCollationThrow { get; set; } = false;
         public bool ShouldTrySetMultiUserFail { get; set; } = false;
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
@@ -122,6 +121,10 @@ namespace CollationModifier.Tests
                         primaryEx, resetEx);
                 }
                 throw primaryEx;
+            }
+            if (AlterCollationExceptionToThrow != null)
+            {
+                throw AlterCollationExceptionToThrow;
             }
         }
     }
