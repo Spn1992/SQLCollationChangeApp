@@ -226,12 +226,6 @@ namespace CollationModifier.ViewModels
                    msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private void SetStatus(string message, string? toolTip = null)
-        {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
-        }
-
         private void InvalidateRequerySuggested()
         {
 #if NETFRAMEWORK
