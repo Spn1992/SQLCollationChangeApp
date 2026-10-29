@@ -49,16 +49,7 @@ namespace CollationModifier.ViewModels
 
         private static IDatabaseService CreateDefaultDatabaseService(LoggerService logger)
         {
-            try
-            {
-                var type = Type.GetType("CollationModifier.Services.DatabaseService, CollationModifier");
-                if (type != null)
-                {
-                    return (IDatabaseService)Activator.CreateInstance(type, logger)!;
-                }
-            }
-            catch { }
-            throw new InvalidOperationException("No IDatabaseService implementation was provided or found.");
+            return new DatabaseService(logger);
         }
 
         #region Properties
@@ -94,27 +85,18 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
-        private string? _detailedError;
-        public string? DetailedError
+        private int _progressPercent;
+        public int ProgressPercent
         {
-            get => _detailedError;
-            set
-            {
-                if (SetProperty(ref _detailedError, value))
-                {
-                    OnPropertyChanged(nameof(HasDetailedError));
-                    InvalidateRequerySuggested();
-                }
-            }
+            get => _progressPercent;
+            set => SetProperty(ref _progressPercent, value);
         }
 
-        public bool HasDetailedError => !string.IsNullOrEmpty(DetailedError);
-
-        public void SetStatus(string message, string? toolTip = null, string? detailedError = null)
+        private bool _isIndeterminateProgress = true;
+        public bool IsIndeterminateProgress
         {
-            StatusMessage = message;
-            StatusToolTip = toolTip;
-            DetailedError = detailedError;
+            get => _isIndeterminateProgress;
+            set => SetProperty(ref _isIndeterminateProgress, value);
         }
 
         // Authentication Properties
@@ -181,9 +163,6 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
                     OnPropertyChanged(nameof(CanEditConnection));
-                    OnPropertyChanged(nameof(CanEditConnectionParameters));
-                    OnPropertyChanged(nameof(CanEditSqlCredentials));
-                    OnPropertyChanged(nameof(ConnectButtonText));
                 }
             }
         }
@@ -373,7 +352,17 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public bool CanEditConnection => !IsBusy && !IsConnected;
+        public async Task ToggleConnectionAsync()
+        {
+            if (IsConnected)
+            {
+                Disconnect();
+            }
+            else
+            {
+                await ConnectAsync();
+            }
+        }
 
         public void Disconnect()
         {
@@ -387,6 +376,8 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo("Disconnected from server.");
             }
         }
+
+        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
@@ -426,6 +417,7 @@ namespace CollationModifier.ViewModels
                     bool dbLoaded = await LoadDatabasesAsync(token);
                     if (dbLoaded)
                     {
+                        await LoadCollationsAsync(token);
                         IsConnected = true;
                         SetStatus("Ready");
                     }
@@ -465,7 +457,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync() => await ConnectAsync();
+
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try
@@ -491,11 +483,11 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadCollationsAsync()
+        public async Task LoadCollationsAsync(CancellationToken cancellationToken = default)
         {
             try
             {
-                var collations = await _databaseService.GetSupportedCollationsAsync();
+                var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
             }
@@ -560,13 +552,16 @@ namespace CollationModifier.ViewModels
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
 
+            ProgressPercent = 0;
+            IsIndeterminateProgress = true;
+
             try
             {
                 token.ThrowIfCancellationRequested();
 
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
                 StatusMessage = "Running pre-flight checks...";
-                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();
@@ -578,7 +573,13 @@ namespace CollationModifier.ViewModels
 
                 // 2. Automated Backup
                 StatusMessage = "Starting automated backup...";
-                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, token);
+                var backupProgress = new Progress<int>(percent =>
+                {
+                    ProgressPercent = percent;
+                    IsIndeterminateProgress = false;
+                    StatusMessage = $"Backing up database... {percent}%";
+                });
+                backupFile = await _databaseService.BackupDatabaseAsync(SelectedDatabase.Name, BackupDirectory, backupProgress, token);
 
                 token.ThrowIfCancellationRequested();
 
@@ -605,9 +606,21 @@ namespace CollationModifier.ViewModels
                 {
                     try
                     {
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile);
-                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, null, true);
-                        SetStatus(statusText, toolTipText, detailedError);
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, token);
+                        if (ex is AggregateException)
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
+                        }
+                        else
+                        {
+                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
+                        }
                     }
                     catch (Exception restoreEx)
                     {
@@ -626,6 +639,8 @@ namespace CollationModifier.ViewModels
             {
                 _cts?.Dispose();
                 _cts = null;
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
                 IsBusy = false;
             }
         }

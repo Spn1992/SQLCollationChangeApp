@@ -24,8 +24,8 @@
                         AutomationProperties.Name="Error Details" ToolTip="View detailed error information"
                         Visibility="{Binding HasDetailedError, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding StatusMessage}" ToolTip="{Binding StatusToolTip}" FontWeight="SemiBold" Foreground="#334155" />
-                    <ProgressBar IsIndeterminate="{Binding IsBusy}" Width="100" Height="10" Margin="10,0,0,0"
+                    <TextBlock Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155" />
+                    <ProgressBar Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsIndeterminateProgress}" Minimum="0" Maximum="100" Width="100" Height="10" Margin="10,0,0,0"
                                  AutomationProperties.Name="Operation Progress"
                                  Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 </StackPanel>
@@ -156,11 +156,15 @@
 
                             <StackPanel Grid.Column="0" Margin="0,0,16,0">
                                 <TextBlock x:Name="TargetCollationLabel" Text="New Collation Name" Margin="0,0,0,4" />
-                                <TextBox x:Name="TargetCollationInput" Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
-                                         AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
-                                         AutomationProperties.Name="New Collation Name"
-                                         AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
-                                         ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}" />
+                                <ComboBox x:Name="TargetCollationInput"
+                                          ItemsSource="{Binding SupportedCollations}"
+                                          Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
+                                          IsEditable="True"
+                                          IsTextSearchEnabled="True"
+                                          AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
+                                          AutomationProperties.Name="New Collation Name"
+                                          AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
+                                          ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}" />
                             </StackPanel>
 
                             <StackPanel Grid.Column="1">

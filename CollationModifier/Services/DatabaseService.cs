@@ -247,7 +247,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", CancellationToken cancellationToken = default)
+        public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
             {
@@ -266,12 +266,42 @@ namespace CollationModifier.Services
                 }
             }
 
+            if (!string.IsNullOrWhiteSpace(targetCollation))
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                {
+                    report.ValidationErrors.Add($"Invalid target collation format: '{targetCollation}'. Collation names must contain only alphanumeric characters and underscores.");
+                }
+            }
+
             var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync(cancellationToken);
+
+                    // 0. Check target collation against sys.fn_helpcollations()
+                    if (!string.IsNullOrWhiteSpace(targetCollation) && System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                    {
+                        try
+                        {
+                            var collationQuery = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @TargetCollation;";
+                            using (var collationCmd = new SqlCommand(collationQuery, connection))
+                            {
+                                collationCmd.Parameters.AddWithValue("@TargetCollation", targetCollation);
+                                var count = Convert.ToInt32(await collationCmd.ExecuteScalarAsync(cancellationToken));
+                                if (count == 0)
+                                {
+                                    report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
+                        }
+                    }
 
                     var batchedQuery = $@"
                         USE [{safeDbName}];
@@ -437,7 +467,7 @@ namespace CollationModifier.Services
             return report;
         }
 
-        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+        public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
             try
@@ -450,6 +480,20 @@ namespace CollationModifier.Services
 
                 using (var connection = new SqlConnection(_connectionString))
                 {
+                    if (progress != null)
+                    {
+                        connection.InfoMessage += (sender, e) =>
+                        {
+                            if (!string.IsNullOrEmpty(e.Message))
+                            {
+                                var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
+                                {
+                                    progress.Report(percent);
+                                }
+                            }
+                        };
+                    }
                     await connection.OpenAsync(cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
                     await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
@@ -466,17 +510,31 @@ namespace CollationModifier.Services
 
 
 
-        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
+        public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
+                    if (progress != null)
+                    {
+                        connection.InfoMessage += (sender, e) =>
+                        {
+                            if (!string.IsNullOrEmpty(e.Message))
+                            {
+                                var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
+                                {
+                                    progress.Report(percent);
+                                }
+                            }
+                        };
+                    }
                     await connection.OpenAsync(cancellationToken);
                     await ExecuteNonQueryAsync(connection, "USE [master];");
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
-                    var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE;";
+                    var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
                     await ExecuteNonQueryAsync(connection, restoreQuery, 3600, new SqlParameter("@BackupFile", backupFile));
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
