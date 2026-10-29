@@ -289,16 +289,21 @@ namespace CollationModifier.ViewModels
 
         public bool CanEditConnection => !IsBusy && !IsConnected;
 
+        public void Disconnect()
+        {
+            IsConnected = false;
+            Databases.Clear();
+            SupportedCollations.Clear();
+            SelectedDatabase = null;
+            StatusMessage = "Disconnected from server.";
+            _logger.LogInfo("Disconnected from server.");
+        }
+
         public async Task ConnectAsync()
         {
             if (IsConnected)
             {
-                IsConnected = false;
-                Databases.Clear();
-                SupportedCollations.Clear();
-                SelectedDatabase = null;
-                StatusMessage = "Disconnected from server.";
-                _logger.LogInfo("Disconnected from server.");
+                Disconnect();
                 return;
             }
 
@@ -367,6 +372,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        public async Task ToggleConnectionAsync() => await ConnectAsync();
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
             try

@@ -324,16 +324,16 @@ namespace CollationModifier.Tests
                 var vm = new MainViewModel(new MockDatabaseService());
                 Assert(vm.IsConnected == false, "Expected IsConnected to default to false");
 
-                string? notifiedProperty = null;
+                var notifiedProperties = new List<string>();
                 vm.PropertyChanged += (sender, args) =>
                 {
-                    notifiedProperty = args.PropertyName;
+                    if (args.PropertyName != null) notifiedProperties.Add(args.PropertyName);
                 };
 
                 vm.IsConnected = true;
 
                 Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
-                Assert(notifiedProperty == nameof(MainViewModel.IsConnected), $"Expected PropertyChanged for 'IsConnected', got '{notifiedProperty}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnected)), $"Expected PropertyChanged for 'IsConnected', got '{string.Join(", ", notifiedProperties)}'");
             });
 
             await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
@@ -666,6 +666,28 @@ namespace CollationModifier.Tests
                 var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
 
                 Assert(!report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should not report format error for valid collation format.");
+            });
+
+            RunSyncTest("AppXaml_FocusVisualStyle_ImplicitStyles_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+
+                Assert(content.Contains("x:Key=\"FocusVisualStyle\""), "App.xaml should define FocusVisualStyle");
+                Assert(content.Contains("x:Key=\"FocusBorderBrush\" Color=\"#0284C7\""), "App.xaml should define FocusBorderBrush with #0284C7");
+                Assert(content.Contains("<Style TargetType=\"Button\">"), "App.xaml should define implicit TargetType=\"Button\" style");
+                Assert(content.Contains("<Setter Property=\"FocusVisualStyle\" Value=\"{StaticResource FocusVisualStyle}\" />"), "App.xaml should apply FocusVisualStyle across implicit control styles");
+                Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
