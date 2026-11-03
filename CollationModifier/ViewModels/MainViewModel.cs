@@ -85,6 +85,29 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
+        private string? _detailedError;
+        public string? DetailedError
+        {
+            get => _detailedError;
+            set
+            {
+                if (SetProperty(ref _detailedError, value))
+                {
+                    OnPropertyChanged(nameof(HasDetailedError));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasDetailedError => !string.IsNullOrEmpty(DetailedError);
+
+        public void SetStatus(string message, string? toolTip = null, string? detailedError = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+            DetailedError = detailedError;
+        }
+
         private int _progressPercent;
         public int ProgressPercent
         {
