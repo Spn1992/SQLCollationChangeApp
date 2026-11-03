@@ -12,6 +12,8 @@ namespace CollationModifier.Services
     {
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
+        private readonly object _collationCacheLock = new object();
+        private HashSet<string>? _cachedSupportedCollations;
 
         public DatabaseService(LoggerService logger)
         {
@@ -38,7 +40,17 @@ namespace CollationModifier.Services
                 builder.Password = password;
             }
 
-            _connectionString = builder.ConnectionString;
+            var newConnectionString = builder.ConnectionString;
+            if (!string.Equals(_connectionString, newConnectionString, StringComparison.Ordinal))
+            {
+                lock (_collationCacheLock)
+                {
+                    _cachedSupportedCollations?.Clear();
+                    _cachedSupportedCollations = null;
+                }
+            }
+
+            _connectionString = newConnectionString;
         }
 
         public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
@@ -132,6 +144,11 @@ namespace CollationModifier.Services
                             }
                         }
                     }
+                }
+
+                lock (_collationCacheLock)
+                {
+                    _cachedSupportedCollations = new HashSet<string>(collations, StringComparer.OrdinalIgnoreCase);
                 }
             }
             catch (Exception ex)
@@ -437,6 +454,40 @@ namespace CollationModifier.Services
                 try
                 {
                     ValidateCollationFormat(targetCollation);
+
+                    HashSet<string>? cachedCollations;
+                    lock (_collationCacheLock)
+                    {
+                        cachedCollations = _cachedSupportedCollations;
+                    }
+
+                    if (cachedCollations == null || cachedCollations.Count == 0)
+                    {
+                        try
+                        {
+                            var collations = await GetSupportedCollationsAsync(cancellationToken);
+                            lock (_collationCacheLock)
+                            {
+                                if (_cachedSupportedCollations == null || _cachedSupportedCollations.Count == 0)
+                                {
+                                    _cachedSupportedCollations = new HashSet<string>(collations, StringComparer.OrdinalIgnoreCase);
+                                }
+                                cachedCollations = _cachedSupportedCollations;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
+                        }
+                    }
+
+                    if (cachedCollations != null && cachedCollations.Count > 0)
+                    {
+                        if (!cachedCollations.Contains(targetCollation))
+                        {
+                            report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -456,28 +507,6 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync(cancellationToken);
-
-                    // 0. Check target collation against sys.fn_helpcollations()
-                    if (!string.IsNullOrWhiteSpace(targetCollation))
-                    {
-                        try
-                        {
-                            var collationQuery = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @TargetCollation;";
-                            using (var collationCmd = new SqlCommand(collationQuery, connection))
-                            {
-                                collationCmd.Parameters.AddWithValue("@TargetCollation", targetCollation);
-                                var count = Convert.ToInt32(await collationCmd.ExecuteScalarAsync(cancellationToken));
-                                if (count == 0)
-                                {
-                                    report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
-                        }
-                    }
 
                     var batchedQuery = $@"
                         USE [{safeDbName}];

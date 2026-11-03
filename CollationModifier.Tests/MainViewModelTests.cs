@@ -219,6 +219,30 @@ namespace CollationModifier.Tests
         }
     }
 
+    public class TestableDatabaseService : DatabaseService
+    {
+        public int GetSupportedCollationsCallCount { get; private set; }
+        public List<string> CollationsToReturn { get; set; } = new List<string>
+        {
+            "SQL_Latin1_General_CP1_CI_AS",
+            "Latin1_General_100_CI_AS"
+        };
+        public bool ThrowOnGetSupportedCollations { get; set; } = false;
+
+        public TestableDatabaseService(LoggerService logger) : base(logger) { }
+
+        public override Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetSupportedCollationsCallCount++;
+            if (ThrowOnGetSupportedCollations)
+            {
+                throw new InvalidOperationException("Failed to fetch supported collations from testable mock.");
+            }
+            return Task.FromResult(new List<string>(CollationsToReturn));
+        }
+    }
+
     public class SynchronousSynchronizationContext : SynchronizationContext
     {
         public override void Post(SendOrPostCallback d, object? state)
@@ -1228,6 +1252,82 @@ namespace CollationModifier.Tests
                 var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
 
                 Assert(!report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should not report format error for valid collation format.");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_ValidatesCollationsAgainstCache_WithoutIssuingNewQueries", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger);
+
+                Assert(dbService.GetSupportedCollationsCallCount == 0, "Collation query count should initially be 0");
+
+                var report1 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, $"Expected 1 collation query to populate cache, got {dbService.GetSupportedCollationsCallCount}");
+                Assert(!report1.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")), "Expected valid collation in cache to not generate error");
+
+                // Second check with another valid collation from cache - should not issue new query
+                var report2 = await dbService.PreflightCheckAsync("TestDB", "", "Latin1_General_100_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, $"Expected zero additional queries when cache is populated, got {dbService.GetSupportedCollationsCallCount}");
+                Assert(!report2.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")), "Expected valid collation in cache to not generate error");
+
+                // Case-insensitive lookup check
+                var report3 = await dbService.PreflightCheckAsync("TestDB", "", "sql_latin1_general_cp1_ci_as");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, $"Expected zero additional queries for case-insensitive check, got {dbService.GetSupportedCollationsCallCount}");
+                Assert(!report3.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")), "Expected case-insensitive collation to be recognized");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_RejectsUnsupportedCollation_UsingCachedData", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger);
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "NonExistentCollation_XYZ");
+
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected collation fetch to populate cache");
+                Assert(report.ValidationErrors.Any(e => e.Contains("Target collation 'NonExistentCollation_XYZ' is not supported by SQL Server.")),
+                    "Expected unsupported collation to be reported in validation errors.");
+
+                // Re-check another unsupported collation uses cache without new query
+                var report2 = await dbService.PreflightCheckAsync("TestDB", "", "Another_Unknown_Collation");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected no new queries for second collation check");
+                Assert(report2.ValidationErrors.Any(e => e.Contains("Target collation 'Another_Unknown_Collation' is not supported by SQL Server.")),
+                    "Expected second unsupported collation to also be rejected from cache.");
+            });
+
+            await RunAsyncTest("SetConnectionString_ClearsCollationCache_WhenCredentialsChange", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger);
+                dbService.SetConnectionString("ServerA", "Windows Authentication", "", "");
+
+                var report1 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected 1 collation fetch for initial connection");
+
+                // Same connection string should not invalidate cache
+                dbService.SetConnectionString("ServerA", "Windows Authentication", "", "");
+                var report2 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected cache to be preserved when connection string unchanged");
+
+                // Changed server/credentials must invalidate cache
+                dbService.SetConnectionString("ServerB", "Windows Authentication", "", "");
+                var report3 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 2, $"Expected cache to be re-populated after connection string changed, got {dbService.GetSupportedCollationsCallCount}");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_WhenCachePopulationFails_LogsWarningAndDoesNotBlockExecution", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    ThrowOnGetSupportedCollations = true
+                };
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+
+                Assert(report != null, "Report should not be null when collation cache population fails");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected attempt to fetch collations");
+                Assert(!report!.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")),
+                    "Collation should not be falsely reported as unsupported when catalog fetch failed");
             });
 
             RunSyncTest("DatabaseService_ValidateCollationFormat_ValidatesAlphanumericAndUnderscoresOnly", () =>
