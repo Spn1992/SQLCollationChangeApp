@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -880,6 +881,173 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Style TargetType=\"Button\">"), "App.xaml should define implicit TargetType=\"Button\" style");
                 Assert(content.Contains("<Setter Property=\"FocusVisualStyle\" Value=\"{StaticResource FocusVisualStyle}\" />"), "App.xaml should apply FocusVisualStyle across implicit control styles");
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
+            });
+
+            RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                // 1. Current Collation
+                var collationValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Collation") == true);
+                Assert(collationValueTb != null, "Collation value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.Collation");
+                string collationNameAttr = collationValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(collationNameAttr.Contains("StringFormat='Current Collation: {0}'"), "Collation value TextBlock should format with 'Current Collation: {0}'");
+                Assert(collationNameAttr.Contains("FallbackValue='Current Collation: -'"), "Collation value TextBlock should have FallbackValue='Current Collation: -'");
+                Assert(collationNameAttr.Contains("TargetNullValue='Current Collation: -'"), "Collation value TextBlock should have TargetNullValue='Current Collation: -'");
+                string collationLabeledBy = collationValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(collationLabeledBy.Contains("ElementName=CurrentCollationLabel"), "Collation value TextBlock should retain LabeledBy binding to CurrentCollationLabel");
+
+                // 2. Compatibility Level
+                var compatValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.CompatibilityLevel") == true);
+                Assert(compatValueTb != null, "Compatibility Level value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.CompatibilityLevel");
+                string compatNameAttr = compatValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(compatNameAttr.Contains("StringFormat='Compatibility Level: {0}'"), "Compatibility Level value TextBlock should format with 'Compatibility Level: {0}'");
+                Assert(compatNameAttr.Contains("FallbackValue='Compatibility Level: -'"), "Compatibility Level value TextBlock should have FallbackValue='Compatibility Level: -'");
+                Assert(compatNameAttr.Contains("TargetNullValue='Compatibility Level: -'"), "Compatibility Level value TextBlock should have TargetNullValue='Compatibility Level: -'");
+                string compatLabeledBy = compatValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(compatLabeledBy.Contains("ElementName=CompatibilityLevelLabel"), "Compatibility Level value TextBlock should retain LabeledBy binding to CompatibilityLevelLabel");
+
+                // 3. Owner
+                var ownerValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Owner") == true);
+                Assert(ownerValueTb != null, "Owner value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.Owner");
+                string ownerNameAttr = ownerValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(ownerNameAttr.Contains("StringFormat='Owner: {0}'"), "Owner value TextBlock should format with 'Owner: {0}'");
+                Assert(ownerNameAttr.Contains("FallbackValue='Owner: -'"), "Owner value TextBlock should have FallbackValue='Owner: -'");
+                Assert(ownerNameAttr.Contains("TargetNullValue='Owner: -'"), "Owner value TextBlock should have TargetNullValue='Owner: -'");
+                string ownerLabeledBy = ownerValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(ownerLabeledBy.Contains("ElementName=OwnerLabel"), "Owner value TextBlock should retain LabeledBy binding to OwnerLabel");
+
+                // 4. Size
+                var sizeValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Size") == true);
+                Assert(sizeValueTb != null, "Size value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.Size");
+                string sizeNameAttr = sizeValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(sizeNameAttr.Contains("StringFormat='Size: {0}'"), "Size value TextBlock should format with 'Size: {0}'");
+                Assert(sizeNameAttr.Contains("FallbackValue='Size: -'"), "Size value TextBlock should have FallbackValue='Size: -'");
+                Assert(sizeNameAttr.Contains("TargetNullValue='Size: -'"), "Size value TextBlock should have TargetNullValue='Size: -'");
+                string sizeLabeledBy = sizeValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(sizeLabeledBy.Contains("ElementName=SizeLabel"), "Size value TextBlock should retain LabeledBy binding to SizeLabel");
+            });
+
+            RunSyncTest("MainViewModel_SelectedDatabase_MetadataAccessibleNames_EvaluatesCompositeStrings", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                var collationTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Collation") == true);
+                var compatTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.CompatibilityLevel") == true);
+                var ownerTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Owner") == true);
+                var sizeTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Size") == true);
+
+                // Helper to evaluate binding expression according to WPF binding rules
+                string EvaluateMetadataAccessibleName(string bindingExpr, MainViewModel viewModel)
+                {
+                    string format = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"StringFormat='([^']*)'").Groups[1].Value;
+                    string fallback = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"FallbackValue='([^']*)'").Groups[1].Value;
+                    string targetNull = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"TargetNullValue='([^']*)'").Groups[1].Value;
+                    string propName = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"SelectedDatabase\.(\w+)").Groups[1].Value;
+
+                    if (viewModel.SelectedDatabase == null)
+                    {
+                        return fallback;
+                    }
+
+                    var prop = typeof(DatabaseInfo).GetProperty(propName);
+                    var val = prop?.GetValue(viewModel.SelectedDatabase) as string;
+
+                    if (string.IsNullOrEmpty(val))
+                    {
+                        return targetNull;
+                    }
+
+                    return string.Format(format, val);
+                }
+
+                var vm = new MainViewModel();
+
+                // Case 1: SelectedDatabase is null -> returns FallbackValue
+                Assert(vm.SelectedDatabase == null, "SelectedDatabase should be null initially");
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: -",
+                    "Expected fallback name 'Current Collation: -' when SelectedDatabase is null");
+                Assert(EvaluateMetadataAccessibleName(compatTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Compatibility Level: -",
+                    "Expected fallback name 'Compatibility Level: -' when SelectedDatabase is null");
+                Assert(EvaluateMetadataAccessibleName(ownerTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Owner: -",
+                    "Expected fallback name 'Owner: -' when SelectedDatabase is null");
+                Assert(EvaluateMetadataAccessibleName(sizeTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Size: -",
+                    "Expected fallback name 'Size: -' when SelectedDatabase is null");
+
+                // Case 2: SelectedDatabase has dynamic values -> returns formatted composite string
+                var db = new DatabaseInfo
+                {
+                    Name = "ProductionDB",
+                    Collation = "SQL_Latin1_General_CP1_CI_AS",
+                    CompatibilityLevel = "150",
+                    Owner = "domain\\dbadmin",
+                    Size = "5120 MB"
+                };
+                vm.SelectedDatabase = db;
+
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: SQL_Latin1_General_CP1_CI_AS",
+                    "Expected composite accessible name with dynamic collation");
+                Assert(EvaluateMetadataAccessibleName(compatTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Compatibility Level: 150",
+                    "Expected composite accessible name with dynamic compatibility level");
+                Assert(EvaluateMetadataAccessibleName(ownerTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Owner: domain\\dbadmin",
+                    "Expected composite accessible name with dynamic owner");
+                Assert(EvaluateMetadataAccessibleName(sizeTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Size: 5120 MB",
+                    "Expected composite accessible name with dynamic size");
+
+                // Case 3: SelectedDatabase has null/empty properties -> returns TargetNullValue
+                var emptyDb = new DatabaseInfo
+                {
+                    Name = "EmptyDB",
+                    Collation = "",
+                    CompatibilityLevel = "",
+                    Owner = "",
+                    Size = ""
+                };
+                vm.SelectedDatabase = emptyDb;
+
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: -",
+                    "Expected TargetNullValue 'Current Collation: -' when collation is empty");
+                Assert(EvaluateMetadataAccessibleName(compatTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Compatibility Level: -",
+                    "Expected TargetNullValue 'Compatibility Level: -' when compatibility level is empty");
+                Assert(EvaluateMetadataAccessibleName(ownerTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Owner: -",
+                    "Expected TargetNullValue 'Owner: -' when owner is empty");
+                Assert(EvaluateMetadataAccessibleName(sizeTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Size: -",
+                    "Expected TargetNullValue 'Size: -' when size is empty");
+
+                // Case 4: Switching back to null database returns fallback
+                vm.SelectedDatabase = null;
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: -",
+                    "Expected fallback name after resetting SelectedDatabase to null");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
