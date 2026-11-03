@@ -387,6 +387,32 @@ namespace CollationModifier.Services
             }
         }
 
+        public static void ValidateCollationFormat(string? collation)
+        {
+            if (string.IsNullOrWhiteSpace(collation) || !System.Text.RegularExpressions.Regex.IsMatch(collation, @"^[a-zA-Z0-9_]+$"))
+            {
+                throw new ArgumentException($"Invalid target collation format: '{collation}'. Collation names must contain only alphanumeric characters and underscores.");
+            }
+        }
+
+        public static void ValidateCollationName(string? collation) => ValidateCollationFormat(collation);
+
+        public static bool IsValidCollationFormat(string? collation) =>
+            !string.IsNullOrWhiteSpace(collation) && System.Text.RegularExpressions.Regex.IsMatch(collation, @"^[a-zA-Z0-9_]+$");
+
+        public static void EvaluatePermissions(IEnumerable<string> permissions, PreflightReport report)
+        {
+            var permissionSet = new HashSet<string>(permissions, StringComparer.OrdinalIgnoreCase);
+            if (!permissionSet.Contains("ALTER"))
+            {
+                report.MissingPermissions.Add("User does not have ALTER permission on the database.");
+            }
+            if (!permissionSet.Contains("BACKUP DATABASE"))
+            {
+                report.MissingPermissions.Add("User does not have BACKUP DATABASE permission on the database. User lacks required database backup privileges.");
+            }
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
@@ -406,12 +432,22 @@ namespace CollationModifier.Services
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(targetCollation))
+            if (!string.IsNullOrEmpty(targetCollation))
             {
-                if (!System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                try
                 {
-                    report.ValidationErrors.Add($"Invalid target collation format: '{targetCollation}'. Collation names must contain only alphanumeric characters and underscores.");
+                    ValidateCollationFormat(targetCollation);
                 }
+                catch (Exception ex)
+                {
+                    report.ValidationErrors.Add(ex.Message);
+                }
+            }
+
+            // Short-circuit: do not open database connection or run queries if validation failed
+            if (report.ValidationErrors.Count > 0)
+            {
+                return report;
             }
 
             var safeDbName = EscapeIdentifier(databaseName);
@@ -422,7 +458,7 @@ namespace CollationModifier.Services
                     await connection.OpenAsync(cancellationToken);
 
                     // 0. Check target collation against sys.fn_helpcollations()
-                    if (!string.IsNullOrWhiteSpace(targetCollation) && System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                    if (!string.IsNullOrWhiteSpace(targetCollation))
                     {
                         try
                         {
@@ -514,10 +550,7 @@ namespace CollationModifier.Services
                             {
                                 permissions.Add(reader.GetString(0));
                             }
-                            if (!permissions.Contains("ALTER"))
-                            {
-                                report.MissingPermissions.Add("User does not have ALTER permission on the database.");
-                            }
+                            EvaluatePermissions(permissions, report);
 
                             // 2. Active User Sessions
                             if (await reader.NextResultAsync(cancellationToken))
@@ -607,7 +640,7 @@ namespace CollationModifier.Services
             return report;
         }
 
-        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken)
             => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
 
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -653,7 +686,7 @@ namespace CollationModifier.Services
 
 
 
-        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
+        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken)
             => RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
 
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -692,7 +725,7 @@ namespace CollationModifier.Services
                 // Attempt emergency MULTI_USER reset if batch execution failed
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -707,10 +740,7 @@ namespace CollationModifier.Services
 
         public virtual async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
-            {
-                throw new ArgumentException("Invalid collation name format. Only alphanumeric characters and underscores are allowed.");
-            }
+            ValidateCollationFormat(newCollation);
 
             var safeDbName = EscapeIdentifier(databaseName);
 
@@ -732,7 +762,7 @@ namespace CollationModifier.Services
                 // Attempt to put it back to multi-user if it failed mid-way
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -759,6 +789,26 @@ namespace CollationModifier.Services
             {
                  _logger.LogError($"Failed emergency MULTI_USER reset for database: {databaseName}", ex);
                  throw;
+            }
+        }
+
+        private async Task ExecuteEmergencyMultiUserResetAsync(
+            string databaseName,
+            Exception primaryException,
+            string operationContext,
+            string actionDescription,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await TrySetMultiUserAsync(databaseName, cancellationToken);
+            }
+            catch (Exception resetEx)
+            {
+                _logger.LogError($"Emergency MULTI_USER reset failed following {operationContext} error on {databaseName}", resetEx);
+                throw new AggregateException(
+                    $"Failed to {actionDescription} '{databaseName}' ({primaryException.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                    primaryException, resetEx);
             }
         }
 
