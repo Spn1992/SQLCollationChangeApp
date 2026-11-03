@@ -1502,6 +1502,37 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
             });
 
+            RunSyncTest("AppXaml_InputRestingBorderBrush_HighContrastConfiguration", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+
+                Assert(content.Contains("x:Key=\"InputRestingBorderBrush\" Color=\"#64748B\""), "App.xaml should define InputRestingBorderBrush with #64748B");
+                Assert(content.Contains("<Setter Property=\"BorderBrush\" Value=\"{StaticResource InputRestingBorderBrush}\" />"), "App.xaml should set BorderBrush to InputRestingBorderBrush");
+                Assert(!content.Contains("<Setter Property=\"BorderBrush\" Value=\"#CBD5E1\" />"), "App.xaml must not contain low-contrast #CBD5E1 resting border brush");
+
+                // Verify relative luminance and contrast ratio calculation for #64748B vs #FFFFFF
+                double sR = 100.0 / 255.0;
+                double sG = 116.0 / 255.0;
+                double sB = 139.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+                double contrastAgainstWhite = (1.0 + 0.05) / (lum + 0.05);
+                Assert(contrastAgainstWhite >= 3.0, $"Contrast ratio {contrastAgainstWhite} against white background must exceed 3:1 under WCAG 2.2 1.4.11");
+            });
+
             RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
