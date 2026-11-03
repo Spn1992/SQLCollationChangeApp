@@ -825,6 +825,28 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
             });
 
+            await RunAsyncTest("DatabaseService_RestoreDatabaseAsync_RaisesAggregateException_WhenResetAlsoFails", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                AggregateException? caughtAggEx = null;
+                try
+                {
+                    await dbService.RestoreDatabaseAsync("TestDB", "/tmp/nonexistent.bak");
+                }
+                catch (AggregateException aggEx)
+                {
+                    caughtAggEx = aggEx;
+                }
+
+                Assert(caughtAggEx != null, "RestoreDatabaseAsync must raise an AggregateException when both restore and emergency reset fail.");
+                Assert(caughtAggEx!.InnerExceptions.Count == 2, $"AggregateException should contain 2 inner exceptions (primary and reset failure), got {caughtAggEx.InnerExceptions.Count}.");
+                Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
+                Assert(caughtAggEx.Message.Contains("Failed to restore database 'TestDB'"), $"AggregateException message should mention restore database failure, got: '{caughtAggEx.Message}'");
+            });
+
             await RunAsyncTest("LoadCollationsAsync_PopulatesSupportedCollations", async () =>
             {
                 var mockService = new MockDatabaseService
