@@ -547,6 +547,86 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
             });
 
+            RunSyncTest("DatabaseService_EvaluatePermissions_Fails_WhenBackupDatabasePermissionMissing", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(new[] { "ALTER" }, report);
+
+                Assert(report.HasMissingPermissions, "Report should have missing permissions when BACKUP DATABASE is missing.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when BACKUP DATABASE is missing.");
+                Assert(report.MissingPermissions.Count == 1, $"Expected 1 missing permission, got {report.MissingPermissions.Count}");
+                Assert(report.MissingPermissions[0].Contains("BACKUP DATABASE"), "Missing permission should mention BACKUP DATABASE.");
+                Assert(report.MissingPermissions[0].Contains("User lacks required database backup privileges"), "Missing permission should state lack of database backup privileges.");
+
+                string summary = report.GetDiagnosticSummary();
+                Assert(summary.Contains("FAILED (Blocking items found)"), "Diagnostic summary should indicate failure.");
+                Assert(summary.Contains("User lacks required database backup privileges"), "Diagnostic summary must state user lacks required database backup privileges.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Fails_WhenAlterPermissionMissing", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(new[] { "BACKUP DATABASE" }, report);
+
+                Assert(report.HasMissingPermissions, "Report should have missing permissions when ALTER is missing.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when ALTER is missing.");
+                Assert(report.MissingPermissions.Count == 1, $"Expected 1 missing permission, got {report.MissingPermissions.Count}");
+                Assert(report.MissingPermissions[0].Contains("ALTER"), "Missing permission should mention ALTER.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Fails_WhenBothPermissionsMissing", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(Array.Empty<string>(), report);
+
+                Assert(report.HasMissingPermissions, "Report should have missing permissions when both are missing.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions.");
+                Assert(report.MissingPermissions.Count == 2, $"Expected 2 missing permissions, got {report.MissingPermissions.Count}");
+                Assert(report.MissingPermissions.Any(p => p.Contains("ALTER")), "Should report missing ALTER permission.");
+                Assert(report.MissingPermissions.Any(p => p.Contains("BACKUP DATABASE") && p.Contains("User lacks required database backup privileges")), "Should report missing BACKUP DATABASE permission.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Succeeds_WhenBothPermissionsPresent", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(new[] { "ALTER", "BACKUP DATABASE", "BACKUP LOG" }, report);
+
+                Assert(!report.HasMissingPermissions, "Report should have no missing permissions when both ALTER and BACKUP DATABASE are granted.");
+                Assert(report.MissingPermissions.Count == 0, "MissingPermissions should be empty.");
+                Assert(!report.HasBlockingConditions, "Report should have no blocking conditions.");
+                Assert(report.IsValid, "Report should be valid.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenBackupDatabasePermissionMissing", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "NoBackupPermDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var preflightReport = new PreflightReport { DatabaseName = "NoBackupPermDb" };
+                DatabaseService.EvaluatePermissions(new[] { "ALTER" }, preflightReport);
+
+                Assert(preflightReport.HasBlockingConditions, "PreflightReport should have blocking conditions when BACKUP DATABASE permission is missing.");
+                Assert(preflightReport.HasMissingPermissions, "PreflightReport should flag missing permissions.");
+                Assert(preflightReport.MissingPermissions.Any(p => p.Contains("BACKUP DATABASE") && p.Contains("User lacks required database backup privileges")), "Missing permissions must describe missing BACKUP DATABASE privilege.");
+
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    PreflightReportToReturn = preflightReport
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup must NOT execute when user lacks BACKUP DATABASE permission!");
+                Assert(mockService.AlterCollationCount == 0, "Alter Collation must NOT execute when preflight fails!");
+                Assert(vm.StatusMessage.Contains("Pre-flight validation failed"), $"Expected status message to indicate preflight failure, got: '{vm.StatusMessage}'");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("User lacks required database backup privileges"), $"DetailedError should state user lacks required database backup privileges, got: '{vm.DetailedError}'");
+            });
+
             await RunAsyncTest("ConnectAsync_DisablesConnectionParameters_And_UpdatesButtonText_WhenConnected", async () =>
             {
                 var mockService = new MockDatabaseService
