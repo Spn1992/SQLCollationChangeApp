@@ -58,6 +58,39 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            try
+            {
+                await TestEmptyChannelDisposalWithoutError();
+                Console.WriteLine("PASS: TestEmptyChannelDisposalWithoutError");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestEmptyChannelDisposalWithoutError - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                await TestDrainAndFlushQueueAsyncDuringStandardOperation();
+                Console.WriteLine("PASS: TestDrainAndFlushQueueAsyncDuringStandardOperation");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestDrainAndFlushQueueAsyncDuringStandardOperation - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                await TestDrainAndFlushQueueAsyncShutdownDraining();
+                Console.WriteLine("PASS: TestDrainAndFlushQueueAsyncShutdownDraining");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestDrainAndFlushQueueAsyncShutdownDraining - {ex}");
+                failed++;
+            }
+
 
             try
             {
@@ -219,6 +252,117 @@ namespace CollationModifier.Tests
             using (var customLogger = new LoggerService(customPath))
             {
                 Assert(customLogger.LogFilePath == customPath, "LogFilePath should match custom log path");
+            }
+        }
+
+        static async Task TestEmptyChannelDisposalWithoutError()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_test_empty_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    // No messages logged - channel is empty
+                } // Dispose should exit cleanly without throwing and close writer resources
+
+                if (File.Exists(testLogPath))
+                {
+                    string content = File.ReadAllText(testLogPath);
+                    Assert(string.IsNullOrEmpty(content), "Expected empty log file for empty channel disposal.");
+                }
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
+
+        static async Task TestDrainAndFlushQueueAsyncDuringStandardOperation()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_test_drain_active_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    for (int i = 0; i < 20; i++)
+                    {
+                        logger.LogInfo($"Active drain test message {i}");
+                    }
+
+                    // Wait briefly for background task to process DrainAndFlushQueueAsync during active loop
+                    bool flushed = false;
+                    for (int retry = 0; retry < 50; retry++)
+                    {
+                        await Task.Delay(50);
+                        if (File.Exists(testLogPath))
+                        {
+                            try
+                            {
+                                using (var fs = new FileStream(testLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                                using (var reader = new StreamReader(fs))
+                                {
+                                    int lineCount = 0;
+                                    while (reader.ReadLine() != null)
+                                    {
+                                        lineCount++;
+                                    }
+                                    if (lineCount == 20)
+                                    {
+                                        flushed = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            catch
+                            {
+                                // File might be open by background worker momentarily
+                            }
+                        }
+                    }
+
+                    Assert(flushed, "Expected all 20 messages to be drained and flushed during active operation before disposal.");
+                }
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
+
+        static async Task TestDrainAndFlushQueueAsyncShutdownDraining()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_test_drain_shutdown_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                const int count = 50;
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    for (int i = 0; i < count; i++)
+                    {
+                        logger.LogWarning($"Shutdown drain message {i}");
+                    }
+                    // Immediately exit using block -> triggers Dispose -> finally { DrainAndFlushQueueAsync }
+                }
+
+                Assert(File.Exists(testLogPath), "Log file should exist after disposal.");
+                string[] lines = File.ReadAllLines(testLogPath);
+                Assert(lines.Length == count, $"Expected {count} lines drained on shutdown, found {lines.Length}.");
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
             }
         }
 
