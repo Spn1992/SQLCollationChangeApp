@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.Data.SqlClient;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,6 +11,7 @@ namespace CollationModifier.Services
 {
     public class DatabaseService : IDatabaseService
     {
+        private static readonly Regex CollationRegex = new Regex(@"^[a-zA-Z0-9_]+$", RegexOptions.Compiled);
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
 
@@ -247,6 +249,16 @@ namespace CollationModifier.Services
             }
         }
 
+        public static bool IsValidCollationName(string? collation)
+        {
+            if (string.IsNullOrWhiteSpace(collation))
+            {
+                return false;
+            }
+
+            return CollationRegex.IsMatch(collation);
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
@@ -268,7 +280,7 @@ namespace CollationModifier.Services
 
             if (!string.IsNullOrWhiteSpace(targetCollation))
             {
-                if (!System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                if (!IsValidCollationName(targetCollation))
                 {
                     report.ValidationErrors.Add($"Invalid target collation format: '{targetCollation}'. Collation names must contain only alphanumeric characters and underscores.");
                 }
@@ -282,7 +294,7 @@ namespace CollationModifier.Services
                     await connection.OpenAsync(cancellationToken);
 
                     // 0. Check target collation against sys.fn_helpcollations()
-                    if (!string.IsNullOrWhiteSpace(targetCollation) && System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                    if (IsValidCollationName(targetCollation))
                     {
                         try
                         {
@@ -561,7 +573,7 @@ namespace CollationModifier.Services
 
         public virtual async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
+            if (!IsValidCollationName(newCollation))
             {
                 throw new ArgumentException("Invalid collation name format. Only alphanumeric characters and underscores are allowed.");
             }
