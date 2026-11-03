@@ -255,16 +255,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private static string FormatExceptionMessage(Exception ex)
-        {
-            if (ex is AggregateException aggEx)
-            {
-                var messages = aggEx.Flatten().InnerExceptions.Select(e => e.Message);
-                return string.Join(" | ", messages);
-            }
-            return ex.Message;
-        }
-
         private static bool IsSingleUserLockState(Exception ex)
         {
             if (ex is AggregateException aggEx)
@@ -393,18 +383,6 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogError("Failed to open log file.", ex);
                 StatusMessage = $"Unable to open log file: {ex.Message}";
-            }
-        }
-
-        public async Task ToggleConnectionAsync()
-        {
-            if (IsConnected)
-            {
-                Disconnect();
-            }
-            else
-            {
-                await ConnectAsync();
             }
         }
 
