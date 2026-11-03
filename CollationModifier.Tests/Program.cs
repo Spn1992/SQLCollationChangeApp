@@ -16,6 +16,16 @@ namespace CollationModifier.Tests
 
             try
             {
+                await GlobalExceptionHandlerTests.RunAllTestsAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: GlobalExceptionHandlerTests - {ex}");
+                failed++;
+            }
+
+            try
+            {
                 await MainViewModelTestsRunner.RunAllTestsAsync();
             }
             catch (Exception ex)
