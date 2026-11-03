@@ -872,6 +872,34 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
             });
 
+            RunSyncTest("ErrorFormattingHelper_IsSingleUserLockState_Detection", () =>
+            {
+                Assert(!ErrorFormattingHelper.IsSingleUserLockState(null), "Null exception should not be detected as lock state.");
+                Assert(!ErrorFormattingHelper.IsSingleUserLockState(new Exception("Generic network timeout")), "Unrelated message should not be detected as lock state.");
+
+                Assert(ErrorFormattingHelper.IsSingleUserLockState(new Exception("Database locked in SINGLE_USER mode")), "SINGLE_USER keyword should be detected.");
+                Assert(ErrorFormattingHelper.IsSingleUserLockState(new Exception("Connection reset failed")), "'reset failed' should be detected.");
+                Assert(ErrorFormattingHelper.IsSingleUserLockState(new Exception("emergency MULTI_USER reset")), "'emergency MULTI_USER reset' should be detected.");
+
+                var innerAggEx = new AggregateException("Aggregate failure", new InvalidOperationException("Failed command"), new Exception("Connection reset failed"));
+                Assert(ErrorFormattingHelper.IsSingleUserLockState(innerAggEx), "AggregateException containing lock state error should be detected.");
+
+                var nestedAggEx = new AggregateException(new Exception("Root"), new AggregateException(new Exception("Nested SINGLE_USER lock")));
+                Assert(ErrorFormattingHelper.IsSingleUserLockState(nestedAggEx), "Nested AggregateException containing lock state error should be detected.");
+            });
+
+            RunSyncTest("ErrorFormattingHelper_FormatProcessError_IncludesLockWarning", () =>
+            {
+                var primaryEx = new Exception("Table schema alter failed");
+                var restoreEx = new Exception("Connection reset failed during emergency MULTI_USER reset");
+
+                var (status, toolTip, detailed) = ErrorFormattingHelper.FormatProcessError(primaryEx, "C:\\backup.bak", restoreEx, true);
+
+                Assert(status.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "Status text should contain SINGLE_USER lock warning.");
+                Assert(toolTip.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "ToolTip text should contain SINGLE_USER lock warning.");
+                Assert(detailed.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "Detailed text should contain SINGLE_USER lock warning.");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
