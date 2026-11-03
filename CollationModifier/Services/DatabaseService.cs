@@ -247,6 +247,19 @@ namespace CollationModifier.Services
             }
         }
 
+        public static void EvaluatePermissions(IEnumerable<string> permissions, PreflightReport report)
+        {
+            var permissionSet = new HashSet<string>(permissions, StringComparer.OrdinalIgnoreCase);
+            if (!permissionSet.Contains("ALTER"))
+            {
+                report.MissingPermissions.Add("User does not have ALTER permission on the database.");
+            }
+            if (!permissionSet.Contains("BACKUP DATABASE"))
+            {
+                report.MissingPermissions.Add("User does not have BACKUP DATABASE permission on the database. User lacks required database backup privileges.");
+            }
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
@@ -374,10 +387,7 @@ namespace CollationModifier.Services
                             {
                                 permissions.Add(reader.GetString(0));
                             }
-                            if (!permissions.Contains("ALTER"))
-                            {
-                                report.MissingPermissions.Add("User does not have ALTER permission on the database.");
-                            }
+                            EvaluatePermissions(permissions, report);
 
                             // 2. Active User Sessions
                             if (await reader.NextResultAsync(cancellationToken))
