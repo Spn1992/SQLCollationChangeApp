@@ -247,6 +247,19 @@ namespace CollationModifier.Services
             }
         }
 
+        public static void ValidateCollationFormat(string? collation)
+        {
+            if (string.IsNullOrWhiteSpace(collation) || !System.Text.RegularExpressions.Regex.IsMatch(collation, @"^[a-zA-Z0-9_]+$"))
+            {
+                throw new ArgumentException($"Invalid target collation format: '{collation}'. Collation names must contain only alphanumeric characters and underscores.");
+            }
+        }
+
+        public static void ValidateCollationName(string? collation) => ValidateCollationFormat(collation);
+
+        public static bool IsValidCollationFormat(string? collation) =>
+            !string.IsNullOrWhiteSpace(collation) && System.Text.RegularExpressions.Regex.IsMatch(collation, @"^[a-zA-Z0-9_]+$");
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
@@ -266,12 +279,22 @@ namespace CollationModifier.Services
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(targetCollation))
+            if (!string.IsNullOrEmpty(targetCollation))
             {
-                if (!System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                try
                 {
-                    report.ValidationErrors.Add($"Invalid target collation format: '{targetCollation}'. Collation names must contain only alphanumeric characters and underscores.");
+                    ValidateCollationFormat(targetCollation);
                 }
+                catch (Exception ex)
+                {
+                    report.ValidationErrors.Add(ex.Message);
+                }
+            }
+
+            // Short-circuit: do not open database connection or run queries if validation failed
+            if (report.ValidationErrors.Count > 0)
+            {
+                return report;
             }
 
             var safeDbName = EscapeIdentifier(databaseName);
@@ -282,7 +305,7 @@ namespace CollationModifier.Services
                     await connection.OpenAsync(cancellationToken);
 
                     // 0. Check target collation against sys.fn_helpcollations()
-                    if (!string.IsNullOrWhiteSpace(targetCollation) && System.Text.RegularExpressions.Regex.IsMatch(targetCollation, @"^[a-zA-Z0-9_]+$"))
+                    if (!string.IsNullOrWhiteSpace(targetCollation))
                     {
                         try
                         {
@@ -561,10 +584,7 @@ namespace CollationModifier.Services
 
         public virtual async Task AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)
         {
-            if (!System.Text.RegularExpressions.Regex.IsMatch(newCollation, @"^[a-zA-Z0-9_]+$"))
-            {
-                throw new ArgumentException("Invalid collation name format. Only alphanumeric characters and underscores are allowed.");
-            }
+            ValidateCollationFormat(newCollation);
 
             var safeDbName = EscapeIdentifier(databaseName);
 
