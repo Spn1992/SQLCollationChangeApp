@@ -92,11 +92,13 @@
                             </Style>
                         </Border.Style>
                         <TextBlock x:Name="lblDisconnectedOverlay" Text="Please connect to a server to continue."
+                                   AutomationProperties.Name="Please connect to a server to continue."
+                                   AutomationProperties.LiveSetting="Polite"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
                                    Foreground="#64748B" FontSize="16" />
                     </Border>
 
-                    <StackPanel IsEnabled="{Binding IsConnected}">
+                    <StackPanel IsEnabled="{Binding IsConnected}" AutomationProperties.Name="Database Operations">
                         <Label Content="Database Operations" Style="{StaticResource CardHeader}" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->

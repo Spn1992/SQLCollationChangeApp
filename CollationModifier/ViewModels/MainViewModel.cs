@@ -181,11 +181,23 @@ namespace CollationModifier.ViewModels
             get => _isConnected;
             set
             {
+                bool previous = _isConnected;
                 if (SetProperty(ref _isConnected, value))
                 {
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
+                    if (previous != value)
+                    {
+                        if (value)
+                        {
+                            StatusMessage = "Connected to server. Database operations panel unlocked.";
+                        }
+                        else
+                        {
+                            StatusMessage = "Disconnected from server. Database operations panel locked.";
+                        }
+                    }
                 }
             }
         }
@@ -391,7 +403,7 @@ namespace CollationModifier.ViewModels
                 Databases.Clear();
                 SupportedCollations.Clear();
                 SelectedDatabase = null;
-                SetStatus("Disconnected from server.");
+                SetStatus("Disconnected from server. Database operations panel locked.");
                 _logger.LogInfo("Disconnected from server.");
             }
         }
@@ -433,7 +445,7 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
 
                 IsConnected = true;
-                SetStatus("Ready");
+                SetStatus("Connected to server. Database operations panel unlocked.");
             }
             catch (OperationCanceledException)
             {
