@@ -131,13 +131,17 @@
 
                                 <!-- Values -->
                                 <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Current Collation: {0}', FallbackValue='Current Collation: -', TargetNullValue='Current Collation: -'}" />
                                 <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.CompatibilityLevel, StringFormat='Compatibility Level: {0}', FallbackValue='Compatibility Level: -', TargetNullValue='Compatibility Level: -'}" />
                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Owner, StringFormat='Owner: {0}', FallbackValue='Owner: -', TargetNullValue='Owner: -'}" />
                                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
                             </Grid>
                         </Border>
 
