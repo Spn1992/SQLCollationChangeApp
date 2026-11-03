@@ -17,6 +17,10 @@
     <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="CollationModifier.Tests" />
+  </ItemGroup>
+
   <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
     <Compile Remove="App.xaml.cs" />
     <Compile Remove="MainWindow.xaml.cs" />

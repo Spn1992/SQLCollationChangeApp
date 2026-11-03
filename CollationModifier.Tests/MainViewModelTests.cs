@@ -34,10 +34,19 @@ namespace CollationModifier.Tests
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
         public Action<IProgress<int>?>? RestoreProgressSimulator { get; set; }
+        public Func<CancellationToken, Task<bool>>? OnTestConnection { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public virtual Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
+        {
+            if (OnTestConnection != null)
+            {
+                return await OnTestConnection(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return true;
+        }
 
         public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
@@ -101,7 +110,7 @@ namespace CollationModifier.Tests
             {
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -126,7 +135,7 @@ namespace CollationModifier.Tests
                 var primaryEx = AlterCollationExceptionToThrow ?? new InvalidOperationException("Table constraint violation during collation alter.");
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -194,6 +203,79 @@ namespace CollationModifier.Tests
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
+            RunSyncTest("MainViewModel_SetStatus_UpdatesProperties_AndClearsDetailedErrorOnDefaultNull", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                vm.SetStatus("Initial message", "Initial tooltip", "Detailed stack trace");
+                Assert(vm.StatusMessage == "Initial message", $"Expected StatusMessage 'Initial message', got '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == "Initial tooltip", $"Expected StatusToolTip 'Initial tooltip', got '{vm.StatusToolTip}'");
+                Assert(vm.DetailedError == "Detailed stack trace", $"Expected DetailedError 'Detailed stack trace', got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Expected ShowErrorDetailsCommand.CanExecute to be true");
+
+                // Default null values must clear previous detailed error
+                vm.SetStatus("Updated status");
+                Assert(vm.StatusMessage == "Updated status", $"Expected StatusMessage 'Updated status', got '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip null, got '{vm.StatusToolTip}'");
+                Assert(vm.DetailedError == null, $"Expected DetailedError null, got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false after default clear");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand.CanExecute to be false after default clear");
+            });
+
+            RunSyncTest("MainViewModel_DetailedError_RaisesPropertyChanged_AndUpdatesCommandCanExecute", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                var changedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) changedProperties.Add(e.PropertyName);
+                };
+
+                // Setting DetailedError to text
+                vm.DetailedError = "SqlException: Timeout expired";
+                Assert(changedProperties.Contains(nameof(MainViewModel.DetailedError)), "Expected PropertyChanged for DetailedError");
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged for HasDetailedError");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Expected ShowErrorDetailsCommand to be enabled");
+
+                changedProperties.Clear();
+
+                // Setting DetailedError to empty string
+                vm.DetailedError = string.Empty;
+                Assert(changedProperties.Contains(nameof(MainViewModel.DetailedError)), "Expected PropertyChanged for DetailedError on empty string");
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged for HasDetailedError on empty string");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false for empty string");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to be disabled for empty string");
+
+                changedProperties.Clear();
+
+                // Setting DetailedError to null
+                vm.DetailedError = null;
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false for null");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to be disabled for null");
+            });
+
+            RunSyncTest("MainViewModel_ShowErrorDetails_InvokesCustomHandler_WhenDetailedErrorPresent", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                string? receivedError = null;
+                vm.ShowErrorDetailsHandler = error => receivedError = error;
+
+                // When no detailed error, ShowErrorDetails should not invoke handler
+                vm.ShowErrorDetails();
+                Assert(receivedError == null, "Handler should not be invoked when HasDetailedError is false");
+
+                // When detailed error is present, command execution invokes handler
+                vm.DetailedError = "Critical failure details";
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(receivedError == "Critical failure details", $"Expected receivedError 'Critical failure details', got '{receivedError}'");
+            });
 
             await RunAsyncTest("LoadCollationsAsync_FiresSingleCollectionChangedResetEvent", async () =>
             {
@@ -432,6 +514,8 @@ namespace CollationModifier.Tests
 
                 Assert(vm.IsConnected == true, "Expected IsConnected to be true after setting");
                 Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnected)), $"Expected PropertyChanged for 'IsConnected', got '{string.Join(", ", notifiedProperties)}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditConnectionParameters)), $"Expected PropertyChanged for 'CanEditConnectionParameters', got '{string.Join(", ", notifiedProperties)}'");
+                Assert(!notifiedProperties.Contains("CanEditConnection"), "Did not expect PropertyChanged for deleted 'CanEditConnection'");
             });
 
             await RunAsyncTest("ConnectAsync_UpdatesIsConnectedState_OnSuccessAndFailure", async () =>
@@ -462,11 +546,21 @@ namespace CollationModifier.Tests
                 var mockService = new MockDatabaseService();
                 var vm = new MainViewModel(mockService);
                 using var cts = new CancellationTokenSource();
+                cts.Cancel();
                 var token = cts.Token;
 
-                bool result = await vm.LoadDatabasesAsync(token);
-                Assert(result == true, "Expected LoadDatabasesAsync with CancellationToken to return true");
-                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesAsync to be called once");
+                bool threw = false;
+                try
+                {
+                    await vm.LoadDatabasesAsync(token);
+                }
+                catch (OperationCanceledException)
+                {
+                    threw = true;
+                }
+
+                Assert(threw, "Expected LoadDatabasesAsync with cancelled CancellationToken to throw OperationCanceledException");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", "Expected StatusMessage to reflect cancellation");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
@@ -545,6 +639,86 @@ namespace CollationModifier.Tests
                 Assert(summary.Contains("FAILED (Blocking items found)"), "Summary should indicate failure");
                 Assert(summary.Contains("Session ID: 60"), "Summary should include session ID");
                 Assert(summary.Contains("FK_Orders_Users"), "Summary should include foreign key constraint name");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Fails_WhenBackupDatabasePermissionMissing", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(new[] { "ALTER" }, report);
+
+                Assert(report.HasMissingPermissions, "Report should have missing permissions when BACKUP DATABASE is missing.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when BACKUP DATABASE is missing.");
+                Assert(report.MissingPermissions.Count == 1, $"Expected 1 missing permission, got {report.MissingPermissions.Count}");
+                Assert(report.MissingPermissions[0].Contains("BACKUP DATABASE"), "Missing permission should mention BACKUP DATABASE.");
+                Assert(report.MissingPermissions[0].Contains("User lacks required database backup privileges"), "Missing permission should state lack of database backup privileges.");
+
+                string summary = report.GetDiagnosticSummary();
+                Assert(summary.Contains("FAILED (Blocking items found)"), "Diagnostic summary should indicate failure.");
+                Assert(summary.Contains("User lacks required database backup privileges"), "Diagnostic summary must state user lacks required database backup privileges.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Fails_WhenAlterPermissionMissing", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(new[] { "BACKUP DATABASE" }, report);
+
+                Assert(report.HasMissingPermissions, "Report should have missing permissions when ALTER is missing.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when ALTER is missing.");
+                Assert(report.MissingPermissions.Count == 1, $"Expected 1 missing permission, got {report.MissingPermissions.Count}");
+                Assert(report.MissingPermissions[0].Contains("ALTER"), "Missing permission should mention ALTER.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Fails_WhenBothPermissionsMissing", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(Array.Empty<string>(), report);
+
+                Assert(report.HasMissingPermissions, "Report should have missing permissions when both are missing.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions.");
+                Assert(report.MissingPermissions.Count == 2, $"Expected 2 missing permissions, got {report.MissingPermissions.Count}");
+                Assert(report.MissingPermissions.Any(p => p.Contains("ALTER")), "Should report missing ALTER permission.");
+                Assert(report.MissingPermissions.Any(p => p.Contains("BACKUP DATABASE") && p.Contains("User lacks required database backup privileges")), "Should report missing BACKUP DATABASE permission.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluatePermissions_Succeeds_WhenBothPermissionsPresent", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluatePermissions(new[] { "ALTER", "BACKUP DATABASE", "BACKUP LOG" }, report);
+
+                Assert(!report.HasMissingPermissions, "Report should have no missing permissions when both ALTER and BACKUP DATABASE are granted.");
+                Assert(report.MissingPermissions.Count == 0, "MissingPermissions should be empty.");
+                Assert(!report.HasBlockingConditions, "Report should have no blocking conditions.");
+                Assert(report.IsValid, "Report should be valid.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenBackupDatabasePermissionMissing", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "NoBackupPermDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var preflightReport = new PreflightReport { DatabaseName = "NoBackupPermDb" };
+                DatabaseService.EvaluatePermissions(new[] { "ALTER" }, preflightReport);
+
+                Assert(preflightReport.HasBlockingConditions, "PreflightReport should have blocking conditions when BACKUP DATABASE permission is missing.");
+                Assert(preflightReport.HasMissingPermissions, "PreflightReport should flag missing permissions.");
+                Assert(preflightReport.MissingPermissions.Any(p => p.Contains("BACKUP DATABASE") && p.Contains("User lacks required database backup privileges")), "Missing permissions must describe missing BACKUP DATABASE privilege.");
+
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    PreflightReportToReturn = preflightReport
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup must NOT execute when user lacks BACKUP DATABASE permission!");
+                Assert(mockService.AlterCollationCount == 0, "Alter Collation must NOT execute when preflight fails!");
+                Assert(vm.StatusMessage.Contains("Pre-flight validation failed"), $"Expected status message to indicate preflight failure, got: '{vm.StatusMessage}'");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("User lacks required database backup privileges"), $"DetailedError should state user lacks required database backup privileges, got: '{vm.DetailedError}'");
             });
 
             await RunAsyncTest("ConnectAsync_DisablesConnectionParameters_And_UpdatesButtonText_WhenConnected", async () =>
@@ -731,6 +905,28 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx != null, "AlterCollationAsync must raise an AggregateException when both primary collation and emergency reset fail.");
                 Assert(caughtAggEx!.InnerExceptions.Count == 2, $"AggregateException should contain 2 inner exceptions (primary and reset failure), got {caughtAggEx.InnerExceptions.Count}.");
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
+            });
+
+            await RunAsyncTest("DatabaseService_RestoreDatabaseAsync_RaisesAggregateException_WhenResetAlsoFails", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                AggregateException? caughtAggEx = null;
+                try
+                {
+                    await dbService.RestoreDatabaseAsync("TestDB", "/tmp/nonexistent.bak");
+                }
+                catch (AggregateException aggEx)
+                {
+                    caughtAggEx = aggEx;
+                }
+
+                Assert(caughtAggEx != null, "RestoreDatabaseAsync must raise an AggregateException when both restore and emergency reset fail.");
+                Assert(caughtAggEx!.InnerExceptions.Count == 2, $"AggregateException should contain 2 inner exceptions (primary and reset failure), got {caughtAggEx.InnerExceptions.Count}.");
+                Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
+                Assert(caughtAggEx.Message.Contains("Failed to restore database 'TestDB'"), $"AggregateException message should mention restore database failure, got: '{caughtAggEx.Message}'");
             });
 
             await RunAsyncTest("LoadCollationsAsync_PopulatesSupportedCollations", async () =>
@@ -1028,6 +1224,97 @@ namespace CollationModifier.Tests
                 Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
                 Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
                 Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+            });
+
+            RunSyncTest("CancelCommand_ExposesICommand_AndCanExecuteEvaluatesTrueOnlyWhenIsBusyIsTrue", () =>
+            {
+                var vm = new MainViewModel();
+                Assert(vm.CancelCommand != null, "MainViewModel.CancelCommand must not be null.");
+                Assert(vm.CancelCommand is System.Windows.Input.ICommand, "MainViewModel.CancelCommand must implement ICommand.");
+
+                Assert(!vm.IsBusy, "IsBusy should initially be false.");
+                Assert(!vm.CancelCommand.CanExecute(null), "CancelCommand.CanExecute must be false when IsBusy is false.");
+
+                vm.IsBusy = true;
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand.CanExecute must be true when IsBusy is true.");
+
+                vm.IsBusy = false;
+                Assert(!vm.CancelCommand.CanExecute(null), "CancelCommand.CanExecute must be false when IsBusy is reset to false.");
+            });
+
+            RunSyncTest("CancelCommand_WhenNotBusy_ExecutesSafelyWithoutThrowing", () =>
+            {
+                var vm = new MainViewModel();
+                vm.Cancel();
+                vm.CancelCommand.Execute(null);
+                Assert(!vm.IsBusy, "IsBusy should remain false.");
+            });
+
+            await RunAsyncTest("CancelCommand_WhenClickedDuringConnectionAttempt_CancelsCancellationTokenSourceAndResetsState", async () =>
+            {
+                var connectionStarted = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    OnTestConnection = async (token) =>
+                    {
+                        connectionStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        return await tcs.Task;
+                    }
+                };
+                var vm = new MainViewModel(mockService);
+
+                var connectTask = vm.ConnectAsync();
+                await connectionStarted.Task;
+
+                Assert(vm.IsBusy, "MainViewModel should be busy during connection attempt.");
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand CanExecute should be true when IsBusy is true.");
+
+                vm.CancelCommand.Execute(null);
+
+                await connectTask;
+
+                Assert(!vm.IsBusy, "MainViewModel IsBusy should reset to false after cancellation.");
+                Assert(!vm.IsConnected, "MainViewModel IsConnected should be false after cancellation.");
+                Assert(vm.CanEditConnectionParameters, "CanEditConnectionParameters should be true after cancellation.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.' status, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("CancelCommand_WhenClickedDuringCollationChange_CancelsOperationAndRunsMultiUserRecoveryAndResetsState", async () =>
+            {
+                var alterStarted = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    OnAlterCollation = async (token) =>
+                    {
+                        alterStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        await tcs.Task;
+                    }
+                };
+                var vm = new MainViewModel(mockService);
+                var testDb = new DatabaseInfo { Name = "CancelDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(testDb);
+                vm.SelectedDatabase = testDb;
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                vm.BackupDirectory = "/tmp/backups";
+
+                var processTask = vm.ProcessCollationChangeAsync();
+                await alterStarted.Task;
+
+                Assert(vm.IsBusy, "MainViewModel should be busy during collation change.");
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand CanExecute should be true when IsBusy is true.");
+
+                vm.CancelCommand.Execute(null);
+
+                await processTask;
+
+                Assert(!vm.IsBusy, "MainViewModel IsBusy should reset to false after cancellation.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync must be called during cancellation recovery.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.' status, got: '{vm.StatusMessage}'");
+                Assert(vm.ProgressPercent == 0, "ProgressPercent should reset to 0 after cancellation.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
