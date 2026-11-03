@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.Data.SqlClient;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -10,6 +11,7 @@ namespace CollationModifier.Services
 {
     public class DatabaseService : IDatabaseService
     {
+        private static readonly Regex CollationRegex = new Regex(@"^[a-zA-Z0-9_]+$", RegexOptions.Compiled);
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
         private readonly object _collationCacheLock = new object();
@@ -406,16 +408,23 @@ namespace CollationModifier.Services
 
         public static void ValidateCollationFormat(string? collation)
         {
-            if (string.IsNullOrWhiteSpace(collation) || !System.Text.RegularExpressions.Regex.IsMatch(collation, @"^[a-zA-Z0-9_]+$"))
+            if (string.IsNullOrWhiteSpace(collation))
             {
-                throw new ArgumentException($"Invalid target collation format: '{collation}'. Collation names must contain only alphanumeric characters and underscores.");
+                return false;
             }
+
+            return CollationRegex.IsMatch(collation);
         }
 
-        public static void ValidateCollationName(string? collation) => ValidateCollationFormat(collation);
+        public static bool IsValidCollationFormat(string? collation) => IsValidCollationName(collation);
 
-        public static bool IsValidCollationFormat(string? collation) =>
-            !string.IsNullOrWhiteSpace(collation) && System.Text.RegularExpressions.Regex.IsMatch(collation, @"^[a-zA-Z0-9_]+$");
+        public static void ValidateCollationFormat(string? collation)
+        {
+            if (!IsValidCollationName(collation))
+            {
+                throw new ArgumentException($"Invalid target collation format: '{collation}'. Invalid collation name format. Collation names must contain only alphanumeric characters and underscores.");
+            }
+        }
 
         public static void EvaluatePermissions(IEnumerable<string> permissions, PreflightReport report)
         {

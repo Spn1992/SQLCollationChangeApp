@@ -2170,6 +2170,92 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("ScrollViewer.CanContentScroll=\"True\""), "TargetCollationInput should explicitly set ScrollViewer.CanContentScroll=\"True\"");
             });
 
+            RunSyncTest("DatabaseService_IsValidCollationName_AcceptsValidCollations", () =>
+            {
+                var validCollations = new[]
+                {
+                    "SQL_Latin1_General_CP1_CI_AS",
+                    "Latin1_General_CI_AS",
+                    "Latin1_General_100_BIN2",
+                    "Japanese_CI_AS",
+                    "French_CI_AS",
+                    "utf8_general_ci",
+                    "Collation_123_ABC",
+                    "ValidCollation",
+                    "A",
+                    "a_b_c_123"
+                };
+
+                foreach (var collation in validCollations)
+                {
+                    Assert(DatabaseService.IsValidCollationName(collation), $"Expected '{collation}' to be recognized as a valid collation name.");
+                }
+            });
+
+            RunSyncTest("DatabaseService_IsValidCollationName_RejectsNullEmptyAndWhitespace", () =>
+            {
+                string?[] emptyOrWhitespace = new string?[]
+                {
+                    null,
+                    "",
+                    " ",
+                    "   ",
+                    "\t",
+                    "\r\n",
+                    "\n"
+                };
+
+                foreach (var input in emptyOrWhitespace)
+                {
+                    Assert(!DatabaseService.IsValidCollationName(input), $"Expected '{input ?? "<null>"}' to be rejected as an invalid collation name.");
+                }
+            });
+
+            RunSyncTest("DatabaseService_IsValidCollationName_RejectsInvalidCharacters", () =>
+            {
+                var invalidCollations = new[]
+                {
+                    "Invalid;Collation",
+                    "Collation with spaces",
+                    "SQL-Latin1-General",
+                    "Collation'OR'1'='1",
+                    "Collation;DROP TABLE Students--",
+                    "Collation/Path",
+                    "Collation[0]",
+                    "@Collation",
+                    "Collation!",
+                    "Collation#",
+                    "Collation$",
+                    "Collation%",
+                    "Collation^",
+                    "Collation&",
+                    "Collation*",
+                    "Collation("
+                };
+
+                foreach (var collation in invalidCollations)
+                {
+                    Assert(!DatabaseService.IsValidCollationName(collation), $"Expected '{collation}' containing invalid characters to be rejected.");
+                }
+            });
+
+            await RunAsyncTest("DatabaseService_AlterCollationAsync_RejectsInvalidCollationFormat", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+
+                bool threw = false;
+                try
+                {
+                    await dbService.AlterCollationAsync("TestDB", "Invalid;Collation!DropTable");
+                }
+                catch (ArgumentException ex) when (ex.Message.Contains("Invalid collation name format"))
+                {
+                    threw = true;
+                }
+                Assert(threw, "AlterCollationAsync should throw ArgumentException for invalid collation format.");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
