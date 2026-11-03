@@ -1176,6 +1176,164 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
             });
 
+            RunSyncTest("DatabaseService_AttachProgressHandler_MethodExistsAndHandlesNullProgress", () =>
+            {
+                var method = typeof(DatabaseService).GetMethod("AttachProgressHandler", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(method != null, "AttachProgressHandler method not found in DatabaseService");
+
+                var parameters = method!.GetParameters();
+                Assert(parameters.Length == 2, $"Expected 2 parameters, found {parameters.Length}");
+                Assert(parameters[0].ParameterType.Name == "SqlConnection", "First parameter should be SqlConnection");
+                Assert(parameters[1].ParameterType == typeof(IProgress<int>), "Second parameter should be IProgress<int>");
+
+                var conn = (IDisposable?)Activator.CreateInstance(parameters[0].ParameterType);
+                try
+                {
+                    // Invoking AttachProgressHandler with null progress must safely do nothing without raising an exception
+                    method.Invoke(null, new object?[] { conn, null });
+                }
+                finally
+                {
+                    conn?.Dispose();
+                }
+            });
+
+            RunSyncTest("DatabaseService_ProgressRegex_MatchesValidFormat", () =>
+            {
+                var regex = new System.Text.RegularExpressions.Regex(@"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                var match1 = regex.Match("10 percent processed.");
+                Assert(match1.Success && match1.Groups[1].Value == "10", "Failed to parse '10 percent processed.'");
+
+                var match2 = regex.Match("50 PERCENT PROCESSED");
+                Assert(match2.Success && match2.Groups[1].Value == "50", "Failed to parse '50 PERCENT PROCESSED'");
+
+                var match3 = regex.Match("100 percent processed");
+                Assert(match3.Success && match3.Groups[1].Value == "100", "Failed to parse '100 percent processed'");
+
+                Assert(!regex.Match("Non matching info string").Success, "Non-matching string incorrectly matched");
+            });
+
+            RunSyncTest("DatabaseService_ProgressParsing_ExtractsPercentageCorrectly", () =>
+            {
+                int? ParsePercent(string? message)
+                {
+                    if (string.IsNullOrEmpty(message))
+                    {
+                        return null;
+                    }
+                    var match = System.Text.RegularExpressions.Regex.Match(message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
+                    {
+                        return percent;
+                    }
+                    return null;
+                }
+
+                // Standard percentage messages
+                Assert(ParsePercent("10 percent processed.") == 10, "Failed to parse '10 percent processed.'");
+                Assert(ParsePercent("50 PERCENT PROCESSED") == 50, "Failed to parse '50 PERCENT PROCESSED'");
+                Assert(ParsePercent("100 percent processed") == 100, "Failed to parse '100 percent processed'");
+                Assert(ParsePercent("0 percent processed.") == 0, "Failed to parse '0 percent processed.'");
+                Assert(ParsePercent("25  percent   processed.") == 25, "Failed to parse message with extra whitespace");
+                Assert(ParsePercent("Backup operation: 75 percent processed.") == 75, "Failed to parse prefixed message");
+
+                // Invalid formats
+                Assert(ParsePercent("Non matching info string") == null, "Invalid format without percentage should return null");
+                Assert(ParsePercent("Processed 100 percent.") == null, "Reverse phrase should not match");
+                Assert(ParsePercent("percent processed") == null, "Missing number should return null");
+                Assert(ParsePercent("abc percent processed") == null, "Non-numeric token should return null");
+                Assert(ParsePercent("100 percent done") == null, "Different phrase should return null");
+
+                // Empty strings and null
+                Assert(ParsePercent("") == null, "Empty string should return null");
+                Assert(ParsePercent(null) == null, "Null string should return null");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ReportsBackupProgressPercentagesAndUpdatesUI", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "ProgressDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    BackupProgressSimulator = progress =>
+                    {
+                        progress?.Report(30);
+                        progress?.Report(70);
+                        progress?.Report(100);
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                var reportedPercents = new List<int>();
+                bool wasDeterminateDuringProgress = false;
+                string? statusFor100Percent = null;
+
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent))
+                    {
+                        reportedPercents.Add(vm.ProgressPercent);
+                        if (!vm.IsIndeterminateProgress)
+                        {
+                            wasDeterminateDuringProgress = true;
+                        }
+                    }
+                    if (args.PropertyName == nameof(MainViewModel.StatusMessage) && vm.StatusMessage.Contains("100%"))
+                    {
+                        statusFor100Percent = vm.StatusMessage;
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(reportedPercents.Contains(30) && reportedPercents.Contains(70) && reportedPercents.Contains(100), $"Expected reported percents to contain 30, 70, 100, got [{string.Join(", ", reportedPercents)}]");
+                Assert(wasDeterminateDuringProgress, "Expected IsIndeterminateProgress to be false during progress reporting");
+                Assert(statusFor100Percent != null && statusFor100Percent.Contains("100%"), $"Expected status message during progress to contain 100%, got '{statusFor100Percent}'");
+                Assert(vm.ProgressPercent == 0, $"Expected ProgressPercent to reset to 0 after process completes, got {vm.ProgressPercent}");
+                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after process completes");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ReportsRestoreProgressPercentagesOnFailure", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "RestoreDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    RestoreProgressSimulator = progress =>
+                    {
+                        progress?.Report(50);
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                int restoreReportedPercent = -1;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent) && vm.ProgressPercent == 50)
+                    {
+                        restoreReportedPercent = vm.ProgressPercent;
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
+                Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
+                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+            });
+
             RunSyncTest("CancelCommand_ExposesICommand_AndCanExecuteEvaluatesTrueOnlyWhenIsBusyIsTrue", () =>
             {
                 var vm = new MainViewModel();
