@@ -255,22 +255,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private static bool IsSingleUserLockState(Exception ex)
-        {
-            if (ex is AggregateException aggEx)
-            {
-                foreach (var inner in aggEx.Flatten().InnerExceptions)
-                {
-                    if (IsSingleUserLockState(inner)) return true;
-                }
-            }
-            if (ex == null || string.IsNullOrEmpty(ex.Message)) return false;
-            var msg = ex.Message;
-            return msg.IndexOf("SINGLE_USER", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   msg.IndexOf("reset failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
         private void InvalidateRequerySuggested()
         {
 #if NETFRAMEWORK
@@ -430,44 +414,26 @@ namespace CollationModifier.ViewModels
             try
             {
                 _databaseService.SetConnectionString(ServerName, SelectedAuthenticationType, Username, Password);
-                var success = await _databaseService.TestConnectionAsync(token);
+                var initData = await _databaseService.GetServerInitializationDataAsync(token);
 
-                if (success)
+                if (!string.IsNullOrWhiteSpace(initData.DefaultBackupDirectory))
                 {
-                    SetStatus("Connected successfully. Querying default backup directory and fetching databases...");
-
-                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync(token);
-                    if (!string.IsNullOrWhiteSpace(serverBackupPath))
-                    {
-                        BackupDirectory = serverBackupPath;
-                        _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {serverBackupPath}");
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
-                    }
-
-                    bool dbLoaded = await LoadDatabasesAsync(token);
-                    if (dbLoaded)
-                    {
-                        await LoadCollationsAsync(token);
-                        IsConnected = true;
-                        SetStatus("Ready");
-                    }
-                    else
-                    {
-                        IsConnected = false;
-                    }
+                    BackupDirectory = initData.DefaultBackupDirectory;
+                    _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {initData.DefaultBackupDirectory}");
                 }
                 else
                 {
-                    IsConnected = false;
-                    SetStatus(
-                        "Connection failed. Check credentials and server name.",
-                        "Connection failed. Verify server name, authentication type, and credentials.",
-                        "Connection failed: Unable to connect to the specified SQL Server host. Please verify server name and credentials."
-                    );
+                    _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                 }
+
+                Databases.ReplaceRange(initData.Databases);
+                _logger.LogInfo($"Fetched {Databases.Count} databases.");
+
+                SupportedCollations.ReplaceRange(initData.SupportedCollations);
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+
+                IsConnected = true;
+                SetStatus("Ready");
             }
             catch (OperationCanceledException)
             {
@@ -479,7 +445,9 @@ namespace CollationModifier.ViewModels
             {
                 IsConnected = false;
                 _logger.LogError("Connection failed.", ex);
-                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatConnectionError(ex);
+                var (statusText, toolTipText, detailedError) = (ex.Message?.Contains("database", StringComparison.OrdinalIgnoreCase) == true || ex.Message?.Contains("catalog", StringComparison.OrdinalIgnoreCase) == true)
+                    ? ErrorFormattingHelper.FormatLoadDatabasesError(ex)
+                    : ErrorFormattingHelper.FormatConnectionError(ex);
                 SetStatus(statusText, toolTipText, detailedError);
             }
             finally
