@@ -1,6 +1,5 @@
 using System;
 using System.IO;
-using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
@@ -11,7 +10,6 @@ namespace CollationModifier.Services
         private readonly string _logFilePath;
         private readonly Channel<string> _logChannel;
         private readonly Task _processQueueTask;
-        private readonly CancellationTokenSource _cts;
         private bool _disposed;
 
         public string LogFilePath => _logFilePath;
@@ -60,7 +58,6 @@ namespace CollationModifier.Services
                 SingleWriter = false
             };
             _logChannel = Channel.CreateUnbounded<string>(options);
-            _cts = new CancellationTokenSource();
             _processQueueTask = Task.Run(ProcessQueueAsync);
         }
 
@@ -252,9 +249,6 @@ namespace CollationModifier.Services
                 {
                     System.Diagnostics.Debug.WriteLine($"Error while flushing logger queue: {ex.Message}");
                 }
-
-                _cts.Cancel();
-                _cts.Dispose();
             }
 
             _disposed = true;
