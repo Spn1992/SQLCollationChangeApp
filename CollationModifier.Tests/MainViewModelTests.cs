@@ -194,6 +194,79 @@ namespace CollationModifier.Tests
             int failed = 0;
             Console.WriteLine("\n=== Running MainViewModel & Pre-flight Validation Tests ===");
 
+            RunSyncTest("MainViewModel_SetStatus_UpdatesProperties_AndClearsDetailedErrorOnDefaultNull", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                vm.SetStatus("Initial message", "Initial tooltip", "Detailed stack trace");
+                Assert(vm.StatusMessage == "Initial message", $"Expected StatusMessage 'Initial message', got '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == "Initial tooltip", $"Expected StatusToolTip 'Initial tooltip', got '{vm.StatusToolTip}'");
+                Assert(vm.DetailedError == "Detailed stack trace", $"Expected DetailedError 'Detailed stack trace', got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Expected ShowErrorDetailsCommand.CanExecute to be true");
+
+                // Default null values must clear previous detailed error
+                vm.SetStatus("Updated status");
+                Assert(vm.StatusMessage == "Updated status", $"Expected StatusMessage 'Updated status', got '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip null, got '{vm.StatusToolTip}'");
+                Assert(vm.DetailedError == null, $"Expected DetailedError null, got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false after default clear");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand.CanExecute to be false after default clear");
+            });
+
+            RunSyncTest("MainViewModel_DetailedError_RaisesPropertyChanged_AndUpdatesCommandCanExecute", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                var changedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) changedProperties.Add(e.PropertyName);
+                };
+
+                // Setting DetailedError to text
+                vm.DetailedError = "SqlException: Timeout expired";
+                Assert(changedProperties.Contains(nameof(MainViewModel.DetailedError)), "Expected PropertyChanged for DetailedError");
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged for HasDetailedError");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Expected ShowErrorDetailsCommand to be enabled");
+
+                changedProperties.Clear();
+
+                // Setting DetailedError to empty string
+                vm.DetailedError = string.Empty;
+                Assert(changedProperties.Contains(nameof(MainViewModel.DetailedError)), "Expected PropertyChanged for DetailedError on empty string");
+                Assert(changedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged for HasDetailedError on empty string");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false for empty string");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to be disabled for empty string");
+
+                changedProperties.Clear();
+
+                // Setting DetailedError to null
+                vm.DetailedError = null;
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false for null");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to be disabled for null");
+            });
+
+            RunSyncTest("MainViewModel_ShowErrorDetails_InvokesCustomHandler_WhenDetailedErrorPresent", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                string? receivedError = null;
+                vm.ShowErrorDetailsHandler = error => receivedError = error;
+
+                // When no detailed error, ShowErrorDetails should not invoke handler
+                vm.ShowErrorDetails();
+                Assert(receivedError == null, "Handler should not be invoked when HasDetailedError is false");
+
+                // When detailed error is present, command execution invokes handler
+                vm.DetailedError = "Critical failure details";
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(receivedError == "Critical failure details", $"Expected receivedError 'Critical failure details', got '{receivedError}'");
+            });
 
             await RunAsyncTest("LoadCollationsAsync_FiresSingleCollectionChangedResetEvent", async () =>
             {
