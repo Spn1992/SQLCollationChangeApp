@@ -622,7 +622,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await connection.OpenAsync(CancellationToken.None);
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
             }

@@ -23,6 +23,8 @@ namespace CollationModifier.Tests
         public int BackupCount { get; private set; }
         public int RestoreCount { get; private set; }
         public int TrySetMultiUserCount { get; private set; }
+        public CancellationToken LastRestoreCancellationToken { get; private set; }
+        public bool IsMultiUser { get; set; } = true;
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
         public bool ShouldAlterCollationThrow { get; set; } = false;
@@ -71,6 +73,7 @@ namespace CollationModifier.Tests
         public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
             TrySetMultiUserCount++;
+            IsMultiUser = true;
             if (TrySetMultiUserExceptionToThrow != null)
             {
                 throw TrySetMultiUserExceptionToThrow;
@@ -117,8 +120,10 @@ namespace CollationModifier.Tests
 
         public async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
+            LastRestoreCancellationToken = cancellationToken;
             cancellationToken.ThrowIfCancellationRequested();
             RestoreCount++;
+            IsMultiUser = true;
             RestoreProgressSimulator?.Invoke(progress);
             if (RestoreExceptionToThrow != null)
             {
@@ -883,8 +888,96 @@ namespace CollationModifier.Tests
                 await vm.ProcessCollationChangeAsync();
 
                 Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called during recovery!");
+                Assert(!mockService.LastRestoreCancellationToken.IsCancellationRequested, "RestoreDatabaseAsync must receive an uncancelled token during error recovery!");
+                Assert(mockService.IsMultiUser, "Database should be restored to MULTI_USER mode!");
                 Assert(vm.StatusMessage.Contains("Database restored to MULTI_USER mode successfully"), $"Status message should confirm MULTI_USER restoration, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_RollsBackWithUncancelledToken_WhenCancelledAfterBackup", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelRollbackDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // Simulate cancellation during AlterCollation (which occurs after backup has completed)
+                mockService.OnAlterCollation = async token =>
+                {
+                    mockService.IsMultiUser = false; // Simulate database put in SINGLE_USER mode
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should be invoked when cancelled after backup.");
+                Assert(!mockService.LastRestoreCancellationToken.IsCancellationRequested, "RestoreDatabaseAsync must receive an uncancelled token (CancellationToken.None).");
+                Assert(mockService.IsMultiUser, "Database must be restored to MULTI_USER mode.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SkipsRollback_WhenCancelledBeforeBackup", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelBeforeBackupDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // Simulate cancellation before or during backup
+                mockService.OnBackupDatabase = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked if cancelled before backup completes.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ExecutesWithoutCancellation_WhenTokenIsCancelled", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                bool wasCanceled = false;
+                bool wasOtherException = false;
+                try
+                {
+                    await dbService.TrySetMultiUserAsync("TestDB", cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    wasCanceled = true;
+                }
+                catch (Exception)
+                {
+                    wasOtherException = true;
+                }
+
+                Assert(!wasCanceled, "TrySetMultiUserAsync must not throw OperationCanceledException when called with cancelled token.");
+                Assert(wasOtherException, "TrySetMultiUserAsync should attempt connection execution without checking cancellation state.");
             });
 
             await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ThrowsException_WhenConnectionFails", async () =>
