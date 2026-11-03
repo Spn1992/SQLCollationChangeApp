@@ -406,7 +406,7 @@ namespace CollationModifier.Services
             }
         }
 
-        public static void ValidateCollationFormat(string? collation)
+        public static bool IsValidCollationName(string? collation)
         {
             if (string.IsNullOrWhiteSpace(collation))
             {
