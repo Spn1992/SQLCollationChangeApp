@@ -220,6 +220,146 @@ namespace CollationModifier.Services
             return null;
         }
 
+        public virtual async Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default)
+        {
+            var initData = new ServerInitializationData();
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+
+                    var batchedQuery = @"
+                        -- 1. Default Backup Directory
+                        DECLARE @path NVARCHAR(4000) = NULL;
+
+                        BEGIN TRY
+                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
+                        END TRY
+                        BEGIN CATCH
+                        END CATCH;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        SELECT ISNULL(@path, '') AS DefaultBackupPath;
+
+                        -- 2. Databases Catalog
+                        SELECT
+                            d.name,
+                            d.collation_name,
+                            d.compatibility_level,
+                            SUSER_SNAME(d.owner_sid) as owner,
+                            mf.size_mb
+                        FROM sys.databases d
+                        LEFT JOIN (
+                            SELECT
+                                database_id,
+                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
+                            FROM sys.master_files
+                            GROUP BY database_id
+                        ) mf ON d.database_id = mf.database_id
+                        WHERE d.database_id > 4;
+
+                        -- 3. Supported Collations
+                        SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(batchedQuery, connection))
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                    {
+                        // Result Set 1: Default Backup Directory
+                        if (await reader.ReadAsync(cancellationToken))
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                var backupPath = reader.GetString(0).Trim();
+                                if (!string.IsNullOrWhiteSpace(backupPath))
+                                {
+                                    initData.DefaultBackupDirectory = backupPath;
+                                    _logger.LogInfo($"Retrieved SQL Server default backup path: {backupPath}");
+                                }
+                            }
+                        }
+
+                        // Result Set 2: Databases Catalog
+                        if (await reader.NextResultAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                initData.Databases.Add(new DatabaseInfo
+                                {
+                                    Name = reader.GetString(0),
+                                    Collation = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
+                                    CompatibilityLevel = reader.GetByte(2).ToString(),
+                                    Owner = reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
+                                    Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt64(4)} MB"
+                                });
+                            }
+                            _logger.LogInfo($"Retrieved {initData.Databases.Count} databases.");
+                        }
+
+                        // Result Set 3: Supported Collations
+                        if (await reader.NextResultAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                if (!reader.IsDBNull(0))
+                                {
+                                    initData.SupportedCollations.Add(reader.GetString(0));
+                                }
+                            }
+                            _logger.LogInfo($"Retrieved {initData.SupportedCollations.Count} supported collations.");
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Server initialization query was cancelled.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to retrieve server initialization data.", ex);
+                throw;
+            }
+
+            return initData;
+        }
+
 
 
         public static void ValidateBackupDirectoryPath(string backupDirectory)
@@ -467,6 +607,9 @@ namespace CollationModifier.Services
             return report;
         }
 
+        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+            => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
+
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
@@ -509,6 +652,9 @@ namespace CollationModifier.Services
         }
 
 
+
+        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
+            => RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
 
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
