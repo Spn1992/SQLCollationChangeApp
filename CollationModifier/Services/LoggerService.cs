@@ -104,39 +104,7 @@ namespace CollationModifier.Services
             {
                 while (await _logChannel.Reader.WaitToReadAsync().ConfigureAwait(false))
                 {
-                    while (_logChannel.Reader.TryRead(out var logEntry))
-                    {
-                        if (writer == null)
-                        {
-                            writer = CreateStreamWriter();
-                        }
-
-                        if (writer != null)
-                        {
-                            try
-                            {
-                                await writer.WriteAsync(logEntry).ConfigureAwait(false);
-                            }
-                            catch (Exception ex)
-                            {
-                                System.Diagnostics.Debug.WriteLine($"Failed to write log entry: {ex.Message}");
-                                DisposeWriter(ref writer);
-                            }
-                        }
-                    }
-
-                    if (writer != null)
-                    {
-                        try
-                        {
-                            await writer.FlushAsync().ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"Failed to flush log stream: {ex.Message}");
-                            DisposeWriter(ref writer);
-                        }
-                    }
+                    writer = await DrainAndFlushQueueAsync(writer).ConfigureAwait(false);
                 }
             }
             catch (Exception ex)
@@ -145,43 +113,54 @@ namespace CollationModifier.Services
             }
             finally
             {
-                while (_logChannel.Reader.TryRead(out var logEntry))
+                try
                 {
-                    if (writer == null)
-                    {
-                        writer = CreateStreamWriter();
-                    }
+                    writer = await DrainAndFlushQueueAsync(writer).ConfigureAwait(false);
+                }
+                finally
+                {
+                    DisposeWriter(ref writer);
+                }
+            }
+        }
 
-                    if (writer != null)
-                    {
-                        try
-                        {
-                            await writer.WriteAsync(logEntry).ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"Failed to write remaining log entry during cleanup: {ex.Message}");
-                            DisposeWriter(ref writer);
-                        }
-                    }
+        private async Task<StreamWriter?> DrainAndFlushQueueAsync(StreamWriter? writer)
+        {
+            while (_logChannel.Reader.TryRead(out var logEntry))
+            {
+                if (writer == null)
+                {
+                    writer = CreateStreamWriter();
                 }
 
                 if (writer != null)
                 {
                     try
                     {
-                        await writer.FlushAsync().ConfigureAwait(false);
+                        await writer.WriteAsync(logEntry).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
-                        System.Diagnostics.Debug.WriteLine($"Error flushing log stream during cleanup: {ex.Message}");
-                    }
-                    finally
-                    {
+                        System.Diagnostics.Debug.WriteLine($"Failed to write log entry: {ex.Message}");
                         DisposeWriter(ref writer);
                     }
                 }
             }
+
+            if (writer != null)
+            {
+                try
+                {
+                    await writer.FlushAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Failed to flush log stream: {ex.Message}");
+                    DisposeWriter(ref writer);
+                }
+            }
+
+            return writer;
         }
 
         private StreamWriter? CreateStreamWriter()
@@ -230,6 +209,24 @@ namespace CollationModifier.Services
             }
         }
 
+        public void Flush()
+        {
+            Flush(TimeSpan.FromSeconds(5));
+        }
+
+        public void Flush(TimeSpan timeout)
+        {
+            try
+            {
+                _logChannel.Writer.TryComplete();
+                _processQueueTask.Wait(timeout);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error while flushing logger queue: {ex.Message}");
+            }
+        }
+
         public void Dispose()
         {
             Dispose(true);
@@ -242,16 +239,7 @@ namespace CollationModifier.Services
 
             if (disposing)
             {
-                _logChannel.Writer.TryComplete();
-
-                try
-                {
-                    _processQueueTask.Wait(TimeSpan.FromSeconds(5));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Error while flushing logger queue: {ex.Message}");
-                }
+                Flush(TimeSpan.FromSeconds(5));
 
                 _cts.Cancel();
                 _cts.Dispose();

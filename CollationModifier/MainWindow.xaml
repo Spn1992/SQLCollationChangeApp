@@ -20,7 +20,7 @@
                         DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2"
                         AutomationProperties.Name="Open Log File" ToolTip="Open execution log file or folder" />
                 <Button x:Name="btnErrorDetails" Content="Details..." Command="{Binding ShowErrorDetailsCommand}"
-                        DockPanel.Dock="Right" VerticalAlignment="Center" Height="22" Padding="8,2" Margin="0,0,8,0"
+                        DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2" Margin="0,0,8,0"
                         AutomationProperties.Name="Error Details" ToolTip="View detailed error information"
                         Visibility="{Binding HasDetailedError, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
@@ -131,17 +131,13 @@
 
                                 <!-- Values -->
                                 <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}"
-                                           AutomationProperties.Name="Current Collation" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}" />
                                 <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
-                                           AutomationProperties.Name="Compatibility Level" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}" />
                                 <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
-                                           AutomationProperties.Name="Owner" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}" />
                                 <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
-                                           AutomationProperties.Name="Size" />
+                                           AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}" />
                             </Grid>
                         </Border>
 
@@ -161,6 +157,9 @@
                                           Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
                                           IsEditable="True"
                                           IsTextSearchEnabled="True"
+                                          VirtualizingPanel.IsVirtualizing="True"
+                                          VirtualizingPanel.VirtualizationMode="Recycling"
+                                          ScrollViewer.CanContentScroll="True"
                                           AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
                                           AutomationProperties.Name="New Collation Name"
                                           AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
