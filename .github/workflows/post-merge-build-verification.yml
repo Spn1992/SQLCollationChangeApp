@@ -1,0 +1,35 @@
+name: Post-Merge Build Verification
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  verify-build-and-test:
+    name: Verify Build and Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore CollationModifier dependencies
+        run: dotnet restore CollationModifier/CollationModifier.csproj
+
+      - name: Restore CollationModifier.Tests dependencies
+        run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj
+
+      - name: Build CollationModifier
+        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false
+
+      - name: Run unit tests
+        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false

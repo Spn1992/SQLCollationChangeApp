@@ -35,7 +35,7 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
-            CancelCommand = new RelayCommand(_ => CancelOperation(), _ => IsBusy);
+            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
             ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
 
@@ -86,20 +86,6 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _statusToolTip, value);
         }
 
-        private int _progressPercent;
-        public int ProgressPercent
-        {
-            get => _progressPercent;
-            set => SetProperty(ref _progressPercent, value);
-        }
-
-        private bool _isIndeterminateProgress = true;
-        public bool IsIndeterminateProgress
-        {
-            get => _isIndeterminateProgress;
-            set => SetProperty(ref _isIndeterminateProgress, value);
-        }
-
         private string? _detailedError;
         public string? DetailedError
         {
@@ -121,6 +107,20 @@ namespace CollationModifier.ViewModels
             StatusMessage = message;
             StatusToolTip = toolTip;
             DetailedError = detailedError;
+        }
+
+        private int _progressPercent;
+        public int ProgressPercent
+        {
+            get => _progressPercent;
+            set => SetProperty(ref _progressPercent, value);
+        }
+
+        private bool _isIndeterminateProgress = true;
+        public bool IsIndeterminateProgress
+        {
+            get => _isIndeterminateProgress;
+            set => SetProperty(ref _isIndeterminateProgress, value);
         }
 
         // Authentication Properties
@@ -186,7 +186,6 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
-                    OnPropertyChanged(nameof(CanEditConnection));
                 }
             }
         }
@@ -306,15 +305,28 @@ namespace CollationModifier.ViewModels
         public ICommand OpenLogCommand { get; }
         public ICommand ShowErrorDetailsCommand { get; }
 
-        public void CancelOperation()
+        public void Cancel()
         {
             if (_cts != null && !_cts.IsCancellationRequested)
             {
-                StatusMessage = "Cancelling operation...";
-                _logger.LogInfo("User requested cancellation of active operation.");
-                _cts.Cancel();
+                try
+                {
+                    StatusMessage = "Cancelling operation...";
+                    _logger.LogInfo("Cancellation requested by user.");
+                    _cts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Ignored if already disposed concurrently
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError("Error requesting cancellation.", ex);
+                }
             }
         }
+
+        public void CancelOperation() => Cancel();
 
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
@@ -412,8 +424,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public bool CanEditConnection => !IsBusy && !IsConnected;
-
         public async Task ConnectAsync()
         {
             if (IsConnected)
@@ -497,7 +507,7 @@ namespace CollationModifier.ViewModels
         {
             try
             {
-                var dbs = await _databaseService.GetDatabasesAsync();
+                var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
@@ -525,6 +535,13 @@ namespace CollationModifier.ViewModels
                 var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (OperationCanceledException)
+            {
+                SupportedCollations.Clear();
+                _logger.LogInfo("Load collations operation was cancelled by user.");
+                SetStatus("Operation cancelled by user.");
+                throw;
             }
             catch (Exception ex)
             {
@@ -632,7 +649,7 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
 
-                if (backupFile != null)
+                if (backupFile != null && SelectedDatabase != null)
                 {
                     try
                     {
@@ -647,6 +664,18 @@ namespace CollationModifier.ViewModels
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
+                    }
+                }
+
+                if (SelectedDatabase != null)
+                {
+                    try
+                    {
+                        await _databaseService.TrySetMultiUserAsync(SelectedDatabase.Name, CancellationToken.None);
+                    }
+                    catch (Exception resetEx)
+                    {
+                        _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
                     }
                 }
 
