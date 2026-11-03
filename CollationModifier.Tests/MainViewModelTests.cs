@@ -41,6 +41,43 @@ namespace CollationModifier.Tests
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
+        public int GetServerInitializationDataCount { get; set; }
+        public string? DefaultBackupDirectoryToReturn { get; set; }
+        public Func<CancellationToken, Task>? OnGetServerInitializationData { get; set; }
+        public Exception? GetServerInitializationDataExceptionToThrow { get; set; }
+
+        public virtual async Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default)
+        {
+            GetServerInitializationDataCount++;
+            if (OnGetServerInitializationData != null)
+            {
+                await OnGetServerInitializationData(cancellationToken);
+            }
+            if (OnTestConnection != null)
+            {
+                await OnTestConnection(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (GetServerInitializationDataExceptionToThrow != null)
+            {
+                throw GetServerInitializationDataExceptionToThrow;
+            }
+            if (ThrowOnGetDatabases)
+            {
+                throw new InvalidOperationException("Failed to reach database catalog.");
+            }
+            var dbs = await GetDatabasesAsync(cancellationToken);
+            var collations = await GetSupportedCollationsAsync(cancellationToken);
+            var backupDir = DefaultBackupDirectoryToReturn ?? await GetDefaultBackupDirectoryAsync(cancellationToken);
+
+            return new ServerInitializationData
+            {
+                DefaultBackupDirectory = backupDir,
+                Databases = new List<DatabaseInfo>(dbs),
+                SupportedCollations = new List<string>(collations)
+            };
+        }
+
         public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
         {
             if (OnTestConnection != null)
@@ -175,6 +212,35 @@ namespace CollationModifier.Tests
     public class FailingMockDatabaseService : MockDatabaseService
     {
         public override Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+
+        public override Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default)
+        {
+            throw new InvalidOperationException("Connection failed: Unable to connect to the specified SQL Server host. Please verify server name and credentials.");
+        }
+    }
+
+    public class TestableDatabaseService : DatabaseService
+    {
+        public int GetSupportedCollationsCallCount { get; private set; }
+        public List<string> CollationsToReturn { get; set; } = new List<string>
+        {
+            "SQL_Latin1_General_CP1_CI_AS",
+            "Latin1_General_100_CI_AS"
+        };
+        public bool ThrowOnGetSupportedCollations { get; set; } = false;
+
+        public TestableDatabaseService(LoggerService logger) : base(logger) { }
+
+        public override Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetSupportedCollationsCallCount++;
+            if (ThrowOnGetSupportedCollations)
+            {
+                throw new InvalidOperationException("Failed to fetch supported collations from testable mock.");
+            }
+            return Task.FromResult(new List<string>(CollationsToReturn));
+        }
     }
 
     public class SynchronousSynchronizationContext : SynchronizationContext
@@ -1188,6 +1254,82 @@ namespace CollationModifier.Tests
                 Assert(!report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should not report format error for valid collation format.");
             });
 
+            await RunAsyncTest("PreflightCheckAsync_ValidatesCollationsAgainstCache_WithoutIssuingNewQueries", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger);
+
+                Assert(dbService.GetSupportedCollationsCallCount == 0, "Collation query count should initially be 0");
+
+                var report1 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, $"Expected 1 collation query to populate cache, got {dbService.GetSupportedCollationsCallCount}");
+                Assert(!report1.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")), "Expected valid collation in cache to not generate error");
+
+                // Second check with another valid collation from cache - should not issue new query
+                var report2 = await dbService.PreflightCheckAsync("TestDB", "", "Latin1_General_100_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, $"Expected zero additional queries when cache is populated, got {dbService.GetSupportedCollationsCallCount}");
+                Assert(!report2.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")), "Expected valid collation in cache to not generate error");
+
+                // Case-insensitive lookup check
+                var report3 = await dbService.PreflightCheckAsync("TestDB", "", "sql_latin1_general_cp1_ci_as");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, $"Expected zero additional queries for case-insensitive check, got {dbService.GetSupportedCollationsCallCount}");
+                Assert(!report3.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")), "Expected case-insensitive collation to be recognized");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_RejectsUnsupportedCollation_UsingCachedData", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger);
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "NonExistentCollation_XYZ");
+
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected collation fetch to populate cache");
+                Assert(report.ValidationErrors.Any(e => e.Contains("Target collation 'NonExistentCollation_XYZ' is not supported by SQL Server.")),
+                    "Expected unsupported collation to be reported in validation errors.");
+
+                // Re-check another unsupported collation uses cache without new query
+                var report2 = await dbService.PreflightCheckAsync("TestDB", "", "Another_Unknown_Collation");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected no new queries for second collation check");
+                Assert(report2.ValidationErrors.Any(e => e.Contains("Target collation 'Another_Unknown_Collation' is not supported by SQL Server.")),
+                    "Expected second unsupported collation to also be rejected from cache.");
+            });
+
+            await RunAsyncTest("SetConnectionString_ClearsCollationCache_WhenCredentialsChange", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger);
+                dbService.SetConnectionString("ServerA", "Windows Authentication", "", "");
+
+                var report1 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected 1 collation fetch for initial connection");
+
+                // Same connection string should not invalidate cache
+                dbService.SetConnectionString("ServerA", "Windows Authentication", "", "");
+                var report2 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected cache to be preserved when connection string unchanged");
+
+                // Changed server/credentials must invalidate cache
+                dbService.SetConnectionString("ServerB", "Windows Authentication", "", "");
+                var report3 = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+                Assert(dbService.GetSupportedCollationsCallCount == 2, $"Expected cache to be re-populated after connection string changed, got {dbService.GetSupportedCollationsCallCount}");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_WhenCachePopulationFails_LogsWarningAndDoesNotBlockExecution", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    ThrowOnGetSupportedCollations = true
+                };
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
+
+                Assert(report != null, "Report should not be null when collation cache population fails");
+                Assert(dbService.GetSupportedCollationsCallCount == 1, "Expected attempt to fetch collations");
+                Assert(!report!.ValidationErrors.Any(e => e.Contains("is not supported by SQL Server")),
+                    "Collation should not be falsely reported as unsupported when catalog fetch failed");
+            });
+
             RunSyncTest("DatabaseService_ValidateCollationFormat_ValidatesAlphanumericAndUnderscoresOnly", () =>
             {
                 // Valid collations
@@ -1566,6 +1708,100 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("Property=\"BorderBrush\" Value=\"{StaticResource FocusBorderBrush}\""), "Button ControlTemplate trigger should set BorderBrush to FocusBorderBrush");
                 Assert(content.Contains("x:Key=\"PrimaryButton\""), "App.xaml should define PrimaryButton style");
                 Assert(content.Contains("x:Key=\"SecondaryButton\""), "App.xaml should define SecondaryButton style");
+            });
+
+            RunSyncTest("IDatabaseService_Declares_GetServerInitializationDataAsync", () =>
+            {
+                var method = typeof(IDatabaseService).GetMethod("GetServerInitializationDataAsync", new[] { typeof(CancellationToken) });
+                Assert(method != null, "IDatabaseService must declare GetServerInitializationDataAsync(CancellationToken).");
+                Assert(method!.ReturnType == typeof(Task<ServerInitializationData>), "GetServerInitializationDataAsync must return Task<ServerInitializationData>.");
+            });
+
+            await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("localhost", "Windows Authentication", "", "");
+
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                bool wasAbortedWithCancellation = false;
+                try
+                {
+                    await dbService.GetServerInitializationDataAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    wasAbortedWithCancellation = true;
+                }
+                catch (Exception ex) when (ex.InnerException is OperationCanceledException)
+                {
+                    wasAbortedWithCancellation = true;
+                }
+
+                Assert(wasAbortedWithCancellation, "GetServerInitializationDataAsync must abort with OperationCanceledException when cancellation token is cancelled.");
+            });
+
+            await RunAsyncTest("ConnectAsync_CallsGetServerInitializationDataAsync_InSingleStep", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "CatalogDB" } },
+                    CollationsToReturn = new List<string> { "Latin1_General_CI_AS" },
+                    DefaultBackupDirectoryToReturn = "C:\\Backups"
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+
+                Assert(mockService.GetServerInitializationDataCount == 1, $"Expected GetServerInitializationDataAsync to be called once, got {mockService.GetServerInitializationDataCount}");
+                Assert(vm.IsConnected, "Expected IsConnected to be true after single-step initialization");
+            });
+
+            await RunAsyncTest("ConnectAsync_PopulatesDatabasesCollationsAndBackupDirectory_Atomically", async () =>
+            {
+                var expectedDb = new DatabaseInfo { Name = "ProductionDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { expectedDb },
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_BIN" },
+                    DefaultBackupDirectoryToReturn = "D:\\SQLServer\\Backups"
+                };
+
+                var vm = new MainViewModel(mockService);
+
+                Assert(vm.Databases.Count == 0, "Databases should be empty initially");
+                Assert(vm.SupportedCollations.Count == 0, "SupportedCollations should be empty initially");
+                Assert(vm.BackupDirectory != "D:\\SQLServer\\Backups", "BackupDirectory should not be target server path initially");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "IsConnected should be true");
+                Assert(vm.StatusMessage == "Ready", $"Expected StatusMessage 'Ready', got '{vm.StatusMessage}'");
+                Assert(vm.BackupDirectory == "D:\\SQLServer\\Backups", $"Expected BackupDirectory 'D:\\SQLServer\\Backups', got '{vm.BackupDirectory}'");
+                Assert(vm.Databases.Count == 1 && vm.Databases[0].Name == "ProductionDB", "Databases should contain ProductionDB");
+                Assert(vm.SupportedCollations.Count == 2 && vm.SupportedCollations.Contains("Latin1_General_BIN"), "SupportedCollations should contain expected collations");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenCancelled_AbortsAndPreservesState", async () =>
+            {
+                using var cts = new CancellationTokenSource();
+                var mockService = new MockDatabaseService
+                {
+                    OnGetServerInitializationData = async token =>
+                    {
+                        await Task.Delay(1, token);
+                        throw new OperationCanceledException();
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+
+                Assert(!vm.IsConnected, "IsConnected should remain false when ConnectAsync is cancelled");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected cancellation status message, got '{vm.StatusMessage}'");
+                Assert(vm.Databases.Count == 0, "Databases should remain empty on cancellation");
             });
 
             RunSyncTest("DatabaseService_AttachProgressHandler_MethodExistsAndHandlesNullProgress", () =>
