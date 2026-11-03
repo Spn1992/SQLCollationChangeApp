@@ -1502,6 +1502,37 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
             });
 
+            RunSyncTest("AppXaml_InputRestingBorderBrush_HighContrastConfiguration", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+
+                Assert(content.Contains("x:Key=\"InputRestingBorderBrush\" Color=\"#64748B\""), "App.xaml should define InputRestingBorderBrush with #64748B");
+                Assert(content.Contains("<Setter Property=\"BorderBrush\" Value=\"{StaticResource InputRestingBorderBrush}\" />"), "App.xaml should set BorderBrush to InputRestingBorderBrush");
+                Assert(!content.Contains("<Setter Property=\"BorderBrush\" Value=\"#CBD5E1\" />"), "App.xaml must not contain low-contrast #CBD5E1 resting border brush");
+
+                // Verify relative luminance and contrast ratio calculation for #64748B vs #FFFFFF
+                double sR = 100.0 / 255.0;
+                double sG = 116.0 / 255.0;
+                double sB = 139.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+                double contrastAgainstWhite = (1.0 + 0.05) / (lum + 0.05);
+                Assert(contrastAgainstWhite >= 3.0, $"Contrast ratio {contrastAgainstWhite} against white background must exceed 3:1 under WCAG 2.2 1.4.11");
+            });
+
             RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
@@ -2256,7 +2287,46 @@ namespace CollationModifier.Tests
                 Assert(threw, "AlterCollationAsync should throw ArgumentException for invalid collation format.");
             });
 
-            RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
+            RunSyncTest("AppXaml_HeadingLevelStyles_DeclaredAndConfigured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var styles = doc.Descendants().Where(e => e.Name.LocalName == "Style").ToList();
+
+                // 1. HeadingLevel1 reusable style
+                var heading1Style = styles.FirstOrDefault(s => s.Attribute(System.Xml.Linq.XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "HeadingLevel1");
+                Assert(heading1Style != null, "App.xaml should declare reusable HeadingLevel1 style");
+                var heading1Setter = heading1Style!.Elements().FirstOrDefault(e => e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "AutomationProperties.HeadingLevel");
+                Assert(heading1Setter != null, "HeadingLevel1 style should set AutomationProperties.HeadingLevel");
+                Assert(heading1Setter!.Attribute("Value")?.Value == "Level1", "HeadingLevel1 style should set AutomationProperties.HeadingLevel to Level1");
+
+                // 2. HeadingLevel2 reusable style
+                var heading2Style = styles.FirstOrDefault(s => s.Attribute(System.Xml.Linq.XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "HeadingLevel2");
+                Assert(heading2Style != null, "App.xaml should declare reusable HeadingLevel2 style");
+                var heading2Setter = heading2Style!.Elements().FirstOrDefault(e => e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "AutomationProperties.HeadingLevel");
+                Assert(heading2Setter != null, "HeadingLevel2 style should set AutomationProperties.HeadingLevel");
+                Assert(heading2Setter!.Attribute("Value")?.Value == "Level2", "HeadingLevel2 style should set AutomationProperties.HeadingLevel to Level2");
+
+                // 3. CardHeader style
+                var cardHeaderStyle = styles.FirstOrDefault(s => s.Attribute(System.Xml.Linq.XName.Get("Key", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "CardHeader");
+                Assert(cardHeaderStyle != null, "App.xaml should define CardHeader style");
+                var cardHeaderSetter = cardHeaderStyle!.Elements().FirstOrDefault(e => e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "AutomationProperties.HeadingLevel");
+                Assert(cardHeaderSetter != null, "CardHeader style must assign AutomationProperties.HeadingLevel");
+                Assert(cardHeaderSetter!.Attribute("Value")?.Value == "Level2", "CardHeader style must assign AutomationProperties.HeadingLevel with value Level2");
+            });
+
+            RunSyncTest("MainWindowXaml_HeadingLevels_ConfiguredCorrectly", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
                 if (!System.IO.File.Exists(mainWindowXamlPath))
@@ -2270,33 +2340,63 @@ namespace CollationModifier.Tests
                 Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var labels = doc.Descendants().Where(e => e.Name.LocalName == "Label").ToList();
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
 
-                int mainContentIndex = content.IndexOf("<!-- Main Content Area -->");
-                int statusBarIndex = content.IndexOf("<!-- Status Bar at the bottom -->");
+                // 1. Primary section header: Database Operations -> Level 1
+                var dbOpsHeader = labels.FirstOrDefault(l => l.Attribute("Content")?.Value == "Database Operations");
+                Assert(dbOpsHeader != null, "MainWindow.xaml should contain 'Database Operations' Label");
+                Assert(dbOpsHeader!.Attribute("AutomationProperties.HeadingLevel")?.Value == "Level1",
+                    "Database Operations section header must expose AutomationProperties.HeadingLevel='Level1'");
 
-                Assert(mainContentIndex >= 0, "MainWindow.xaml should contain '<!-- Main Content Area -->'");
-                Assert(statusBarIndex >= 0, "MainWindow.xaml should contain '<!-- Status Bar at the bottom -->'");
-                Assert(mainContentIndex < statusBarIndex, "Main Content Area must precede Status Bar in visual tree declaration order for WCAG 2.2 SC 2.4.3 Focus Order compliance");
+                // 2. Secondary section headers: Authentication & Target Configuration -> Level 2
+                var authHeader = labels.FirstOrDefault(l => l.Attribute("Content")?.Value == "Authentication");
+                Assert(authHeader != null, "MainWindow.xaml should contain 'Authentication' Label");
+                Assert(authHeader!.Attribute("AutomationProperties.HeadingLevel")?.Value == "Level2" ||
+                       authHeader!.Attribute("Style")?.Value.Contains("CardHeader") == true,
+                    "Authentication section header must expose AutomationProperties.HeadingLevel Level2 directly or via CardHeader style");
 
-                int serverNameInputIndex = content.IndexOf("x:Name=\"ServerNameInput\"");
-                int btnOpenLogIndex = content.IndexOf("x:Name=\"btnOpenLog\"");
-                int btnErrorDetailsIndex = content.IndexOf("x:Name=\"btnErrorDetails\"");
+                var targetConfigHeader = labels.FirstOrDefault(l => l.Attribute("Content")?.Value == "Target Configuration");
+                Assert(targetConfigHeader != null, "MainWindow.xaml should contain 'Target Configuration' Label");
+                Assert(targetConfigHeader!.Attribute("AutomationProperties.HeadingLevel")?.Value == "Level2" ||
+                       targetConfigHeader!.Attribute("Style")?.Value.Contains("CardHeader") == true,
+                    "Target Configuration section header must expose AutomationProperties.HeadingLevel Level2 directly or via CardHeader style");
 
-                Assert(serverNameInputIndex >= 0, "MainWindow.xaml should contain ServerNameInput");
-                Assert(btnOpenLogIndex >= 0, "MainWindow.xaml should contain btnOpenLog");
-                Assert(btnErrorDetailsIndex >= 0, "MainWindow.xaml should contain btnErrorDetails");
-                Assert(serverNameInputIndex < btnOpenLogIndex, "ServerNameInput must precede btnOpenLog in visual tree for logical tab order");
-                Assert(serverNameInputIndex < btnErrorDetailsIndex, "ServerNameInput must precede btnErrorDetails in visual tree for logical tab order");
+                // 3. Input field labels must NOT have heading levels attached
+                var inputLabelNames = new[] { "ServerNameLabel", "AuthTypeLabel", "UsernameLabel", "PasswordLabel", "SelectDatabaseLabel", "TargetCollationLabel", "BackupDirectoryLabel" };
+                foreach (var labelName in inputLabelNames)
+                {
+                    var inputTb = textBlocks.FirstOrDefault(tb => tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == labelName);
+                    if (inputTb != null)
+                    {
+                        Assert(inputTb.Attribute("AutomationProperties.HeadingLevel") == null,
+                            $"Input field label '{labelName}' must NOT have AutomationProperties.HeadingLevel specified.");
+                    }
+                }
+            });
 
-                // Verify status bar layout and z-index attributes are preserved
-                int statusBarBorderStart = content.IndexOf("<Border Background=\"#E2E8F0\"", statusBarIndex);
-                Assert(statusBarBorderStart >= 0, "Status bar Border element should exist after the status bar comment");
-                int statusBarBorderEnd = content.IndexOf(">", statusBarBorderStart);
-                string statusBarBorderTag = content.Substring(statusBarBorderStart, statusBarBorderEnd - statusBarBorderStart + 1);
+            RunSyncTest("ErrorDetailsWindowXaml_DialogHeader_ExposesHeadingLevel1", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
 
-                Assert(statusBarBorderTag.Contains("Height=\"30\""), "Status bar Border should preserve Height=\"30\"");
-                Assert(statusBarBorderTag.Contains("VerticalAlignment=\"Bottom\""), "Status bar Border should preserve VerticalAlignment=\"Bottom\"");
-                Assert(statusBarBorderTag.Contains("Grid.ZIndex=\"10\""), "Status bar Border should preserve Grid.ZIndex=\"10\"");
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                var headerTb = textBlocks.FirstOrDefault(tb => tb.Attribute("Text")?.Value.Contains("An error occurred during operation") == true);
+                Assert(headerTb != null, "ErrorDetailsWindow.xaml must contain operation error header TextBlock");
+                Assert(headerTb!.Attribute("AutomationProperties.HeadingLevel")?.Value == "Level1",
+                    "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

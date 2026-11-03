@@ -12,6 +12,7 @@
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Row="0" Text="An error occurred during operation. Details below:"
+                   AutomationProperties.HeadingLevel="Level1"
                    FontWeight="SemiBold" Margin="0,0,0,8" Foreground="#334155" />
 
         <TextBox x:Name="txtErrorDetails" Grid.Row="1" IsReadOnly="True" VerticalScrollBarVisibility="Auto"
