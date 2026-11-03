@@ -647,5 +647,15 @@ namespace CollationModifier.Services
 
             await ExecuteNonQueryAsync(connection, query);
         }
+        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+        {
+            return BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
+        }
+
+        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken = default)
+        {
+            return RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
+        }
+
     }
 }
