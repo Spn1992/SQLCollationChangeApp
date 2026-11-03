@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -14,7 +15,7 @@ namespace CollationModifier.Tests
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
-        public List<string> CollationsToReturn { get; set; } = new();
+        public List<string>? CollationsToReturn { get; set; } = null;
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
@@ -23,6 +24,8 @@ namespace CollationModifier.Tests
         public int BackupCount { get; private set; }
         public int RestoreCount { get; private set; }
         public int TrySetMultiUserCount { get; private set; }
+        public CancellationToken LastRestoreCancellationToken { get; private set; }
+        public bool IsMultiUser { get; set; } = true;
         public string? LastAlteredDatabase { get; private set; }
         public string? LastTargetCollation { get; private set; }
         public bool ShouldAlterCollationThrow { get; set; } = false;
@@ -65,12 +68,13 @@ namespace CollationModifier.Tests
         {
             cancellationToken.ThrowIfCancellationRequested();
             GetCollationsCount++;
-            return Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+            return Task.FromResult(CollationsToReturn ?? new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
         }
 
         public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
         {
             TrySetMultiUserCount++;
+            IsMultiUser = true;
             if (TrySetMultiUserExceptionToThrow != null)
             {
                 throw TrySetMultiUserExceptionToThrow;
@@ -117,8 +121,10 @@ namespace CollationModifier.Tests
 
         public async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
+            LastRestoreCancellationToken = cancellationToken;
             cancellationToken.ThrowIfCancellationRequested();
             RestoreCount++;
+            IsMultiUser = true;
             RestoreProgressSimulator?.Invoke(progress);
             if (RestoreExceptionToThrow != null)
             {
@@ -560,21 +566,27 @@ namespace CollationModifier.Tests
                 var mockService = new MockDatabaseService();
                 var vm = new MainViewModel(mockService);
                 using var cts = new CancellationTokenSource();
-                cts.Cancel();
                 var token = cts.Token;
 
-                bool threw = false;
+                bool result = await vm.LoadDatabasesAsync(token);
+                Assert(result == true, "Expected LoadDatabasesAsync with CancellationToken to return true");
+                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesAsync to be called once");
+
+                using var canceledCts = new CancellationTokenSource();
+                canceledCts.Cancel();
+                bool caughtCancellation = false;
                 try
                 {
-                    await vm.LoadDatabasesAsync(token);
+                    await vm.LoadDatabasesAsync(canceledCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
-                    threw = true;
+                    caughtCancellation = true;
                 }
 
-                Assert(threw, "Expected LoadDatabasesAsync with cancelled CancellationToken to throw OperationCanceledException");
-                Assert(vm.StatusMessage == "Operation cancelled by user.", "Expected StatusMessage to reflect cancellation");
+                Assert(caughtCancellation, "Expected OperationCanceledException when LoadDatabasesAsync is called with a canceled token");
+                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesCount to remain 1 after cancellation prior to database query");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", "Expected StatusMessage to be 'Operation cancelled by user.'");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
@@ -877,8 +889,96 @@ namespace CollationModifier.Tests
                 await vm.ProcessCollationChangeAsync();
 
                 Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called during recovery!");
+                Assert(!mockService.LastRestoreCancellationToken.IsCancellationRequested, "RestoreDatabaseAsync must receive an uncancelled token during error recovery!");
+                Assert(mockService.IsMultiUser, "Database should be restored to MULTI_USER mode!");
                 Assert(vm.StatusMessage.Contains("Database restored to MULTI_USER mode successfully"), $"Status message should confirm MULTI_USER restoration, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_RollsBackWithUncancelledToken_WhenCancelledAfterBackup", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelRollbackDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // Simulate cancellation during AlterCollation (which occurs after backup has completed)
+                mockService.OnAlterCollation = async token =>
+                {
+                    mockService.IsMultiUser = false; // Simulate database put in SINGLE_USER mode
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should be invoked when cancelled after backup.");
+                Assert(!mockService.LastRestoreCancellationToken.IsCancellationRequested, "RestoreDatabaseAsync must receive an uncancelled token (CancellationToken.None).");
+                Assert(mockService.IsMultiUser, "Database must be restored to MULTI_USER mode.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SkipsRollback_WhenCancelledBeforeBackup", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelBeforeBackupDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // Simulate cancellation before or during backup
+                mockService.OnBackupDatabase = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked if cancelled before backup completes.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ExecutesWithoutCancellation_WhenTokenIsCancelled", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                dbService.SetConnectionString("invalid_server_xyz_12345", "Windows Authentication", "", "");
+
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                bool wasCanceled = false;
+                bool wasOtherException = false;
+                try
+                {
+                    await dbService.TrySetMultiUserAsync("TestDB", cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    wasCanceled = true;
+                }
+                catch (Exception)
+                {
+                    wasOtherException = true;
+                }
+
+                Assert(!wasCanceled, "TrySetMultiUserAsync must not throw OperationCanceledException when called with cancelled token.");
+                Assert(wasOtherException, "TrySetMultiUserAsync should attempt connection execution without checking cancellation state.");
             });
 
             await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ThrowsException_WhenConnectionFails", async () =>
@@ -971,6 +1071,86 @@ namespace CollationModifier.Tests
                 Assert(vm.IsConnected, "IsConnected should be true after successful connect");
                 Assert(mockService.GetCollationsCount > 0, $"Expected GetSupportedCollationsAsync to be invoked, count was {mockService.GetCollationsCount}");
                 Assert(vm.SupportedCollations.Count == 2, $"Expected 2 supported collations in VM, got {vm.SupportedCollations.Count}");
+            });
+
+            await RunAsyncTest("TargetCollation_KeyboardTextSearchAndSelection_UpdatesTargetCollationCorrectly", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } },
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_SC", "Japanese_CI_AS" }
+                };
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                var propertyChangedList = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) propertyChangedList.Add(e.PropertyName);
+                };
+
+                // Simulate keyboard typing prefix search
+                string prefixTyped = "Latin1_General";
+                var matchedCollation = vm.SupportedCollations.FirstOrDefault(c => c.StartsWith(prefixTyped, StringComparison.OrdinalIgnoreCase));
+                Assert(matchedCollation == "Latin1_General_100_CI_AS_SC", $"Expected matched collation to be 'Latin1_General_100_CI_AS_SC', got '{matchedCollation}'");
+
+                // Update TargetCollation via text entry / dropdown selection
+                vm.TargetCollation = matchedCollation!;
+                Assert(vm.TargetCollation == "Latin1_General_100_CI_AS_SC", "TargetCollation should reflect selected item");
+                Assert(propertyChangedList.Contains(nameof(MainViewModel.TargetCollation)), "TargetCollation change should fire PropertyChanged");
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand should be executable when valid database and collation are set");
+
+                // Manual text entry
+                vm.TargetCollation = "Custom_Collation_CI_AS";
+                Assert(vm.TargetCollation == "Custom_Collation_CI_AS", "TargetCollation should allow direct manual text input");
+            });
+
+            await RunAsyncTest("TargetCollation_LargeCollationDataset_LoadsAndFiltersEfficiently", async () =>
+            {
+                // Generate 3,885 collation records simulating full SQL Server catalog
+                var largeCatalog = new List<string>(3885);
+                for (int i = 0; i < 3885; i++)
+                {
+                    largeCatalog.Add($"SQL_Collation_{i:D4}_CP1_CI_AS");
+                }
+
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = largeCatalog
+                };
+                var vm = new MainViewModel(mockService);
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                await vm.LoadCollationsAsync();
+                sw.Stop();
+
+                Assert(vm.SupportedCollations.Count == 3885, $"Expected 3,885 collations loaded, got {vm.SupportedCollations.Count}");
+                Assert(sw.ElapsedMilliseconds < 1000, $"Loading 3885 collations took too long: {sw.ElapsedMilliseconds} ms");
+
+                // Simulate rapid keyboard text search filtering across 3885 items
+                string searchPrefix = "SQL_Collation_2500";
+                var searchResult = vm.SupportedCollations.FirstOrDefault(c => c.StartsWith(searchPrefix, StringComparison.OrdinalIgnoreCase));
+                Assert(searchResult == "SQL_Collation_2500_CP1_CI_AS", $"Expected SQL_Collation_2500_CP1_CI_AS, got '{searchResult}'");
+
+                vm.TargetCollation = searchResult!;
+                Assert(vm.TargetCollation == "SQL_Collation_2500_CP1_CI_AS", "TargetCollation selection must be retained");
+            });
+
+            await RunAsyncTest("TargetCollation_EmptyCollationList_HandlesGracefully", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = new List<string>()
+                };
+                var vm = new MainViewModel(mockService);
+                await vm.LoadCollationsAsync();
+
+                Assert(vm.SupportedCollations.Count == 0, $"Expected 0 collations, got {vm.SupportedCollations.Count}");
+
+                // Even with empty list, user can input target collation text without crash
+                vm.TargetCollation = "Latin1_General_CI_AS";
+                Assert(vm.TargetCollation == "Latin1_General_CI_AS", "TargetCollation should accept text even when collation catalog is empty");
             });
 
             await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndRejectsInvalidFormat", async () =>
@@ -1174,6 +1354,177 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Style TargetType=\"Button\">"), "App.xaml should define implicit TargetType=\"Button\" style");
                 Assert(content.Contains("<Setter Property=\"FocusVisualStyle\" Value=\"{StaticResource FocusVisualStyle}\" />"), "App.xaml should apply FocusVisualStyle across implicit control styles");
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
+                Assert(content.Contains("#047857"), "App.xaml should define PrimaryButton background with #047857");
+                Assert(content.Contains("#1D4ED8"), "App.xaml should define SecondaryButton background with #1D4ED8");
+                Assert(!content.Contains("#10B981"), "App.xaml should not contain non-compliant color #10B981");
+                Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
+            });
+
+            RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                // 1. Current Collation
+                var collationValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Collation") == true);
+                Assert(collationValueTb != null, "Collation value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.Collation");
+                string collationNameAttr = collationValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(collationNameAttr.Contains("StringFormat='Current Collation: {0}'"), "Collation value TextBlock should format with 'Current Collation: {0}'");
+                Assert(collationNameAttr.Contains("FallbackValue='Current Collation: -'"), "Collation value TextBlock should have FallbackValue='Current Collation: -'");
+                Assert(collationNameAttr.Contains("TargetNullValue='Current Collation: -'"), "Collation value TextBlock should have TargetNullValue='Current Collation: -'");
+                string collationLabeledBy = collationValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(collationLabeledBy.Contains("ElementName=CurrentCollationLabel"), "Collation value TextBlock should retain LabeledBy binding to CurrentCollationLabel");
+
+                // 2. Compatibility Level
+                var compatValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.CompatibilityLevel") == true);
+                Assert(compatValueTb != null, "Compatibility Level value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.CompatibilityLevel");
+                string compatNameAttr = compatValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(compatNameAttr.Contains("StringFormat='Compatibility Level: {0}'"), "Compatibility Level value TextBlock should format with 'Compatibility Level: {0}'");
+                Assert(compatNameAttr.Contains("FallbackValue='Compatibility Level: -'"), "Compatibility Level value TextBlock should have FallbackValue='Compatibility Level: -'");
+                Assert(compatNameAttr.Contains("TargetNullValue='Compatibility Level: -'"), "Compatibility Level value TextBlock should have TargetNullValue='Compatibility Level: -'");
+                string compatLabeledBy = compatValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(compatLabeledBy.Contains("ElementName=CompatibilityLevelLabel"), "Compatibility Level value TextBlock should retain LabeledBy binding to CompatibilityLevelLabel");
+
+                // 3. Owner
+                var ownerValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Owner") == true);
+                Assert(ownerValueTb != null, "Owner value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.Owner");
+                string ownerNameAttr = ownerValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(ownerNameAttr.Contains("StringFormat='Owner: {0}'"), "Owner value TextBlock should format with 'Owner: {0}'");
+                Assert(ownerNameAttr.Contains("FallbackValue='Owner: -'"), "Owner value TextBlock should have FallbackValue='Owner: -'");
+                Assert(ownerNameAttr.Contains("TargetNullValue='Owner: -'"), "Owner value TextBlock should have TargetNullValue='Owner: -'");
+                string ownerLabeledBy = ownerValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(ownerLabeledBy.Contains("ElementName=OwnerLabel"), "Owner value TextBlock should retain LabeledBy binding to OwnerLabel");
+
+                // 4. Size
+                var sizeValueTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Size") == true);
+                Assert(sizeValueTb != null, "Size value TextBlock should have AutomationProperties.Name bound to SelectedDatabase.Size");
+                string sizeNameAttr = sizeValueTb!.Attribute("AutomationProperties.Name")!.Value;
+                Assert(sizeNameAttr.Contains("StringFormat='Size: {0}'"), "Size value TextBlock should format with 'Size: {0}'");
+                Assert(sizeNameAttr.Contains("FallbackValue='Size: -'"), "Size value TextBlock should have FallbackValue='Size: -'");
+                Assert(sizeNameAttr.Contains("TargetNullValue='Size: -'"), "Size value TextBlock should have TargetNullValue='Size: -'");
+                string sizeLabeledBy = sizeValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
+                Assert(sizeLabeledBy.Contains("ElementName=SizeLabel"), "Size value TextBlock should retain LabeledBy binding to SizeLabel");
+            });
+
+            RunSyncTest("MainViewModel_SelectedDatabase_MetadataAccessibleNames_EvaluatesCompositeStrings", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                var collationTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Collation") == true);
+                var compatTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.CompatibilityLevel") == true);
+                var ownerTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Owner") == true);
+                var sizeTb = textBlocks.First(tb => tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.Size") == true);
+
+                // Helper to evaluate binding expression according to WPF binding rules
+                string EvaluateMetadataAccessibleName(string bindingExpr, MainViewModel viewModel)
+                {
+                    string format = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"StringFormat='([^']*)'").Groups[1].Value;
+                    string fallback = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"FallbackValue='([^']*)'").Groups[1].Value;
+                    string targetNull = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"TargetNullValue='([^']*)'").Groups[1].Value;
+                    string propName = System.Text.RegularExpressions.Regex.Match(bindingExpr, @"SelectedDatabase\.(\w+)").Groups[1].Value;
+
+                    if (viewModel.SelectedDatabase == null)
+                    {
+                        return fallback;
+                    }
+
+                    var prop = typeof(DatabaseInfo).GetProperty(propName);
+                    var val = prop?.GetValue(viewModel.SelectedDatabase) as string;
+
+                    if (string.IsNullOrEmpty(val))
+                    {
+                        return targetNull;
+                    }
+
+                    return string.Format(format, val);
+                }
+
+                var vm = new MainViewModel();
+
+                // Case 1: SelectedDatabase is null -> returns FallbackValue
+                Assert(vm.SelectedDatabase == null, "SelectedDatabase should be null initially");
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: -",
+                    "Expected fallback name 'Current Collation: -' when SelectedDatabase is null");
+                Assert(EvaluateMetadataAccessibleName(compatTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Compatibility Level: -",
+                    "Expected fallback name 'Compatibility Level: -' when SelectedDatabase is null");
+                Assert(EvaluateMetadataAccessibleName(ownerTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Owner: -",
+                    "Expected fallback name 'Owner: -' when SelectedDatabase is null");
+                Assert(EvaluateMetadataAccessibleName(sizeTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Size: -",
+                    "Expected fallback name 'Size: -' when SelectedDatabase is null");
+
+                // Case 2: SelectedDatabase has dynamic values -> returns formatted composite string
+                var db = new DatabaseInfo
+                {
+                    Name = "ProductionDB",
+                    Collation = "SQL_Latin1_General_CP1_CI_AS",
+                    CompatibilityLevel = "150",
+                    Owner = "domain\\dbadmin",
+                    Size = "5120 MB"
+                };
+                vm.SelectedDatabase = db;
+
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: SQL_Latin1_General_CP1_CI_AS",
+                    "Expected composite accessible name with dynamic collation");
+                Assert(EvaluateMetadataAccessibleName(compatTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Compatibility Level: 150",
+                    "Expected composite accessible name with dynamic compatibility level");
+                Assert(EvaluateMetadataAccessibleName(ownerTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Owner: domain\\dbadmin",
+                    "Expected composite accessible name with dynamic owner");
+                Assert(EvaluateMetadataAccessibleName(sizeTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Size: 5120 MB",
+                    "Expected composite accessible name with dynamic size");
+
+                // Case 3: SelectedDatabase has null/empty properties -> returns TargetNullValue
+                var emptyDb = new DatabaseInfo
+                {
+                    Name = "EmptyDB",
+                    Collation = "",
+                    CompatibilityLevel = "",
+                    Owner = "",
+                    Size = ""
+                };
+                vm.SelectedDatabase = emptyDb;
+
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: -",
+                    "Expected TargetNullValue 'Current Collation: -' when collation is empty");
+                Assert(EvaluateMetadataAccessibleName(compatTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Compatibility Level: -",
+                    "Expected TargetNullValue 'Compatibility Level: -' when compatibility level is empty");
+                Assert(EvaluateMetadataAccessibleName(ownerTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Owner: -",
+                    "Expected TargetNullValue 'Owner: -' when owner is empty");
+                Assert(EvaluateMetadataAccessibleName(sizeTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Size: -",
+                    "Expected TargetNullValue 'Size: -' when size is empty");
+
+                // Case 4: Switching back to null database returns fallback
+                vm.SelectedDatabase = null;
+                Assert(EvaluateMetadataAccessibleName(collationTb.Attribute("AutomationProperties.Name")!.Value, vm) == "Current Collation: -",
+                    "Expected fallback name after resetting SelectedDatabase to null");
             });
 
             RunSyncTest("MainWindowXaml_StatusBarTextBlock_ConfiguredWithPoliteLiveSetting", () =>
@@ -1466,6 +1817,28 @@ namespace CollationModifier.Tests
                 Assert(vm.ProgressPercent == 0, "ProgressPercent should reset to 0 after cancellation.");
             });
 
+            RunSyncTest("AppXaml_ComboBox_VirtualizationSetters_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+
+                Assert(content.Contains("<Style TargetType=\"ComboBox\">"), "App.xaml should define implicit ComboBox style");
+                Assert(content.Contains("<Setter Property=\"VirtualizingPanel.IsVirtualizing\" Value=\"True\" />"), "App.xaml ComboBox style should enable VirtualizingPanel.IsVirtualizing");
+                Assert(content.Contains("<Setter Property=\"VirtualizingPanel.VirtualizationMode\" Value=\"Recycling\" />"), "App.xaml ComboBox style should configure VirtualizingPanel.VirtualizationMode to Recycling");
+                Assert(content.Contains("<Setter Property=\"ScrollViewer.CanContentScroll\" Value=\"True\" />"), "App.xaml ComboBox style should enable ScrollViewer.CanContentScroll");
+                Assert(content.Contains("<VirtualizingStackPanel />"), "App.xaml ComboBox style should set ItemsPanel to a VirtualizingStackPanel template");
+            });
+
             RunSyncTest("AppXaml_ComboBoxStyle_Virtualization_Configured", () =>
             {
                 string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
@@ -1486,6 +1859,30 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Setter Property=\"VirtualizingPanel.VirtualizationMode\" Value=\"Recycling\" />"), "App.xaml ComboBox style should set VirtualizingPanel.VirtualizationMode to Recycling");
                 Assert(content.Contains("<Setter Property=\"ScrollViewer.CanContentScroll\" Value=\"True\" />"), "App.xaml ComboBox style should set ScrollViewer.CanContentScroll to True");
                 Assert(content.Contains("<VirtualizingStackPanel />"), "App.xaml ComboBox style should set ItemsPanel to a VirtualizingStackPanel template");
+            });
+
+            RunSyncTest("MainWindowXaml_TargetCollationInput_VirtualizationProperties_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                Assert(content.Contains("x:Name=\"TargetCollationInput\""), "MainWindow.xaml should define TargetCollationInput ComboBox");
+                Assert(content.Contains("VirtualizingPanel.IsVirtualizing=\"True\""), "TargetCollationInput must have VirtualizingPanel.IsVirtualizing='True'");
+                Assert(content.Contains("VirtualizingPanel.VirtualizationMode=\"Recycling\""), "TargetCollationInput must have VirtualizingPanel.VirtualizationMode='Recycling'");
+                Assert(content.Contains("ScrollViewer.CanContentScroll=\"True\""), "TargetCollationInput must have ScrollViewer.CanContentScroll='True'");
+                Assert(content.Contains("<ComboBox.ItemsPanel>"), "TargetCollationInput must specify ComboBox.ItemsPanel");
+                Assert(content.Contains("<ItemsPanelTemplate>"), "TargetCollationInput must include ItemsPanelTemplate");
+                Assert(content.Contains("<VirtualizingStackPanel />"), "TargetCollationInput ItemsPanel must contain VirtualizingStackPanel");
             });
 
             RunSyncTest("MainWindowXaml_TargetCollationInput_Virtualization_Configured", () =>

@@ -35,9 +35,9 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
             ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
-            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
             Databases.CollectionChanged += (s, e) =>
@@ -255,16 +255,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private static string FormatExceptionMessage(Exception ex)
-        {
-            if (ex is AggregateException aggEx)
-            {
-                var messages = aggEx.Flatten().InnerExceptions.Select(e => e.Message);
-                return string.Join(" | ", messages);
-            }
-            return ex.Message;
-        }
-
         private static bool IsSingleUserLockState(Exception ex)
         {
             if (ex is AggregateException aggEx)
@@ -301,9 +291,9 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand CancelCommand { get; }
         public ICommand OpenLogCommand { get; }
         public ICommand ShowErrorDetailsCommand { get; }
-        public ICommand CancelCommand { get; }
 
         public void Cancel()
         {
@@ -311,8 +301,9 @@ namespace CollationModifier.ViewModels
             {
                 try
                 {
-                    _cts.Cancel();
+                    StatusMessage = "Cancelling operation...";
                     _logger.LogInfo("Cancellation requested by user.");
+                    _cts.Cancel();
                 }
                 catch (ObjectDisposedException)
                 {
@@ -324,6 +315,8 @@ namespace CollationModifier.ViewModels
                 }
             }
         }
+
+        public void CancelOperation() => Cancel();
 
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
@@ -403,18 +396,6 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogError("Failed to open log file.", ex);
                 StatusMessage = $"Unable to open log file: {ex.Message}";
-            }
-        }
-
-        public async Task ToggleConnectionAsync()
-        {
-            if (IsConnected)
-            {
-                Disconnect();
-            }
-            else
-            {
-                await ConnectAsync();
             }
         }
 
@@ -655,6 +636,25 @@ namespace CollationModifier.ViewModels
             catch (OperationCanceledException)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
+
+                if (backupFile != null && SelectedDatabase != null)
+                {
+                    try
+                    {
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
+                    }
+                }
+
                 if (SelectedDatabase != null)
                 {
                     try
@@ -666,6 +666,7 @@ namespace CollationModifier.ViewModels
                         _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
                     }
                 }
+
                 SetStatus("Operation cancelled by user.");
             }
             catch (Exception ex)
