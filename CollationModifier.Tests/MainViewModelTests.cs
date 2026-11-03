@@ -14,7 +14,7 @@ namespace CollationModifier.Tests
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
-        public List<string> CollationsToReturn { get; set; } = new();
+        public List<string>? CollationsToReturn { get; set; } = null;
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
@@ -67,7 +67,7 @@ namespace CollationModifier.Tests
         {
             cancellationToken.ThrowIfCancellationRequested();
             GetCollationsCount++;
-            return Task.FromResult(CollationsToReturn.Count > 0 ? CollationsToReturn : new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
+            return Task.FromResult(CollationsToReturn ?? new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS" });
         }
 
         public Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
@@ -1072,6 +1072,86 @@ namespace CollationModifier.Tests
                 Assert(vm.SupportedCollations.Count == 2, $"Expected 2 supported collations in VM, got {vm.SupportedCollations.Count}");
             });
 
+            await RunAsyncTest("TargetCollation_KeyboardTextSearchAndSelection_UpdatesTargetCollationCorrectly", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } },
+                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_SC", "Japanese_CI_AS" }
+                };
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                var propertyChangedList = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) propertyChangedList.Add(e.PropertyName);
+                };
+
+                // Simulate keyboard typing prefix search
+                string prefixTyped = "Latin1_General";
+                var matchedCollation = vm.SupportedCollations.FirstOrDefault(c => c.StartsWith(prefixTyped, StringComparison.OrdinalIgnoreCase));
+                Assert(matchedCollation == "Latin1_General_100_CI_AS_SC", $"Expected matched collation to be 'Latin1_General_100_CI_AS_SC', got '{matchedCollation}'");
+
+                // Update TargetCollation via text entry / dropdown selection
+                vm.TargetCollation = matchedCollation!;
+                Assert(vm.TargetCollation == "Latin1_General_100_CI_AS_SC", "TargetCollation should reflect selected item");
+                Assert(propertyChangedList.Contains(nameof(MainViewModel.TargetCollation)), "TargetCollation change should fire PropertyChanged");
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand should be executable when valid database and collation are set");
+
+                // Manual text entry
+                vm.TargetCollation = "Custom_Collation_CI_AS";
+                Assert(vm.TargetCollation == "Custom_Collation_CI_AS", "TargetCollation should allow direct manual text input");
+            });
+
+            await RunAsyncTest("TargetCollation_LargeCollationDataset_LoadsAndFiltersEfficiently", async () =>
+            {
+                // Generate 3,885 collation records simulating full SQL Server catalog
+                var largeCatalog = new List<string>(3885);
+                for (int i = 0; i < 3885; i++)
+                {
+                    largeCatalog.Add($"SQL_Collation_{i:D4}_CP1_CI_AS");
+                }
+
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = largeCatalog
+                };
+                var vm = new MainViewModel(mockService);
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                await vm.LoadCollationsAsync();
+                sw.Stop();
+
+                Assert(vm.SupportedCollations.Count == 3885, $"Expected 3,885 collations loaded, got {vm.SupportedCollations.Count}");
+                Assert(sw.ElapsedMilliseconds < 1000, $"Loading 3885 collations took too long: {sw.ElapsedMilliseconds} ms");
+
+                // Simulate rapid keyboard text search filtering across 3885 items
+                string searchPrefix = "SQL_Collation_2500";
+                var searchResult = vm.SupportedCollations.FirstOrDefault(c => c.StartsWith(searchPrefix, StringComparison.OrdinalIgnoreCase));
+                Assert(searchResult == "SQL_Collation_2500_CP1_CI_AS", $"Expected SQL_Collation_2500_CP1_CI_AS, got '{searchResult}'");
+
+                vm.TargetCollation = searchResult!;
+                Assert(vm.TargetCollation == "SQL_Collation_2500_CP1_CI_AS", "TargetCollation selection must be retained");
+            });
+
+            await RunAsyncTest("TargetCollation_EmptyCollationList_HandlesGracefully", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    CollationsToReturn = new List<string>()
+                };
+                var vm = new MainViewModel(mockService);
+                await vm.LoadCollationsAsync();
+
+                Assert(vm.SupportedCollations.Count == 0, $"Expected 0 collations, got {vm.SupportedCollations.Count}");
+
+                // Even with empty list, user can input target collation text without crash
+                vm.TargetCollation = "Latin1_General_CI_AS";
+                Assert(vm.TargetCollation == "Latin1_General_CI_AS", "TargetCollation should accept text even when collation catalog is empty");
+            });
+
             await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndRejectsInvalidFormat", async () =>
             {
                 using var logger = new LoggerService();
@@ -1528,6 +1608,28 @@ namespace CollationModifier.Tests
                 Assert(vm.ProgressPercent == 0, "ProgressPercent should reset to 0 after cancellation.");
             });
 
+            RunSyncTest("AppXaml_ComboBox_VirtualizationSetters_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+
+                Assert(content.Contains("<Style TargetType=\"ComboBox\">"), "App.xaml should define implicit ComboBox style");
+                Assert(content.Contains("<Setter Property=\"VirtualizingPanel.IsVirtualizing\" Value=\"True\" />"), "App.xaml ComboBox style should enable VirtualizingPanel.IsVirtualizing");
+                Assert(content.Contains("<Setter Property=\"VirtualizingPanel.VirtualizationMode\" Value=\"Recycling\" />"), "App.xaml ComboBox style should configure VirtualizingPanel.VirtualizationMode to Recycling");
+                Assert(content.Contains("<Setter Property=\"ScrollViewer.CanContentScroll\" Value=\"True\" />"), "App.xaml ComboBox style should enable ScrollViewer.CanContentScroll");
+                Assert(content.Contains("<VirtualizingStackPanel />"), "App.xaml ComboBox style should set ItemsPanel to a VirtualizingStackPanel template");
+            });
+
             RunSyncTest("AppXaml_ComboBoxStyle_Virtualization_Configured", () =>
             {
                 string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
@@ -1548,6 +1650,30 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Setter Property=\"VirtualizingPanel.VirtualizationMode\" Value=\"Recycling\" />"), "App.xaml ComboBox style should set VirtualizingPanel.VirtualizationMode to Recycling");
                 Assert(content.Contains("<Setter Property=\"ScrollViewer.CanContentScroll\" Value=\"True\" />"), "App.xaml ComboBox style should set ScrollViewer.CanContentScroll to True");
                 Assert(content.Contains("<VirtualizingStackPanel />"), "App.xaml ComboBox style should set ItemsPanel to a VirtualizingStackPanel template");
+            });
+
+            RunSyncTest("MainWindowXaml_TargetCollationInput_VirtualizationProperties_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                Assert(content.Contains("x:Name=\"TargetCollationInput\""), "MainWindow.xaml should define TargetCollationInput ComboBox");
+                Assert(content.Contains("VirtualizingPanel.IsVirtualizing=\"True\""), "TargetCollationInput must have VirtualizingPanel.IsVirtualizing='True'");
+                Assert(content.Contains("VirtualizingPanel.VirtualizationMode=\"Recycling\""), "TargetCollationInput must have VirtualizingPanel.VirtualizationMode='Recycling'");
+                Assert(content.Contains("ScrollViewer.CanContentScroll=\"True\""), "TargetCollationInput must have ScrollViewer.CanContentScroll='True'");
+                Assert(content.Contains("<ComboBox.ItemsPanel>"), "TargetCollationInput must specify ComboBox.ItemsPanel");
+                Assert(content.Contains("<ItemsPanelTemplate>"), "TargetCollationInput must include ItemsPanelTemplate");
+                Assert(content.Contains("<VirtualizingStackPanel />"), "TargetCollationInput ItemsPanel must contain VirtualizingStackPanel");
             });
 
             RunSyncTest("MainWindowXaml_TargetCollationInput_Virtualization_Configured", () =>
