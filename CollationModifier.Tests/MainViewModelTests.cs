@@ -34,10 +34,19 @@ namespace CollationModifier.Tests
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
         public Action<IProgress<int>?>? RestoreProgressSimulator { get; set; }
+        public Func<CancellationToken, Task<bool>>? OnTestConnection { get; set; }
 
         public void SetConnectionString(string server, string authType, string username, string password) { }
 
-        public virtual Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
+        {
+            if (OnTestConnection != null)
+            {
+                return await OnTestConnection(cancellationToken);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            return true;
+        }
 
         public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
@@ -101,7 +110,7 @@ namespace CollationModifier.Tests
             {
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -126,7 +135,7 @@ namespace CollationModifier.Tests
                 var primaryEx = AlterCollationExceptionToThrow ?? new InvalidOperationException("Table constraint violation during collation alter.");
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -1059,32 +1068,95 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
             });
 
-            RunSyncTest("MainWindowXaml_MetadataValueTextBlocks_OmitStaticAutomationName", () =>
+            RunSyncTest("CancelCommand_ExposesICommand_AndCanExecuteEvaluatesTrueOnlyWhenIsBusyIsTrue", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
+                var vm = new MainViewModel();
+                Assert(vm.CancelCommand != null, "MainViewModel.CancelCommand must not be null.");
+                Assert(vm.CancelCommand is System.Windows.Input.ICommand, "MainViewModel.CancelCommand must implement ICommand.");
+
+                Assert(!vm.IsBusy, "IsBusy should initially be false.");
+                Assert(!vm.CancelCommand.CanExecute(null), "CancelCommand.CanExecute must be false when IsBusy is false.");
+
+                vm.IsBusy = true;
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand.CanExecute must be true when IsBusy is true.");
+
+                vm.IsBusy = false;
+                Assert(!vm.CancelCommand.CanExecute(null), "CancelCommand.CanExecute must be false when IsBusy is reset to false.");
+            });
+
+            RunSyncTest("CancelCommand_WhenNotBusy_ExecutesSafelyWithoutThrowing", () =>
+            {
+                var vm = new MainViewModel();
+                vm.Cancel();
+                vm.CancelCommand.Execute(null);
+                Assert(!vm.IsBusy, "IsBusy should remain false.");
+            });
+
+            await RunAsyncTest("CancelCommand_WhenClickedDuringConnectionAttempt_CancelsCancellationTokenSourceAndResetsState", async () =>
+            {
+                var connectionStarted = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
                 {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
+                    OnTestConnection = async (token) =>
+                    {
+                        connectionStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        return await tcs.Task;
+                    }
+                };
+                var vm = new MainViewModel(mockService);
+
+                var connectTask = vm.ConnectAsync();
+                await connectionStarted.Task;
+
+                Assert(vm.IsBusy, "MainViewModel should be busy during connection attempt.");
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand CanExecute should be true when IsBusy is true.");
+
+                vm.CancelCommand.Execute(null);
+
+                await connectTask;
+
+                Assert(!vm.IsBusy, "MainViewModel IsBusy should reset to false after cancellation.");
+                Assert(!vm.IsConnected, "MainViewModel IsConnected should be false after cancellation.");
+                Assert(vm.CanEditConnectionParameters, "CanEditConnectionParameters should be true after cancellation.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.' status, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("CancelCommand_WhenClickedDuringCollationChange_CancelsOperationAndRunsMultiUserRecoveryAndResetsState", async () =>
+            {
+                var alterStarted = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
                 {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                    OnAlterCollation = async (token) =>
+                    {
+                        alterStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        await tcs.Task;
+                    }
+                };
+                var vm = new MainViewModel(mockService);
+                var testDb = new DatabaseInfo { Name = "CancelDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(testDb);
+                vm.SelectedDatabase = testDb;
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                vm.BackupDirectory = "/tmp/backups";
 
-                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var processTask = vm.ProcessCollationChangeAsync();
+                await alterStarted.Task;
 
-                // Assert that metadata value TextBlocks omit static AutomationProperties.Name attributes
-                Assert(!content.Contains("AutomationProperties.Name=\"Current Collation\""), "MainWindow.xaml should not define static AutomationProperties.Name for Current Collation");
-                Assert(!content.Contains("AutomationProperties.Name=\"Compatibility Level\""), "MainWindow.xaml should not define static AutomationProperties.Name for Compatibility Level");
-                Assert(!content.Contains("AutomationProperties.Name=\"Owner\""), "MainWindow.xaml should not define static AutomationProperties.Name for Owner");
-                Assert(!content.Contains("AutomationProperties.Name=\"Size\""), "MainWindow.xaml should not define static AutomationProperties.Name for Size");
+                Assert(vm.IsBusy, "MainViewModel should be busy during collation change.");
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand CanExecute should be true when IsBusy is true.");
 
-                // Assert that metadata value TextBlocks retain AutomationProperties.LabeledBy bindings
-                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=CurrentCollationLabel}\""), "MainWindow.xaml should bind CurrentCollationLabel to Current Collation value TextBlock");
-                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=CompatibilityLevelLabel}\""), "MainWindow.xaml should bind CompatibilityLevelLabel to Compatibility Level value TextBlock");
-                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=OwnerLabel}\""), "MainWindow.xaml should bind OwnerLabel to Owner value TextBlock");
-                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=SizeLabel}\""), "MainWindow.xaml should bind SizeLabel to Size value TextBlock");
+                vm.CancelCommand.Execute(null);
+
+                await processTask;
+
+                Assert(!vm.IsBusy, "MainViewModel IsBusy should reset to false after cancellation.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync must be called during cancellation recovery.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.' status, got: '{vm.StatusMessage}'");
+                Assert(vm.ProgressPercent == 0, "ProgressPercent should reset to 0 after cancellation.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

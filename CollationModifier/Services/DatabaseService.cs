@@ -554,7 +554,17 @@ namespace CollationModifier.Services
             {
                 _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
                 // Attempt emergency MULTI_USER reset if batch execution failed
-                await ExecuteEmergencyMultiUserResetAsync(databaseName, ex, "restore", "restore database", cancellationToken);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following restore error on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Failed to restore database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        ex, resetEx);
+                }
                 throw;
             }
         }
@@ -584,7 +594,17 @@ namespace CollationModifier.Services
             {
                 _logger.LogError($"Failed to alter collation for database: {databaseName}", ex);
                 // Attempt to put it back to multi-user if it failed mid-way
-                await ExecuteEmergencyMultiUserResetAsync(databaseName, ex, "collation", "alter collation for database", cancellationToken);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following collation error on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Failed to alter collation for database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        ex, resetEx);
+                }
                 throw;
             }
         }
