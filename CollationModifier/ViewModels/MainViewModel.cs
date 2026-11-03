@@ -35,6 +35,7 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            CancelCommand = new RelayCommand(_ => CancelOperation(), _ => IsBusy);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
             ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
 
@@ -97,6 +98,29 @@ namespace CollationModifier.ViewModels
         {
             get => _isIndeterminateProgress;
             set => SetProperty(ref _isIndeterminateProgress, value);
+        }
+
+        private string? _detailedError;
+        public string? DetailedError
+        {
+            get => _detailedError;
+            set
+            {
+                if (SetProperty(ref _detailedError, value))
+                {
+                    OnPropertyChanged(nameof(HasDetailedError));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasDetailedError => !string.IsNullOrEmpty(DetailedError);
+
+        public void SetStatus(string message, string? toolTip = null, string? detailedError = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+            DetailedError = detailedError;
         }
 
         // Authentication Properties
@@ -278,8 +302,19 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand CancelCommand { get; }
         public ICommand OpenLogCommand { get; }
         public ICommand ShowErrorDetailsCommand { get; }
+
+        public void CancelOperation()
+        {
+            if (_cts != null && !_cts.IsCancellationRequested)
+            {
+                StatusMessage = "Cancelling operation...";
+                _logger.LogInfo("User requested cancellation of active operation.");
+                _cts.Cancel();
+            }
+        }
 
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
@@ -596,6 +631,25 @@ namespace CollationModifier.ViewModels
             catch (OperationCanceledException)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
+
+                if (backupFile != null)
+                {
+                    try
+                    {
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
+                    }
+                }
+
                 SetStatus("Operation cancelled by user.");
             }
             catch (Exception ex)
@@ -612,7 +666,7 @@ namespace CollationModifier.ViewModels
                             IsIndeterminateProgress = false;
                             StatusMessage = $"Restoring database... {percent}%";
                         });
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, token);
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
                         if (ex is AggregateException)
                         {
                             StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
