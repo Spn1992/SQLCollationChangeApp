@@ -247,6 +247,19 @@ namespace CollationModifier.Services
             }
         }
 
+        public static void EvaluatePermissions(IEnumerable<string> permissions, PreflightReport report)
+        {
+            var permissionSet = new HashSet<string>(permissions, StringComparer.OrdinalIgnoreCase);
+            if (!permissionSet.Contains("ALTER"))
+            {
+                report.MissingPermissions.Add("User does not have ALTER permission on the database.");
+            }
+            if (!permissionSet.Contains("BACKUP DATABASE"))
+            {
+                report.MissingPermissions.Add("User does not have BACKUP DATABASE permission on the database. User lacks required database backup privileges.");
+            }
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
@@ -374,10 +387,7 @@ namespace CollationModifier.Services
                             {
                                 permissions.Add(reader.GetString(0));
                             }
-                            if (!permissions.Contains("ALTER"))
-                            {
-                                report.MissingPermissions.Add("User does not have ALTER permission on the database.");
-                            }
+                            EvaluatePermissions(permissions, report);
 
                             // 2. Active User Sessions
                             if (await reader.NextResultAsync(cancellationToken))
@@ -613,6 +623,26 @@ namespace CollationModifier.Services
             {
                  _logger.LogError($"Failed emergency MULTI_USER reset for database: {databaseName}", ex);
                  throw;
+            }
+        }
+
+        private async Task ExecuteEmergencyMultiUserResetAsync(
+            string databaseName,
+            Exception primaryException,
+            string operationContext,
+            string actionDescription,
+            CancellationToken cancellationToken = default)
+        {
+            try
+            {
+                await TrySetMultiUserAsync(databaseName, cancellationToken);
+            }
+            catch (Exception resetEx)
+            {
+                _logger.LogError($"Emergency MULTI_USER reset failed following {operationContext} error on {databaseName}", resetEx);
+                throw new AggregateException(
+                    $"Failed to {actionDescription} '{databaseName}' ({primaryException.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                    primaryException, resetEx);
             }
         }
 
