@@ -7,6 +7,12 @@
         <SolidColorBrush x:Key="DisabledBackgroundBrush" Color="#E2E8F0" />
         <SolidColorBrush x:Key="DisabledForegroundBrush" Color="#475569" />
         <SolidColorBrush x:Key="FocusBorderBrush" Color="#0284C7" />
+        <SolidColorBrush x:Key="PrimaryButtonBackgroundBrush" Color="#047857" />
+        <SolidColorBrush x:Key="PrimaryButtonHoverBackgroundBrush" Color="#065F46" />
+        <SolidColorBrush x:Key="PrimaryButtonHoverBrush" Color="#065F46" />
+        <SolidColorBrush x:Key="SecondaryButtonBackgroundBrush" Color="#1D4ED8" />
+        <SolidColorBrush x:Key="SecondaryButtonHoverBackgroundBrush" Color="#1E40AF" />
+        <SolidColorBrush x:Key="SecondaryButtonHoverBrush" Color="#1E40AF" />
 
         <!-- Global Focus Visual Style -->
         <Style x:Key="FocusVisualStyle">
@@ -83,6 +89,13 @@
             <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
             <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
             <Setter Property="ScrollViewer.CanContentScroll" Value="True" />
+            <Setter Property="ItemsPanel">
+                <Setter.Value>
+                    <ItemsPanelTemplate>
+                        <VirtualizingStackPanel />
+                    </ItemsPanelTemplate>
+                </Setter.Value>
+            </Setter>
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
@@ -91,8 +104,8 @@
         </Style>
 
         <Style TargetType="Button" x:Key="PrimaryButton">
-            <Setter Property="Background" Value="#10B981" /> <!-- Emerald Green -->
-            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="{StaticResource PrimaryButtonBackgroundBrush}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
             <Setter Property="Padding" Value="16,10" />
             <Setter Property="BorderThickness" Value="0" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -109,7 +122,7 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#059669" />
+                    <Setter Property="Background" Value="{StaticResource PrimaryButtonHoverBackgroundBrush}" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
@@ -120,10 +133,11 @@
 
         <!-- Secondary Button (e.g. for connect if needed to distinguish) -->
         <Style TargetType="Button" x:Key="SecondaryButton" BasedOn="{StaticResource PrimaryButton}">
-            <Setter Property="Background" Value="#3B82F6" />
+            <Setter Property="Background" Value="{StaticResource SecondaryButtonBackgroundBrush}" />
+            <Setter Property="Foreground" Value="#FFFFFF" />
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#2563EB" />
+                    <Setter Property="Background" Value="{StaticResource SecondaryButtonHoverBackgroundBrush}" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
