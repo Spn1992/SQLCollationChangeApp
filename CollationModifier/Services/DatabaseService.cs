@@ -846,15 +846,6 @@ namespace CollationModifier.Services
 
             await ExecuteNonQueryAsync(connection, query);
         }
-        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken)
-        {
-            return BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
-        }
-
-        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken)
-        {
-            return RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
-        }
 
         private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)
         {

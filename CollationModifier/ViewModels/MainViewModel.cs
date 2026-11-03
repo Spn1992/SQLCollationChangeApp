@@ -255,22 +255,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private static bool IsSingleUserLockState(Exception ex)
-        {
-            if (ex is AggregateException aggEx)
-            {
-                foreach (var inner in aggEx.Flatten().InnerExceptions)
-                {
-                    if (IsSingleUserLockState(inner)) return true;
-                }
-            }
-            if (ex == null || string.IsNullOrEmpty(ex.Message)) return false;
-            var msg = ex.Message;
-            return msg.IndexOf("SINGLE_USER", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   msg.IndexOf("reset failed", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
         private void InvalidateRequerySuggested()
         {
 #if NETFRAMEWORK
