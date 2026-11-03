@@ -872,6 +872,34 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
             });
 
+            RunSyncTest("MainWindowXaml_MetadataValueTextBlocks_OmitStaticAutomationName", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                // Assert that metadata value TextBlocks omit static AutomationProperties.Name attributes
+                Assert(!content.Contains("AutomationProperties.Name=\"Current Collation\""), "MainWindow.xaml should not define static AutomationProperties.Name for Current Collation");
+                Assert(!content.Contains("AutomationProperties.Name=\"Compatibility Level\""), "MainWindow.xaml should not define static AutomationProperties.Name for Compatibility Level");
+                Assert(!content.Contains("AutomationProperties.Name=\"Owner\""), "MainWindow.xaml should not define static AutomationProperties.Name for Owner");
+                Assert(!content.Contains("AutomationProperties.Name=\"Size\""), "MainWindow.xaml should not define static AutomationProperties.Name for Size");
+
+                // Assert that metadata value TextBlocks retain AutomationProperties.LabeledBy bindings
+                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=CurrentCollationLabel}\""), "MainWindow.xaml should bind CurrentCollationLabel to Current Collation value TextBlock");
+                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=CompatibilityLevelLabel}\""), "MainWindow.xaml should bind CompatibilityLevelLabel to Compatibility Level value TextBlock");
+                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=OwnerLabel}\""), "MainWindow.xaml should bind OwnerLabel to Owner value TextBlock");
+                Assert(content.Contains("AutomationProperties.LabeledBy=\"{Binding ElementName=SizeLabel}\""), "MainWindow.xaml should bind SizeLabel to Size value TextBlock");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
