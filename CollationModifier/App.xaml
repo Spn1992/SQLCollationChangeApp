@@ -88,7 +88,7 @@
         </Style>
 
         <Style TargetType="Button" x:Key="PrimaryButton">
-            <Setter Property="Background" Value="#10B981" /> <!-- Emerald Green -->
+            <Setter Property="Background" Value="#047857" /> <!-- Emerald Green -->
             <Setter Property="Foreground" Value="White" />
             <Setter Property="Padding" Value="16,10" />
             <Setter Property="BorderThickness" Value="0" />
@@ -106,7 +106,7 @@
             </Setter>
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#059669" />
+                    <Setter Property="Background" Value="#065F46" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
@@ -117,10 +117,10 @@
 
         <!-- Secondary Button (e.g. for connect if needed to distinguish) -->
         <Style TargetType="Button" x:Key="SecondaryButton" BasedOn="{StaticResource PrimaryButton}">
-            <Setter Property="Background" Value="#3B82F6" />
+            <Setter Property="Background" Value="#1D4ED8" />
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#2563EB" />
+                    <Setter Property="Background" Value="#1E40AF" />
                 </Trigger>
                 <Trigger Property="IsEnabled" Value="False">
                     <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
