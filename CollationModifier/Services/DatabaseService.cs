@@ -656,20 +656,7 @@ namespace CollationModifier.Services
 
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    if (progress != null)
-                    {
-                        connection.InfoMessage += (sender, e) =>
-                        {
-                            if (!string.IsNullOrEmpty(e.Message))
-                            {
-                                var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
-                                {
-                                    progress.Report(percent);
-                                }
-                            }
-                        };
-                    }
+                    AttachProgressHandler(connection, progress);
                     await connection.OpenAsync(cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
                     await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
@@ -696,20 +683,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    if (progress != null)
-                    {
-                        connection.InfoMessage += (sender, e) =>
-                        {
-                            if (!string.IsNullOrEmpty(e.Message))
-                            {
-                                var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
-                                {
-                                    progress.Report(percent);
-                                }
-                            }
-                        };
-                    }
+                    AttachProgressHandler(connection, progress);
                     await connection.OpenAsync(cancellationToken);
                     await ExecuteNonQueryAsync(connection, "USE [master];");
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
@@ -842,6 +816,26 @@ namespace CollationModifier.Services
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
             await ExecuteNonQueryAsync(connection, query);
+        }
+
+        private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)
+        {
+            if (progress == null)
+            {
+                return;
+            }
+
+            connection.InfoMessage += (sender, e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Message))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
+                    {
+                        progress.Report(percent);
+                    }
+                }
+            };
         }
     }
 }
