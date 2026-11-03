@@ -560,21 +560,27 @@ namespace CollationModifier.Tests
                 var mockService = new MockDatabaseService();
                 var vm = new MainViewModel(mockService);
                 using var cts = new CancellationTokenSource();
-                cts.Cancel();
                 var token = cts.Token;
 
-                bool threw = false;
+                bool result = await vm.LoadDatabasesAsync(token);
+                Assert(result == true, "Expected LoadDatabasesAsync with CancellationToken to return true");
+                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesAsync to be called once");
+
+                using var canceledCts = new CancellationTokenSource();
+                canceledCts.Cancel();
+                bool caughtCancellation = false;
                 try
                 {
-                    await vm.LoadDatabasesAsync(token);
+                    await vm.LoadDatabasesAsync(canceledCts.Token);
                 }
                 catch (OperationCanceledException)
                 {
-                    threw = true;
+                    caughtCancellation = true;
                 }
 
-                Assert(threw, "Expected LoadDatabasesAsync with cancelled CancellationToken to throw OperationCanceledException");
-                Assert(vm.StatusMessage == "Operation cancelled by user.", "Expected StatusMessage to reflect cancellation");
+                Assert(caughtCancellation, "Expected OperationCanceledException when LoadDatabasesAsync is called with a canceled token");
+                Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesCount to remain 1 after cancellation prior to database query");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", "Expected StatusMessage to be 'Operation cancelled by user.'");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
