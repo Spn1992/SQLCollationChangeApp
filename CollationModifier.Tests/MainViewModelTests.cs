@@ -872,6 +872,102 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
             });
 
+            RunSyncTest("ErrorDetailsWindow_Xaml_FocusAndLiveRegion_Configured", () =>
+            {
+                string xamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(xamlPath))
+                {
+                    xamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(xamlPath))
+                {
+                    xamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(xamlPath), $"ErrorDetailsWindow.xaml file should exist at path {xamlPath}");
+
+                string content = System.IO.File.ReadAllText(xamlPath);
+
+                Assert(content.Contains("FocusManager.FocusedElement=\"{Binding ElementName=btnClose}\""),
+                    "ErrorDetailsWindow.xaml should configure FocusManager.FocusedElement to bind to btnClose for WCAG 2.4.3 focus order.");
+                Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""),
+                    "ErrorDetailsWindow.xaml should configure AutomationProperties.LiveSetting=\"Polite\" on lblCopiedStatus for WCAG 4.1.3 status messages.");
+                Assert(content.Contains("AutomationProperties.Name=\"Copied to clipboard!\""),
+                    "ErrorDetailsWindow.xaml should configure AutomationProperties.Name on lblCopiedStatus.");
+            });
+
+            RunSyncTest("ErrorDetailsWindow_CodeBehind_LiveRegionAnnouncement_Configured", () =>
+            {
+                string csPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml.cs"));
+                if (!System.IO.File.Exists(csPath))
+                {
+                    csPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(csPath))
+                {
+                    csPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(csPath), $"ErrorDetailsWindow.xaml.cs file should exist at path {csPath}");
+
+                string content = System.IO.File.ReadAllText(csPath);
+
+                Assert(content.Contains("using System.Windows.Automation.Peers;"),
+                    "ErrorDetailsWindow.xaml.cs should include System.Windows.Automation.Peers namespace.");
+                Assert(content.Contains("UIElementAutomationPeer.FromElement(lblCopiedStatus)") || content.Contains("UIElementAutomationPeer.CreatePeerForElement(lblCopiedStatus)"),
+                    "ErrorDetailsWindow.xaml.cs should obtain UIElementAutomationPeer for lblCopiedStatus.");
+                Assert(content.Contains("AutomationEvents.LiveRegionChanged"),
+                    "ErrorDetailsWindow.xaml.cs should raise AutomationEvents.LiveRegionChanged for live region announcements.");
+            });
+
+            RunSyncTest("MainViewModel_DefaultShowErrorDetails_FocusRestoration_Configured", () =>
+            {
+                string vmPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ViewModels", "MainViewModel.cs"));
+                if (!System.IO.File.Exists(vmPath))
+                {
+                    vmPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ViewModels", "MainViewModel.cs"));
+                }
+                if (!System.IO.File.Exists(vmPath))
+                {
+                    vmPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ViewModels", "MainViewModel.cs"));
+                }
+                Assert(System.IO.File.Exists(vmPath), $"MainViewModel.cs file should exist at path {vmPath}");
+
+                string content = System.IO.File.ReadAllText(vmPath);
+
+                Assert(content.Contains("Keyboard.FocusedElement"),
+                    "DefaultShowErrorDetails should record Keyboard.FocusedElement prior to dialog launch.");
+                Assert(content.Contains("Keyboard.Focus(previouslyFocused)"),
+                    "DefaultShowErrorDetails should restore focus to previously focused element after dialog close.");
+                Assert(content.Contains("Keyboard.Focus(System.Windows.Application.Current.MainWindow)"),
+                    "DefaultShowErrorDetails should safely fall back to MainWindow when Keyboard.FocusedElement was null.");
+            });
+
+            RunSyncTest("MainViewModel_ShowErrorDetailsCommand_ExecutionAndDelegation", () =>
+            {
+                var mockDb = new MockDatabaseService();
+                var vm = new MainViewModel(mockDb);
+
+                Assert(!vm.HasDetailedError, "HasDetailedError should initially be false.");
+                Assert(!vm.ShowErrorDetailsCommand.CanExecute(null), "ShowErrorDetailsCommand should not be executable without detailed error.");
+
+                string? receivedError = null;
+                vm.ShowErrorDetailsHandler = err => receivedError = err;
+
+                vm.ShowErrorDetails();
+                Assert(receivedError == null, "ShowErrorDetails should not invoke handler when HasDetailedError is false.");
+
+                vm.SetStatus("An error occurred", "Tooltip error", "Exception stack trace and details");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true after setting detailed error.");
+                Assert(vm.DetailedError == "Exception stack trace and details", "DetailedError should match set error string.");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null), "ShowErrorDetailsCommand should be executable with detailed error.");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(receivedError == "Exception stack trace and details", "ShowErrorDetailsCommand should invoke handler with detailed error.");
+
+                vm.SetStatus("Ready");
+                Assert(!vm.HasDetailedError, "HasDetailedError should be false after clearing detailed error.");
+                Assert(!vm.ShowErrorDetailsCommand.CanExecute(null), "ShowErrorDetailsCommand should not be executable after clearing error.");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {

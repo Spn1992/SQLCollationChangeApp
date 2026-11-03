@@ -99,6 +99,29 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _isIndeterminateProgress, value);
         }
 
+        private string? _detailedError;
+        public string? DetailedError
+        {
+            get => _detailedError;
+            set
+            {
+                if (SetProperty(ref _detailedError, value))
+                {
+                    OnPropertyChanged(nameof(HasDetailedError));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasDetailedError => !string.IsNullOrEmpty(DetailedError);
+
+        public void SetStatus(string message, string? toolTip = null, string? detailedError = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+            DetailedError = detailedError;
+        }
+
         // Authentication Properties
         private string _serverName = "localhost";
         public string ServerName
@@ -302,11 +325,21 @@ namespace CollationModifier.ViewModels
 #if NETFRAMEWORK
             try
             {
+                var previouslyFocused = System.Windows.Input.Keyboard.FocusedElement;
                 var window = new ErrorDetailsWindow(errorDetails)
                 {
                     Owner = System.Windows.Application.Current?.MainWindow
                 };
                 window.ShowDialog();
+
+                if (previouslyFocused != null)
+                {
+                    System.Windows.Input.Keyboard.Focus(previouslyFocused);
+                }
+                else if (System.Windows.Application.Current?.MainWindow != null)
+                {
+                    System.Windows.Input.Keyboard.Focus(System.Windows.Application.Current.MainWindow);
+                }
             }
             catch
             {

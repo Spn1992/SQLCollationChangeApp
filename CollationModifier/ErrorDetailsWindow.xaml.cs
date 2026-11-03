@@ -1,5 +1,6 @@
 using System;
 using System.Windows;
+using System.Windows.Automation.Peers;
 
 namespace CollationModifier
 {
@@ -21,6 +22,8 @@ namespace CollationModifier
             {
                 Clipboard.SetText(txtErrorDetails.Text);
                 lblCopiedStatus.Visibility = Visibility.Visible;
+                var peer = UIElementAutomationPeer.FromElement(lblCopiedStatus) ?? UIElementAutomationPeer.CreatePeerForElement(lblCopiedStatus);
+                peer?.RaiseAutomationEvent(AutomationEvents.LiveRegionChanged);
             }
             catch (Exception ex)
             {
