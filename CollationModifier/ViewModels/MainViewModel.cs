@@ -185,7 +185,6 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
-                    OnPropertyChanged(nameof(CanEditConnection));
                 }
             }
         }
@@ -400,8 +399,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public bool CanEditConnection => !IsBusy && !IsConnected;
-
         public async Task ConnectAsync()
         {
             if (IsConnected)
@@ -485,7 +482,7 @@ namespace CollationModifier.ViewModels
         {
             try
             {
-                var dbs = await _databaseService.GetDatabasesAsync();
+                var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
