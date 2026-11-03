@@ -86,6 +86,20 @@ namespace CollationModifier.Tests
         {
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
+            if (!string.IsNullOrEmpty(targetCollation))
+            {
+                try
+                {
+                    DatabaseService.ValidateCollationFormat(targetCollation);
+                }
+                catch (Exception ex)
+                {
+                    if (!PreflightReportToReturn.ValidationErrors.Contains(ex.Message))
+                    {
+                        PreflightReportToReturn.ValidationErrors.Add(ex.Message);
+                    }
+                }
+            }
             return Task.FromResult(PreflightReportToReturn);
         }
 
@@ -968,6 +982,20 @@ namespace CollationModifier.Tests
 
                 Assert(report.HasBlockingConditions, "Report should have blocking conditions for invalid collation format.");
                 Assert(report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should report invalid collation format error.");
+                Assert(!report.ValidationErrors.Any(e => e.Contains("Database connection or pre-flight query error")), "Should short-circuit and not attempt database connection when collation format is invalid.");
+            });
+
+            await RunAsyncTest("PreflightCheckAsync_RejectsCollationWithSpaces_AndShortCircuitsWithoutConnectionError", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+
+                var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL Latin1 General");
+
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when collation contains spaces.");
+                Assert(report.ValidationErrors.Count == 1, $"Expected exactly 1 validation error, got {report.ValidationErrors.Count}");
+                Assert(report.ValidationErrors[0].Contains("Invalid target collation format"), "Validation error must state invalid target collation format.");
+                Assert(report.ValidationErrors[0].Contains("only alphanumeric characters and underscores"), "Validation error must state exact formatting requirements.");
             });
 
             await RunAsyncTest("PreflightCheckAsync_ValidatesTargetCollationFormat_AndAcceptsValidFormat", async () =>
@@ -978,6 +1006,86 @@ namespace CollationModifier.Tests
                 var report = await dbService.PreflightCheckAsync("TestDB", "", "SQL_Latin1_General_CP1_CI_AS");
 
                 Assert(!report.ValidationErrors.Any(e => e.Contains("Invalid target collation format")), "ValidationErrors should not report format error for valid collation format.");
+            });
+
+            RunSyncTest("DatabaseService_ValidateCollationFormat_ValidatesAlphanumericAndUnderscoresOnly", () =>
+            {
+                // Valid collations
+                DatabaseService.ValidateCollationFormat("SQL_Latin1_General_CP1_CI_AS");
+                DatabaseService.ValidateCollationFormat("Latin1_General_100_CI_AS");
+                DatabaseService.ValidateCollationFormat("Japanese_CI_AS");
+                DatabaseService.ValidateCollationFormat("Collation_123");
+                Assert(DatabaseService.IsValidCollationFormat("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationFormat should be true for valid format.");
+
+                // Invalid collations with spaces, symbols, punctuation, or empty/null
+                string[] invalidInputs = new[]
+                {
+                    "SQL Latin1",
+                    "Latin1-General",
+                    "Collation;DROP TABLE",
+                    "Collation#1",
+                    "Collation' OR 1=1--",
+                    "   ",
+                    "",
+                    null
+                };
+
+                foreach (var invalid in invalidInputs)
+                {
+                    Assert(!DatabaseService.IsValidCollationFormat(invalid), $"IsValidCollationFormat should be false for: '{invalid}'");
+                    bool threw = false;
+                    try
+                    {
+                        DatabaseService.ValidateCollationFormat(invalid);
+                    }
+                    catch (ArgumentException ex)
+                    {
+                        threw = true;
+                        Assert(ex.Message.Contains("only alphanumeric characters and underscores"), $"Exception message should guide user on allowed characters, got: {ex.Message}");
+                    }
+                    Assert(threw, $"ValidateCollationFormat must throw ArgumentException for invalid collation: '{invalid}'");
+                }
+            });
+
+            await RunAsyncTest("DatabaseService_AlterCollationAsync_SharesValidationLogic_AndThrowsArgumentException", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+
+                bool threw = false;
+                try
+                {
+                    await dbService.AlterCollationAsync("TestDB", "Invalid Collation Name!");
+                }
+                catch (ArgumentException ex)
+                {
+                    threw = true;
+                    Assert(ex.Message.Contains("Invalid target collation format"), $"Expected format error message, got: {ex.Message}");
+                    Assert(ex.Message.Contains("only alphanumeric characters and underscores"), $"Expected requirement details, got: {ex.Message}");
+                }
+                Assert(threw, "AlterCollationAsync must throw ArgumentException on invalid collation format using shared validation logic.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenTargetCollationFormatIsInvalid", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CollationDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Invalid Collation Name with Spaces!";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Automated database backup must NOT be executed when collation format is invalid!");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync must NOT be executed when collation format is invalid!");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected status message to indicate failure before backup, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Invalid target collation format"), $"Expected status message to mention collation format error, got: '{vm.StatusMessage}'");
             });
 
             RunSyncTest("MainViewModel_HasSelectedDatabase_EvaluatesToFalseInitially_AndUpdatesToTrueOnSelection", () =>
