@@ -122,6 +122,29 @@ namespace CollationModifier.ViewModels
             set => SetProperty(ref _isIndeterminateProgress, value);
         }
 
+        private string? _detailedError;
+        public string? DetailedError
+        {
+            get => _detailedError;
+            set
+            {
+                if (SetProperty(ref _detailedError, value))
+                {
+                    OnPropertyChanged(nameof(HasDetailedError));
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
+
+        public bool HasDetailedError => !string.IsNullOrEmpty(DetailedError);
+
+        public void SetStatus(string message, string? toolTip = null, string? detailedError = null)
+        {
+            StatusMessage = message;
+            StatusToolTip = toolTip;
+            DetailedError = detailedError;
+        }
+
         // Authentication Properties
         private string _serverName = "localhost";
         public string ServerName
@@ -185,7 +208,6 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
-                    OnPropertyChanged(nameof(CanEditConnection));
                 }
             }
         }
@@ -399,8 +421,6 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo("Disconnected from server.");
             }
         }
-
-        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
