@@ -44,7 +44,7 @@
             <!-- Authentication Panel (Left) -->
             <Border Grid.Column="0" Background="White" BorderBrush="#E2E8F0" BorderThickness="0,0,1,0" Padding="24">
                 <StackPanel>
-                    <Label Content="Authentication" Style="{StaticResource CardHeader}" />
+                    <Label Content="Authentication" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level2" />
 
                     <TextBlock x:Name="ServerNameLabel" Text="Server Name" Margin="0,0,0,4" />
                     <TextBox x:Name="ServerNameInput" Text="{Binding ServerName, UpdateSourceTrigger=PropertyChanged}"
@@ -97,7 +97,7 @@
                     </Border>
 
                     <StackPanel IsEnabled="{Binding IsConnected}">
-                        <Label Content="Database Operations" Style="{StaticResource CardHeader}" FontSize="20" Margin="0,0,0,24" />
+                        <Label Content="Database Operations" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level1" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->
                         <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
@@ -148,7 +148,7 @@
                         </Border>
 
                         <!-- Action Area -->
-                        <Label Content="Target Configuration" Style="{StaticResource CardHeader}" Margin="0,0,0,8" />
+                        <Label Content="Target Configuration" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level2" Margin="0,0,0,8" />
 
                         <Grid Margin="0,0,0,24">
                             <Grid.ColumnDefinitions>
