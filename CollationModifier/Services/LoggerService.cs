@@ -230,6 +230,24 @@ namespace CollationModifier.Services
             }
         }
 
+        public void Flush()
+        {
+            Flush(TimeSpan.FromSeconds(5));
+        }
+
+        public void Flush(TimeSpan timeout)
+        {
+            try
+            {
+                _logChannel.Writer.TryComplete();
+                _processQueueTask.Wait(timeout);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error while flushing logger queue: {ex.Message}");
+            }
+        }
+
         public void Dispose()
         {
             Dispose(true);
@@ -242,16 +260,7 @@ namespace CollationModifier.Services
 
             if (disposing)
             {
-                _logChannel.Writer.TryComplete();
-
-                try
-                {
-                    _processQueueTask.Wait(TimeSpan.FromSeconds(5));
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Error while flushing logger queue: {ex.Message}");
-                }
+                Flush(TimeSpan.FromSeconds(5));
 
                 _cts.Cancel();
                 _cts.Dispose();
