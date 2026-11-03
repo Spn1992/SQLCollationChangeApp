@@ -114,9 +114,15 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border Background="{TemplateBinding Background}" CornerRadius="6">
+                        <Border x:Name="buttonBorder" Background="{TemplateBinding Background}"
+                                BorderBrush="Transparent" BorderThickness="2" CornerRadius="6">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="buttonBorder" Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -135,6 +141,7 @@
         <Style TargetType="Button" x:Key="SecondaryButton" BasedOn="{StaticResource PrimaryButton}">
             <Setter Property="Background" Value="{StaticResource SecondaryButtonBackgroundBrush}" />
             <Setter Property="Foreground" Value="#FFFFFF" />
+            <Setter Property="FocusVisualStyle" Value="{StaticResource FocusVisualStyle}" />
             <Style.Triggers>
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="{StaticResource SecondaryButtonHoverBackgroundBrush}" />
