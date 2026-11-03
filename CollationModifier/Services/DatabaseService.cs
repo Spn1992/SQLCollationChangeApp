@@ -12,6 +12,8 @@ namespace CollationModifier.Services
     {
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
+        private readonly object _collationCacheLock = new object();
+        private HashSet<string>? _cachedSupportedCollations;
 
         public DatabaseService(LoggerService logger)
         {
@@ -38,7 +40,17 @@ namespace CollationModifier.Services
                 builder.Password = password;
             }
 
-            _connectionString = builder.ConnectionString;
+            var newConnectionString = builder.ConnectionString;
+            if (!string.Equals(_connectionString, newConnectionString, StringComparison.Ordinal))
+            {
+                lock (_collationCacheLock)
+                {
+                    _cachedSupportedCollations?.Clear();
+                    _cachedSupportedCollations = null;
+                }
+            }
+
+            _connectionString = newConnectionString;
         }
 
         public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
@@ -133,6 +145,11 @@ namespace CollationModifier.Services
                         }
                     }
                 }
+
+                lock (_collationCacheLock)
+                {
+                    _cachedSupportedCollations = new HashSet<string>(collations, StringComparer.OrdinalIgnoreCase);
+                }
             }
             catch (Exception ex)
             {
@@ -220,6 +237,146 @@ namespace CollationModifier.Services
             return null;
         }
 
+        public virtual async Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default)
+        {
+            var initData = new ServerInitializationData();
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+
+                    var batchedQuery = @"
+                        -- 1. Default Backup Directory
+                        DECLARE @path NVARCHAR(4000) = NULL;
+
+                        BEGIN TRY
+                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
+                        END TRY
+                        BEGIN CATCH
+                        END CATCH;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        SELECT ISNULL(@path, '') AS DefaultBackupPath;
+
+                        -- 2. Databases Catalog
+                        SELECT
+                            d.name,
+                            d.collation_name,
+                            d.compatibility_level,
+                            SUSER_SNAME(d.owner_sid) as owner,
+                            mf.size_mb
+                        FROM sys.databases d
+                        LEFT JOIN (
+                            SELECT
+                                database_id,
+                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
+                            FROM sys.master_files
+                            GROUP BY database_id
+                        ) mf ON d.database_id = mf.database_id
+                        WHERE d.database_id > 4;
+
+                        -- 3. Supported Collations
+                        SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
+
+                    using (var command = new SqlCommand(batchedQuery, connection))
+                    using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                    {
+                        // Result Set 1: Default Backup Directory
+                        if (await reader.ReadAsync(cancellationToken))
+                        {
+                            if (!reader.IsDBNull(0))
+                            {
+                                var backupPath = reader.GetString(0).Trim();
+                                if (!string.IsNullOrWhiteSpace(backupPath))
+                                {
+                                    initData.DefaultBackupDirectory = backupPath;
+                                    _logger.LogInfo($"Retrieved SQL Server default backup path: {backupPath}");
+                                }
+                            }
+                        }
+
+                        // Result Set 2: Databases Catalog
+                        if (await reader.NextResultAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                initData.Databases.Add(new DatabaseInfo
+                                {
+                                    Name = reader.GetString(0),
+                                    Collation = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
+                                    CompatibilityLevel = reader.GetByte(2).ToString(),
+                                    Owner = reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
+                                    Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt64(4)} MB"
+                                });
+                            }
+                            _logger.LogInfo($"Retrieved {initData.Databases.Count} databases.");
+                        }
+
+                        // Result Set 3: Supported Collations
+                        if (await reader.NextResultAsync(cancellationToken))
+                        {
+                            while (await reader.ReadAsync(cancellationToken))
+                            {
+                                if (!reader.IsDBNull(0))
+                                {
+                                    initData.SupportedCollations.Add(reader.GetString(0));
+                                }
+                            }
+                            _logger.LogInfo($"Retrieved {initData.SupportedCollations.Count} supported collations.");
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Server initialization query was cancelled.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError("Failed to retrieve server initialization data.", ex);
+                throw;
+            }
+
+            return initData;
+        }
+
 
 
         public static void ValidateBackupDirectoryPath(string backupDirectory)
@@ -297,6 +454,40 @@ namespace CollationModifier.Services
                 try
                 {
                     ValidateCollationFormat(targetCollation);
+
+                    HashSet<string>? cachedCollations;
+                    lock (_collationCacheLock)
+                    {
+                        cachedCollations = _cachedSupportedCollations;
+                    }
+
+                    if (cachedCollations == null || cachedCollations.Count == 0)
+                    {
+                        try
+                        {
+                            var collations = await GetSupportedCollationsAsync(cancellationToken);
+                            lock (_collationCacheLock)
+                            {
+                                if (_cachedSupportedCollations == null || _cachedSupportedCollations.Count == 0)
+                                {
+                                    _cachedSupportedCollations = new HashSet<string>(collations, StringComparer.OrdinalIgnoreCase);
+                                }
+                                cachedCollations = _cachedSupportedCollations;
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
+                        }
+                    }
+
+                    if (cachedCollations != null && cachedCollations.Count > 0)
+                    {
+                        if (!cachedCollations.Contains(targetCollation))
+                        {
+                            report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -316,28 +507,6 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await connection.OpenAsync(cancellationToken);
-
-                    // 0. Check target collation against sys.fn_helpcollations()
-                    if (!string.IsNullOrWhiteSpace(targetCollation))
-                    {
-                        try
-                        {
-                            var collationQuery = "SELECT COUNT(1) FROM sys.fn_helpcollations() WHERE name = @TargetCollation;";
-                            using (var collationCmd = new SqlCommand(collationQuery, connection))
-                            {
-                                collationCmd.Parameters.AddWithValue("@TargetCollation", targetCollation);
-                                var count = Convert.ToInt32(await collationCmd.ExecuteScalarAsync(cancellationToken));
-                                if (count == 0)
-                                {
-                                    report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
-                        }
-                    }
 
                     var batchedQuery = $@"
                         USE [{safeDbName}];
@@ -500,6 +669,9 @@ namespace CollationModifier.Services
             return report;
         }
 
+        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken)
+            => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
+
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
@@ -513,20 +685,7 @@ namespace CollationModifier.Services
 
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    if (progress != null)
-                    {
-                        connection.InfoMessage += (sender, e) =>
-                        {
-                            if (!string.IsNullOrEmpty(e.Message))
-                            {
-                                var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
-                                {
-                                    progress.Report(percent);
-                                }
-                            }
-                        };
-                    }
+                    AttachProgressHandler(connection, progress);
                     await connection.OpenAsync(cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
                     await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
@@ -543,6 +702,9 @@ namespace CollationModifier.Services
 
 
 
+        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken)
+            => RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
+
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
@@ -550,20 +712,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    if (progress != null)
-                    {
-                        connection.InfoMessage += (sender, e) =>
-                        {
-                            if (!string.IsNullOrEmpty(e.Message))
-                            {
-                                var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
-                                {
-                                    progress.Report(percent);
-                                }
-                            }
-                        };
-                    }
+                    AttachProgressHandler(connection, progress);
                     await connection.OpenAsync(cancellationToken);
                     await ExecuteNonQueryAsync(connection, "USE [master];");
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
@@ -635,7 +784,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await connection.OpenAsync(CancellationToken.None);
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
             }
@@ -696,6 +845,26 @@ namespace CollationModifier.Services
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
             await ExecuteNonQueryAsync(connection, query);
+        }
+
+        private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)
+        {
+            if (progress == null)
+            {
+                return;
+            }
+
+            connection.InfoMessage += (sender, e) =>
+            {
+                if (!string.IsNullOrEmpty(e.Message))
+                {
+                    var match = System.Text.RegularExpressions.Regex.Match(e.Message, @"(\d+)\s*percent\s+processed", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (match.Success && int.TryParse(match.Groups[1].Value, out int percent))
+                    {
+                        progress.Report(percent);
+                    }
+                }
+            };
         }
     }
 }

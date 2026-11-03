@@ -35,9 +35,9 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
             ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
-            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
 
             Databases = new ObservableRangeCollection<DatabaseInfo>();
             Databases.CollectionChanged += (s, e) =>
@@ -255,16 +255,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private static string FormatExceptionMessage(Exception ex)
-        {
-            if (ex is AggregateException aggEx)
-            {
-                var messages = aggEx.Flatten().InnerExceptions.Select(e => e.Message);
-                return string.Join(" | ", messages);
-            }
-            return ex.Message;
-        }
-
         private void InvalidateRequerySuggested()
         {
 #if NETFRAMEWORK
@@ -285,9 +275,9 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand CancelCommand { get; }
         public ICommand OpenLogCommand { get; }
         public ICommand ShowErrorDetailsCommand { get; }
-        public ICommand CancelCommand { get; }
 
         public void Cancel()
         {
@@ -295,8 +285,9 @@ namespace CollationModifier.ViewModels
             {
                 try
                 {
-                    _cts.Cancel();
+                    StatusMessage = "Cancelling operation...";
                     _logger.LogInfo("Cancellation requested by user.");
+                    _cts.Cancel();
                 }
                 catch (ObjectDisposedException)
                 {
@@ -308,6 +299,8 @@ namespace CollationModifier.ViewModels
                 }
             }
         }
+
+        public void CancelOperation() => Cancel();
 
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
@@ -330,11 +323,21 @@ namespace CollationModifier.ViewModels
 #if NETFRAMEWORK
             try
             {
+                var previouslyFocused = System.Windows.Input.Keyboard.FocusedElement;
                 var window = new ErrorDetailsWindow(errorDetails)
                 {
                     Owner = System.Windows.Application.Current?.MainWindow
                 };
                 window.ShowDialog();
+
+                if (previouslyFocused != null)
+                {
+                    System.Windows.Input.Keyboard.Focus(previouslyFocused);
+                }
+                else if (System.Windows.Application.Current?.MainWindow != null)
+                {
+                    System.Windows.Input.Keyboard.Focus(System.Windows.Application.Current.MainWindow);
+                }
             }
             catch
             {
@@ -380,18 +383,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync()
-        {
-            if (IsConnected)
-            {
-                Disconnect();
-            }
-            else
-            {
-                await ConnectAsync();
-            }
-        }
-
         public void Disconnect()
         {
             if (IsConnected)
@@ -423,44 +414,26 @@ namespace CollationModifier.ViewModels
             try
             {
                 _databaseService.SetConnectionString(ServerName, SelectedAuthenticationType, Username, Password);
-                var success = await _databaseService.TestConnectionAsync(token);
+                var initData = await _databaseService.GetServerInitializationDataAsync(token);
 
-                if (success)
+                if (!string.IsNullOrWhiteSpace(initData.DefaultBackupDirectory))
                 {
-                    SetStatus("Connected successfully. Querying default backup directory and fetching databases...");
-
-                    string? serverBackupPath = await _databaseService.GetDefaultBackupDirectoryAsync(token);
-                    if (!string.IsNullOrWhiteSpace(serverBackupPath))
-                    {
-                        BackupDirectory = serverBackupPath;
-                        _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {serverBackupPath}");
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
-                    }
-
-                    bool dbLoaded = await LoadDatabasesAsync(token);
-                    if (dbLoaded)
-                    {
-                        await LoadCollationsAsync(token);
-                        IsConnected = true;
-                        SetStatus("Ready");
-                    }
-                    else
-                    {
-                        IsConnected = false;
-                    }
+                    BackupDirectory = initData.DefaultBackupDirectory;
+                    _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {initData.DefaultBackupDirectory}");
                 }
                 else
                 {
-                    IsConnected = false;
-                    SetStatus(
-                        "Connection failed. Check credentials and server name.",
-                        "Connection failed. Verify server name, authentication type, and credentials.",
-                        "Connection failed: Unable to connect to the specified SQL Server host. Please verify server name and credentials."
-                    );
+                    _logger.LogWarning("Could not retrieve default backup path from server. Preserving current backup directory entry.");
                 }
+
+                Databases.ReplaceRange(initData.Databases);
+                _logger.LogInfo($"Fetched {Databases.Count} databases.");
+
+                SupportedCollations.ReplaceRange(initData.SupportedCollations);
+                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+
+                IsConnected = true;
+                SetStatus("Ready");
             }
             catch (OperationCanceledException)
             {
@@ -472,7 +445,9 @@ namespace CollationModifier.ViewModels
             {
                 IsConnected = false;
                 _logger.LogError("Connection failed.", ex);
-                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatConnectionError(ex);
+                var (statusText, toolTipText, detailedError) = (ex.Message?.Contains("database", StringComparison.OrdinalIgnoreCase) == true || ex.Message?.Contains("catalog", StringComparison.OrdinalIgnoreCase) == true)
+                    ? ErrorFormattingHelper.FormatLoadDatabasesError(ex)
+                    : ErrorFormattingHelper.FormatConnectionError(ex);
                 SetStatus(statusText, toolTipText, detailedError);
             }
             finally
@@ -629,6 +604,25 @@ namespace CollationModifier.ViewModels
             catch (OperationCanceledException)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
+
+                if (backupFile != null && SelectedDatabase != null)
+                {
+                    try
+                    {
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
+                    }
+                }
+
                 if (SelectedDatabase != null)
                 {
                     try
@@ -640,6 +634,7 @@ namespace CollationModifier.ViewModels
                         _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
                     }
                 }
+
                 SetStatus("Operation cancelled by user.");
             }
             catch (Exception ex)
