@@ -546,7 +546,7 @@ namespace CollationModifier.Services
                 // Attempt emergency MULTI_USER reset if batch execution failed
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
@@ -586,7 +586,7 @@ namespace CollationModifier.Services
                 // Attempt to put it back to multi-user if it failed mid-way
                 try
                 {
-                    await TrySetMultiUserAsync(databaseName, cancellationToken);
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
                 }
                 catch (Exception resetEx)
                 {
