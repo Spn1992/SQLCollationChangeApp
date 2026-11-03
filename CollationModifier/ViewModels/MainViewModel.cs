@@ -35,6 +35,7 @@ namespace CollationModifier.ViewModels
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
+            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
             ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
 
@@ -185,7 +186,6 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
-                    OnPropertyChanged(nameof(CanEditConnection));
                 }
             }
         }
@@ -255,16 +255,6 @@ namespace CollationModifier.ViewModels
 
         #region Helpers
 
-        private static string FormatExceptionMessage(Exception ex)
-        {
-            if (ex is AggregateException aggEx)
-            {
-                var messages = aggEx.Flatten().InnerExceptions.Select(e => e.Message);
-                return string.Join(" | ", messages);
-            }
-            return ex.Message;
-        }
-
         private static bool IsSingleUserLockState(Exception ex)
         {
             if (ex is AggregateException aggEx)
@@ -301,8 +291,32 @@ namespace CollationModifier.ViewModels
 
         public ICommand ConnectCommand { get; }
         public ICommand ProcessCommand { get; }
+        public ICommand CancelCommand { get; }
         public ICommand OpenLogCommand { get; }
         public ICommand ShowErrorDetailsCommand { get; }
+
+        public void Cancel()
+        {
+            if (_cts != null && !_cts.IsCancellationRequested)
+            {
+                try
+                {
+                    StatusMessage = "Cancelling operation...";
+                    _logger.LogInfo("Cancellation requested by user.");
+                    _cts.Cancel();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Ignored if already disposed concurrently
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError("Error requesting cancellation.", ex);
+                }
+            }
+        }
+
+        public void CancelOperation() => Cancel();
 
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
@@ -325,11 +339,21 @@ namespace CollationModifier.ViewModels
 #if NETFRAMEWORK
             try
             {
+                var previouslyFocused = System.Windows.Input.Keyboard.FocusedElement;
                 var window = new ErrorDetailsWindow(errorDetails)
                 {
                     Owner = System.Windows.Application.Current?.MainWindow
                 };
                 window.ShowDialog();
+
+                if (previouslyFocused != null)
+                {
+                    System.Windows.Input.Keyboard.Focus(previouslyFocused);
+                }
+                else if (System.Windows.Application.Current?.MainWindow != null)
+                {
+                    System.Windows.Input.Keyboard.Focus(System.Windows.Application.Current.MainWindow);
+                }
             }
             catch
             {
@@ -375,18 +399,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task ToggleConnectionAsync()
-        {
-            if (IsConnected)
-            {
-                Disconnect();
-            }
-            else
-            {
-                await ConnectAsync();
-            }
-        }
-
         public void Disconnect()
         {
             if (IsConnected)
@@ -399,8 +411,6 @@ namespace CollationModifier.ViewModels
                 _logger.LogInfo("Disconnected from server.");
             }
         }
-
-        public bool CanEditConnection => !IsBusy && !IsConnected;
 
         public async Task ConnectAsync()
         {
@@ -485,7 +495,7 @@ namespace CollationModifier.ViewModels
         {
             try
             {
-                var dbs = await _databaseService.GetDatabasesAsync();
+                var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
@@ -513,6 +523,13 @@ namespace CollationModifier.ViewModels
                 var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
                 SupportedCollations.ReplaceRange(collations);
                 _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
+            }
+            catch (OperationCanceledException)
+            {
+                SupportedCollations.Clear();
+                _logger.LogInfo("Load collations operation was cancelled by user.");
+                SetStatus("Operation cancelled by user.");
+                throw;
             }
             catch (Exception ex)
             {
@@ -619,6 +636,37 @@ namespace CollationModifier.ViewModels
             catch (OperationCanceledException)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
+
+                if (backupFile != null && SelectedDatabase != null)
+                {
+                    try
+                    {
+                        var restoreProgress = new Progress<int>(percent =>
+                        {
+                            ProgressPercent = percent;
+                            IsIndeterminateProgress = false;
+                            StatusMessage = $"Restoring database... {percent}%";
+                        });
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                    }
+                    catch (Exception restoreEx)
+                    {
+                        _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
+                    }
+                }
+
+                if (SelectedDatabase != null)
+                {
+                    try
+                    {
+                        await _databaseService.TrySetMultiUserAsync(SelectedDatabase.Name, CancellationToken.None);
+                    }
+                    catch (Exception resetEx)
+                    {
+                        _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
+                    }
+                }
+
                 SetStatus("Operation cancelled by user.");
             }
             catch (Exception ex)
@@ -635,7 +683,7 @@ namespace CollationModifier.ViewModels
                             IsIndeterminateProgress = false;
                             StatusMessage = $"Restoring database... {percent}%";
                         });
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, token);
+                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
                         if (ex is AggregateException)
                         {
                             StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
