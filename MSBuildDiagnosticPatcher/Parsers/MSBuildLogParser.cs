@@ -8,10 +8,6 @@ namespace MSBuildDiagnosticPatcher.Parsers
 {
     public class MSBuildLogParser
     {
-        private static readonly Regex AnsiRegex = new Regex(
-            @"\x1B\[[^@-~]*[@-~]",
-            RegexOptions.Compiled);
-
         private static readonly Regex CompilerDiagnosticRegex = new Regex(
             @"^(?<file>[a-zA-Z0-9_\-./\\]+(?:\.cs|\.xaml|\.props|\.targets)?)\((?<line>\d+)(?:,(?<col>\d+))?\):\s*(?<severity>error|warning|info)\s+(?<code>[A-Za-z]{1,4}\d{4,5}[a-zA-Z]?):\s*(?<message>.*?)(?:\s+\[(?<project>[^\]]+)\])?\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -50,7 +46,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
             }
 
             // Clean ANSI escape sequences
-            string cleanLine = AnsiRegex.Replace(rawLine, string.Empty).Trim();
+            string cleanLine = AnsiCleaner.Clean(rawLine);
 
             var match = CompilerDiagnosticRegex.Match(cleanLine);
             if (match.Success)

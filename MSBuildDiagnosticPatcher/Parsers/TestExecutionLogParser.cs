@@ -8,10 +8,6 @@ namespace MSBuildDiagnosticPatcher.Parsers
 {
     public class TestExecutionLogParser
     {
-        private static readonly Regex AnsiRegex = new Regex(
-            @"\x1B\[[^@-~]*[@-~]",
-            RegexOptions.Compiled);
-
         // Matches custom runner: FAIL: ClassOrTestName - Message / Exception / Assertion Failed: ...
         private static readonly Regex CustomRunnerFailRegex = new Regex(
             @"^\s*(?:\[FAIL\]|FAIL:)\s+(?<test>[A-Za-z0-9_.]+)(?:\s*-\s*(?<details>.*))?$",
@@ -39,7 +35,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
             for (int i = 0; i < lines.Length; i++)
             {
                 string rawLine = lines[i];
-                string cleanLine = AnsiRegex.Replace(rawLine, string.Empty).Trim();
+                string cleanLine = AnsiCleaner.Clean(rawLine);
 
                 // 1. Try Custom Runner pattern: "FAIL: MainViewModelTestsRunner - System.Exception: Assertion Failed: ..."
                 var customMatch = CustomRunnerFailRegex.Match(cleanLine);
@@ -77,7 +73,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
                     int j = i + 1;
                     while (j < lines.Length)
                     {
-                        string lookAhead = AnsiRegex.Replace(lines[j], string.Empty).Trim();
+                        string lookAhead = AnsiCleaner.Clean(lines[j]);
                         if (lookAhead.StartsWith("Failed ") || lookAhead.StartsWith("Passed ") || lookAhead.StartsWith("Total tests:"))
                         {
                             break;
@@ -88,7 +84,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
                             j++;
                             if (j < lines.Length)
                             {
-                                errorMessage = AnsiRegex.Replace(lines[j], string.Empty).Trim();
+                                errorMessage = AnsiCleaner.Clean(lines[j]);
                             }
                         }
                         else if (lookAhead.StartsWith("Stack Trace:", StringComparison.OrdinalIgnoreCase))
@@ -99,7 +95,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
                             {
                                 if (!string.IsNullOrWhiteSpace(lines[j]))
                                 {
-                                    stList.Add(AnsiRegex.Replace(lines[j], string.Empty).Trim());
+                                    stList.Add(AnsiCleaner.Clean(lines[j]));
                                 }
                                 j++;
                             }
@@ -181,7 +177,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
             int next = currentIndex + 1;
             while (next < lines.Length)
             {
-                string line = AnsiRegex.Replace(lines[next], string.Empty).Trim();
+                string line = AnsiCleaner.Clean(lines[next]);
                 if (line.StartsWith("at ") || line.StartsWith("--- End of inner exception stack trace ---"))
                 {
                     stackLines.Add(line);
