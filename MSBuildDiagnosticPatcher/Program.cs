@@ -107,7 +107,7 @@ namespace MSBuildDiagnosticPatcher
             }
 
             // Return non-zero if errors or failures were found
-            return (report.ErrorCount > 0 || report.FailureCount > 0) ? 0 : 0;
+            return (report.ErrorCount > 0 || report.FailureCount > 0) ? 1 : 0;
         }
 
         private static void PrintHelp()

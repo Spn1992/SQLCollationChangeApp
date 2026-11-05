@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/collation-modifier-app-7995951850818249286
   workflow_dispatch:
 
 jobs:
@@ -28,11 +29,23 @@ jobs:
       - name: Restore CollationModifier.Tests dependencies
         run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj
 
+      - name: Restore MSBuildDiagnosticPatcher dependencies
+        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj
+
+      - name: Restore MSBuildDiagnosticPatcher.Tests dependencies
+        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj
+
       - name: Build CollationModifier
         run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee /tmp/build-and-test.log
 
+      - name: Build MSBuildDiagnosticPatcher
+        run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false
+
       - name: Run unit tests
         run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Run MSBuildDiagnosticPatcher unit tests
+        run: dotnet run --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Generate diagnostics and candidate patches
         if: failure()
