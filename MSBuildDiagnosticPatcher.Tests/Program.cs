@@ -56,6 +56,9 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
 
+            // 8. CI Workflow Configuration Tests
+            RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
+
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
             Console.WriteLine("=================================================");
@@ -551,6 +554,55 @@ public class Greeter : IGreeter
             {
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
+        }
+
+        // 8. CI Workflow Configuration Tests
+        static void Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload()
+        {
+            string workflowPath = FindWorkflowPath();
+            string content = File.ReadAllText(workflowPath);
+
+            // Requirement 1: Redirect build and test output to /tmp/build-and-test.log
+            Assert(content.Contains("tee /tmp/build-and-test.log"), "Workflow must redirect build output to /tmp/build-and-test.log using tee");
+            Assert(content.Contains("tee -a /tmp/build-and-test.log"), "Workflow must append test output to /tmp/build-and-test.log using tee -a");
+
+            // Requirement 2: Invoke bin/msbuild-patcher under if: failure()
+            Assert(content.Contains("bin/msbuild-patcher /tmp/build-and-test.log"), "Workflow must invoke bin/msbuild-patcher /tmp/build-and-test.log");
+            Assert(content.Contains("if: failure()"), "Diagnostic reporting steps must run under if: failure()");
+
+            // Requirement 4 & 6: Verify diagnostic-report.md exists before writing to $GITHUB_STEP_SUMMARY
+            Assert(content.Contains("build-diagnostics/diagnostic-report.md"), "Workflow must reference build-diagnostics/diagnostic-report.md");
+            Assert(content.Contains("$GITHUB_STEP_SUMMARY"), "Workflow must write to $GITHUB_STEP_SUMMARY");
+            Assert(content.Contains("-f \"build-diagnostics/diagnostic-report.md\"") || content.Contains("-f build-diagnostics/diagnostic-report.md"), "Workflow must verify diagnostic-report.md exists before appending");
+
+            // Requirement 5 & Criterion 3: Upload build-diagnostics-report artifact via actions/upload-artifact@v4
+            Assert(content.Contains("actions/upload-artifact@v4"), "Workflow must use actions/upload-artifact@v4");
+            Assert(content.Contains("name: build-diagnostics-report"), "Workflow must name artifact build-diagnostics-report");
+            Assert(content.Contains("build-diagnostics/"), "Workflow artifact path must include build-diagnostics/");
+            Assert(content.Contains("/tmp/build-and-test.log"), "Workflow artifact path must include /tmp/build-and-test.log");
+        }
+
+        private static string FindWorkflowPath()
+        {
+            string? dir = Directory.GetCurrentDirectory();
+            while (!string.IsNullOrEmpty(dir))
+            {
+                string candidate = Path.Combine(dir, ".github", "workflows", "post-merge-build-verification.yml");
+                if (File.Exists(candidate)) return candidate;
+                var parent = Directory.GetParent(dir);
+                if (parent == null) break;
+                dir = parent.FullName;
+            }
+            dir = AppDomain.CurrentDomain.BaseDirectory;
+            while (!string.IsNullOrEmpty(dir))
+            {
+                string candidate = Path.Combine(dir, ".github", "workflows", "post-merge-build-verification.yml");
+                if (File.Exists(candidate)) return candidate;
+                var parent = Directory.GetParent(dir);
+                if (parent == null) break;
+                dir = parent.FullName;
+            }
+            throw new FileNotFoundException("post-merge-build-verification.yml could not be found.");
         }
     }
 }

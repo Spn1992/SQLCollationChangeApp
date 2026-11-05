@@ -29,7 +29,34 @@ jobs:
         run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj
 
       - name: Build CollationModifier
-        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false
+        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee /tmp/build-and-test.log
 
       - name: Run unit tests
-        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false
+        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Generate diagnostics and candidate patches
+        if: failure()
+        run: bin/msbuild-patcher /tmp/build-and-test.log
+
+      - name: Append diagnostic report to step summary
+        if: failure()
+        run: |
+          if [ -f "build-diagnostics/diagnostic-report.md" ]; then
+            max_size=1048576
+            file_size=$(wc -c < "build-diagnostics/diagnostic-report.md")
+            if [ "$file_size" -le "$max_size" ]; then
+              cat "build-diagnostics/diagnostic-report.md" >> "$GITHUB_STEP_SUMMARY"
+            else
+              head -c "$max_size" "build-diagnostics/diagnostic-report.md" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          fi
+
+      - name: Upload diagnostic reports and logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-report
+          path: |
+            build-diagnostics/
+            /tmp/build-and-test.log
+          if-no-files-found: ignore
