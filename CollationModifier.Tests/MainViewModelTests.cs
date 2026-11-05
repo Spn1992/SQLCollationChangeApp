@@ -6,9 +6,11 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Data;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Data.SqlClient;
 
 namespace CollationModifier.Tests
 {
@@ -2530,6 +2532,104 @@ namespace CollationModifier.Tests
                 Assert(vm.IsConnected, "IsConnected should be true after successful connection.");
                 Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.",
                     $"Expected subsequent connection transition to announce operations panel unlock, got '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("DatabaseService_DatabaseCatalogQuery_IsDefinedAndContainsExpectedClauses", () =>
+            {
+                var field = typeof(DatabaseService).GetField("DatabaseCatalogQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(field != null, "DatabaseCatalogQuery constant field must be declared in DatabaseService.");
+                Assert(field!.IsLiteral && !field.IsInitOnly, "DatabaseCatalogQuery must be a const field.");
+                var query = field.GetValue(null) as string;
+                Assert(!string.IsNullOrWhiteSpace(query), "DatabaseCatalogQuery must not be null or empty.");
+                Assert(query!.Contains("sys.databases"), "DatabaseCatalogQuery must query sys.databases.");
+                Assert(query.Contains("sys.master_files"), "DatabaseCatalogQuery must query sys.master_files.");
+                Assert(query.Contains("d.database_id > 4"), "DatabaseCatalogQuery must exclude system databases with database_id > 4 filter.");
+                Assert(query.Contains("d.name") && query.Contains("d.collation_name") && query.Contains("d.compatibility_level") && query.Contains("size_mb"),
+                    "DatabaseCatalogQuery must select name, collation_name, compatibility_level, owner, and size_mb columns.");
+            });
+
+            RunSyncTest("DatabaseService_MapDatabaseInfo_MethodExistsAndHasExpectedSignature", () =>
+            {
+                var method = typeof(DatabaseService).GetMethod("MapDatabaseInfo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(method != null, "MapDatabaseInfo private static method must exist in DatabaseService.");
+                Assert(method!.ReturnType == typeof(DatabaseInfo), "MapDatabaseInfo must return DatabaseInfo.");
+
+                var parameters = method.GetParameters();
+                Assert(parameters.Length == 1, $"Expected 1 parameter for MapDatabaseInfo, found {parameters.Length}.");
+                Assert(parameters[0].ParameterType == typeof(Microsoft.Data.SqlClient.SqlDataReader),
+                    $"Expected parameter type to be SqlDataReader, found {parameters[0].ParameterType.Name}.");
+            });
+
+            RunSyncTest("DatabaseService_MapDatabaseInfo_ThrowsArgumentNullException_WhenReaderIsNull", () =>
+            {
+                var method = typeof(DatabaseService).GetMethod("MapDatabaseInfo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(method != null, "MapDatabaseInfo private static method must exist in DatabaseService.");
+
+                try
+                {
+                    method!.Invoke(null, new object?[] { null });
+                    throw new InvalidOperationException("MapDatabaseInfo should throw TargetInvocationException wrapping ArgumentNullException when null reader is passed.");
+                }
+                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is ArgumentNullException)
+                {
+                    // Expected
+                }
+
+                try
+                {
+                    DatabaseService.MapDatabaseInfo((IDataRecord)null!);
+                    throw new InvalidOperationException("MapDatabaseInfo should throw ArgumentNullException when null record is passed.");
+                }
+                catch (ArgumentNullException)
+                {
+                    // Expected
+                }
+            });
+
+            RunSyncTest("DatabaseService_MapDatabaseInfo_MapsAllColumnsCorrectly", () =>
+            {
+                using var table = new DataTable();
+                table.Columns.Add("name", typeof(string));
+                table.Columns.Add("collation_name", typeof(string));
+                table.Columns.Add("compatibility_level", typeof(byte));
+                table.Columns.Add("owner", typeof(string));
+                table.Columns.Add("size_mb", typeof(long));
+
+                table.Rows.Add("ProductionDB", "SQL_Latin1_General_CP1_CI_AS", (byte)160, "CORP\\sql_admin", 40960L);
+
+                using var reader = table.CreateDataReader();
+                Assert(reader.Read(), "Reader should have 1 row.");
+
+                var info = DatabaseService.MapDatabaseInfo(reader);
+
+                Assert(info.Name == "ProductionDB", $"Expected Name 'ProductionDB', got '{info.Name}'");
+                Assert(info.Collation == "SQL_Latin1_General_CP1_CI_AS", $"Expected Collation 'SQL_Latin1_General_CP1_CI_AS', got '{info.Collation}'");
+                Assert(info.CompatibilityLevel == "160", $"Expected CompatibilityLevel '160', got '{info.CompatibilityLevel}'");
+                Assert(info.Owner == "CORP\\sql_admin", $"Expected Owner 'CORP\\sql_admin', got '{info.Owner}'");
+                Assert(info.Size == "40960 MB", $"Expected Size '40960 MB', got '{info.Size}'");
+            });
+
+            RunSyncTest("DatabaseService_MapDatabaseInfo_HandlesNullsWithFallbacks", () =>
+            {
+                using var table = new DataTable();
+                table.Columns.Add("name", typeof(string));
+                table.Columns.Add("collation_name", typeof(string));
+                table.Columns.Add("compatibility_level", typeof(byte));
+                table.Columns.Add("owner", typeof(string));
+                table.Columns.Add("size_mb", typeof(long));
+
+                table.Rows.Add("ContosoAppDB", DBNull.Value, (byte)130, DBNull.Value, DBNull.Value);
+
+                using var reader = table.CreateDataReader();
+                Assert(reader.Read(), "Reader should have 1 row.");
+
+                var info = DatabaseService.MapDatabaseInfo(reader);
+
+                Assert(info.Name == "ContosoAppDB", $"Expected Name 'ContosoAppDB', got '{info.Name}'");
+                Assert(info.Collation == "Unknown", $"Expected Collation fallback 'Unknown', got '{info.Collation}'");
+                Assert(info.CompatibilityLevel == "130", $"Expected CompatibilityLevel '130', got '{info.CompatibilityLevel}'");
+                Assert(info.Owner == "Unknown", $"Expected Owner fallback 'Unknown', got '{info.Owner}'");
+                Assert(info.Size == "Unknown", $"Expected Size fallback 'Unknown', got '{info.Size}'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
