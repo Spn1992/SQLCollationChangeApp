@@ -2399,6 +2399,49 @@ namespace CollationModifier.Tests
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
+            RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                int mainContentIndex = content.IndexOf("<!-- Main Content Area -->");
+                int statusBarIndex = content.IndexOf("<!-- Status Bar at the bottom -->");
+
+                Assert(mainContentIndex >= 0, "MainWindow.xaml should contain '<!-- Main Content Area -->'");
+                Assert(statusBarIndex >= 0, "MainWindow.xaml should contain '<!-- Status Bar at the bottom -->'");
+                Assert(mainContentIndex < statusBarIndex, "Main Content Area must precede Status Bar in visual tree declaration order for WCAG 2.2 SC 2.4.3 Focus Order compliance");
+
+                int serverNameInputIndex = content.IndexOf("x:Name=\"ServerNameInput\"");
+                int btnOpenLogIndex = content.IndexOf("x:Name=\"btnOpenLog\"");
+                int btnErrorDetailsIndex = content.IndexOf("x:Name=\"btnErrorDetails\"");
+
+                Assert(serverNameInputIndex >= 0, "MainWindow.xaml should contain ServerNameInput");
+                Assert(btnOpenLogIndex >= 0, "MainWindow.xaml should contain btnOpenLog");
+                Assert(btnErrorDetailsIndex >= 0, "MainWindow.xaml should contain btnErrorDetails");
+                Assert(serverNameInputIndex < btnOpenLogIndex, "ServerNameInput must precede btnOpenLog in visual tree for logical tab order");
+                Assert(serverNameInputIndex < btnErrorDetailsIndex, "ServerNameInput must precede btnErrorDetails in visual tree for logical tab order");
+
+                // Verify status bar layout and z-index attributes are preserved
+                int statusBarBorderStart = content.IndexOf("<Border Background=\"#E2E8F0\"", statusBarIndex);
+                Assert(statusBarBorderStart >= 0, "Status bar Border element should exist after the status bar comment");
+                int statusBarBorderEnd = content.IndexOf(">", statusBarBorderStart);
+                string statusBarBorderTag = content.Substring(statusBarBorderStart, statusBarBorderEnd - statusBarBorderStart + 1);
+
+                Assert(statusBarBorderTag.Contains("Height=\"30\""), "Status bar Border should preserve Height=\"30\"");
+                Assert(statusBarBorderTag.Contains("VerticalAlignment=\"Bottom\""), "Status bar Border should preserve VerticalAlignment=\"Bottom\"");
+                Assert(statusBarBorderTag.Contains("Grid.ZIndex=\"10\""), "Status bar Border should preserve Grid.ZIndex=\"10\"");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
