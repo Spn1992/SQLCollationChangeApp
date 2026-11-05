@@ -548,7 +548,7 @@ namespace CollationModifier.Tests
                 await vm.ConnectAsync();
 
                 Assert(vm.IsConnected == true, "Expected IsConnected to be true when connection and database load succeed");
-                Assert(vm.StatusMessage == "Ready", $"Expected StatusMessage to be 'Ready', got '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.", $"Expected StatusMessage to announce operations panel unlock, got '{vm.StatusMessage}'");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_UpdatesCollationInMemory_WithoutCallingLoadDatabasesAsync", async () =>
@@ -862,7 +862,7 @@ namespace CollationModifier.Tests
                 Assert(vm.SelectedDatabase == null, "SelectedDatabase should be null after disconnect");
                 Assert(vm.ConnectButtonText == "Connect", $"Expected button text 'Connect', got '{vm.ConnectButtonText}'");
                 Assert(vm.CanEditConnectionParameters, "CanEditConnectionParameters should be true after disconnect");
-                Assert(vm.StatusMessage == "Disconnected from server.", $"Expected 'Disconnected from server.', got '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage == "Disconnected from server. Database operations panel locked.", $"Expected 'Disconnected from server. Database operations panel locked.', got '{vm.StatusMessage}'");
             });
 
             await RunAsyncTest("ToggleConnectionCommand_DisconnectsWhenConnected_AndConnectsWhenDisconnected", async () =>
@@ -1809,7 +1809,7 @@ namespace CollationModifier.Tests
                 await vm.ConnectAsync();
 
                 Assert(vm.IsConnected, "IsConnected should be true");
-                Assert(vm.StatusMessage == "Ready", $"Expected StatusMessage 'Ready', got '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.", $"Expected StatusMessage to announce operations panel unlock, got '{vm.StatusMessage}'");
                 Assert(vm.BackupDirectory == "D:\\SQLServer\\Backups", $"Expected BackupDirectory 'D:\\SQLServer\\Backups', got '{vm.BackupDirectory}'");
                 Assert(vm.Databases.Count == 1 && vm.Databases[0].Name == "ProductionDB", "Databases should contain ProductionDB");
                 Assert(vm.SupportedCollations.Count == 2 && vm.SupportedCollations.Contains("Latin1_General_BIN"), "SupportedCollations should contain expected collations");
@@ -2440,6 +2440,96 @@ namespace CollationModifier.Tests
                 Assert(statusBarBorderTag.Contains("Height=\"30\""), "Status bar Border should preserve Height=\"30\"");
                 Assert(statusBarBorderTag.Contains("VerticalAlignment=\"Bottom\""), "Status bar Border should preserve VerticalAlignment=\"Bottom\"");
                 Assert(statusBarBorderTag.Contains("Grid.ZIndex=\"10\""), "Status bar Border should preserve Grid.ZIndex=\"10\"");
+            });
+
+            RunSyncTest("MainWindowXaml_OverlayAndOperationsPanel_LiveSetting_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                Assert(content.Contains("x:Name=\"lblDisconnectedOverlay\""), "MainWindow.xaml should define lblDisconnectedOverlay TextBlock");
+                Assert(content.Contains("AutomationProperties.Name=\"Please connect to a server to continue.\""), "lblDisconnectedOverlay should configure AutomationProperties.Name");
+                Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml should configure AutomationProperties.LiveSetting=\"Polite\"");
+                Assert(content.Contains("AutomationProperties.Name=\"Database Operations\""), "Operations container should configure AutomationProperties.Name=\"Database Operations\"");
+            });
+
+            RunSyncTest("MainViewModel_IsConnected_TransitionsAnnounceOperationsPanelState", () =>
+            {
+                var vm = new MainViewModel();
+                Assert(!vm.IsConnected, "IsConnected should default to false.");
+
+                vm.IsConnected = true;
+                Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.",
+                    $"Expected 'Connected to server. Database operations panel unlocked.', got '{vm.StatusMessage}'");
+
+                vm.IsConnected = false;
+                Assert(vm.StatusMessage == "Disconnected from server. Database operations panel locked.",
+                    $"Expected 'Disconnected from server. Database operations panel locked.', got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_AnnouncesOperationsPanelUnlocked_OnSuccessfulConnection", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "LiveRegionDB" } },
+                    CollationsToReturn = new List<string> { "Latin1_General_CI_AS" }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "IsConnected should be true after successful connect.");
+                Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.",
+                    $"Expected StatusMessage to announce operations panel unlock, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("Disconnect_AnnouncesOperationsPanelLocked_OnDisconnection", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "LiveRegionDB" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                Assert(vm.IsConnected, "IsConnected should be true before disconnect.");
+
+                vm.Disconnect();
+
+                Assert(!vm.IsConnected, "IsConnected should be false after disconnect.");
+                Assert(vm.StatusMessage == "Disconnected from server. Database operations panel locked.",
+                    $"Expected StatusMessage to announce operations panel lock, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_WhenAuthenticationChangedWhileDisconnected_AnnouncesOperationsPanelUnlocked", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "AuthDB" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(!vm.IsConnected, "ViewModel should be disconnected initially.");
+
+                vm.SelectedAuthenticationType = "SQL Server Authentication";
+                Assert(vm.StatusMessage == "SQL Server Authentication selected. Username and Password fields enabled.",
+                    $"Expected authentication change message, got '{vm.StatusMessage}'");
+
+                await vm.ConnectAsync();
+
+                Assert(vm.IsConnected, "IsConnected should be true after successful connection.");
+                Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.",
+                    $"Expected subsequent connection transition to announce operations panel unlock, got '{vm.StatusMessage}'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
