@@ -1496,10 +1496,71 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Style TargetType=\"Button\">"), "App.xaml should define implicit TargetType=\"Button\" style");
                 Assert(content.Contains("<Setter Property=\"FocusVisualStyle\" Value=\"{StaticResource FocusVisualStyle}\" />"), "App.xaml should apply FocusVisualStyle across implicit control styles");
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
+                Assert(content.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
                 Assert(content.Contains("#047857"), "App.xaml should define PrimaryButton background with #047857");
                 Assert(content.Contains("#1D4ED8"), "App.xaml should define SecondaryButton background with #1D4ED8");
                 Assert(!content.Contains("#10B981"), "App.xaml should not contain non-compliant color #10B981");
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_CopyStatus_UsesAccessibleStatusSuccessBrush", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string appContent = System.IO.File.ReadAllText(appXamlPath);
+                Assert(appContent.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
+
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string errorDetailsContent = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(errorDetailsContent);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+                var copiedStatusTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "lblCopiedStatus"));
+
+                Assert(copiedStatusTb != null, "ErrorDetailsWindow.xaml must contain lblCopiedStatus TextBlock");
+                Assert(copiedStatusTb!.Attribute("Foreground")?.Value == "{StaticResource StatusSuccessBrush}",
+                    "lblCopiedStatus should bind Foreground to {StaticResource StatusSuccessBrush}");
+                Assert(!errorDetailsContent.Contains("#16A34A"),
+                    "ErrorDetailsWindow.xaml must not contain non-compliant hardcoded color #16A34A");
+
+                // Verify relative luminance and contrast ratio calculation for #047857 vs #F8FAFC window background (WCAG 2.2 SC 1.4.3 >= 4.5:1)
+                double sR1 = 4.0 / 255.0;
+                double sG1 = 120.0 / 255.0;
+                double sB1 = 87.0 / 255.0;
+                double rLin1 = sR1 <= 0.04045 ? sR1 / 12.92 : Math.Pow((sR1 + 0.055) / 1.055, 2.4);
+                double gLin1 = sG1 <= 0.04045 ? sG1 / 12.92 : Math.Pow((sG1 + 0.055) / 1.055, 2.4);
+                double bLin1 = sB1 <= 0.04045 ? sB1 / 12.92 : Math.Pow((sB1 + 0.055) / 1.055, 2.4);
+                double lumFg = 0.2126 * rLin1 + 0.7152 * gLin1 + 0.0722 * bLin1;
+
+                double sR2 = 248.0 / 255.0;
+                double sG2 = 250.0 / 255.0;
+                double sB2 = 252.0 / 255.0;
+                double rLin2 = sR2 <= 0.04045 ? sR2 / 12.92 : Math.Pow((sR2 + 0.055) / 1.055, 2.4);
+                double gLin2 = sG2 <= 0.04045 ? sG2 / 12.92 : Math.Pow((sG2 + 0.055) / 1.055, 2.4);
+                double bLin2 = sB2 <= 0.04045 ? sB2 / 12.92 : Math.Pow((sB2 + 0.055) / 1.055, 2.4);
+                double lumBg = 0.2126 * rLin2 + 0.7152 * gLin2 + 0.0722 * bLin2;
+
+                double contrastRatio = (lumBg + 0.05) / (lumFg + 0.05);
+                Assert(contrastRatio >= 4.5, $"Contrast ratio {contrastRatio:F2}:1 against window background #F8FAFC must meet or exceed 4.5:1 under WCAG 2.2 1.4.3");
             });
 
             RunSyncTest("AppXaml_InputRestingBorderBrush_HighContrastConfiguration", () =>
@@ -1716,7 +1777,15 @@ namespace CollationModifier.Tests
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
                 Assert(content.Contains("Text=\"{Binding StatusMessage}\""), "MainWindow.xaml should contain status message binding");
+                Assert(content.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\"") || content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip binding");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml status TextBlock should have AutomationProperties.LiveSetting=\"Polite\"");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var statusTextBlock = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock" && (e.Attribute(xNameAttr)?.Value == "StatusTextBlock" || e.Attribute("Name")?.Value == "StatusTextBlock"));
+                Assert(statusTextBlock != null, "MainWindow.xaml should define StatusTextBlock TextBlock");
+                var tooltipValue = statusTextBlock!.Attribute("ToolTip")?.Value;
+                Assert(tooltipValue == "{Binding EffectiveStatusToolTip}" || tooltipValue == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip binding");
             });
 
             RunSyncTest("MainWindowXaml_StatusBar_UsesConstrainedGridWithTextTrimming", () =>
@@ -2473,6 +2542,33 @@ namespace CollationModifier.Tests
                 Assert(headerTb != null, "ErrorDetailsWindow.xaml must contain operation error header TextBlock");
                 Assert(headerTb!.Attribute("AutomationProperties.HeadingLevel")?.Value == "Level1",
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_UsesInputRestingBorderBrush", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBoxes = doc.Descendants().Where(e => e.Name.LocalName == "TextBox").ToList();
+
+                var errorDetailsTb = textBoxes.FirstOrDefault(tb =>
+                    tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "txtErrorDetails" ||
+                    tb.Attribute("Name")?.Value == "txtErrorDetails");
+                Assert(errorDetailsTb != null, "ErrorDetailsWindow.xaml must contain txtErrorDetails TextBox");
+                Assert(errorDetailsTb!.Attribute("BorderBrush")?.Value == "{StaticResource InputRestingBorderBrush}",
+                    "txtErrorDetails must set BorderBrush to '{StaticResource InputRestingBorderBrush}' to satisfy WCAG 2.2 non-text contrast requirements");
+                Assert(!content.Contains("BorderBrush=\"#CBD5E1\""),
+                    "ErrorDetailsWindow.xaml must not use hardcoded low-contrast '#CBD5E1' border brush");
             });
 
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>

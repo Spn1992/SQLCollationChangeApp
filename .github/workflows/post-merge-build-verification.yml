@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/collation-modifier-app-7995951850818249286
   workflow_dispatch:
 
 jobs:
