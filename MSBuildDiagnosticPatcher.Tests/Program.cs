@@ -29,21 +29,32 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_HandlesAnsiEscapes", Test_MSBuildLogParser_ParseLine_HandlesAnsiEscapes);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
 
+            // 1.5 AnsiCleaner Tests
+            RunTest("AnsiCleaner_Clean_HandlesNullAndEmpty", Test_AnsiCleaner_Clean_HandlesNullAndEmpty);
+            RunTest("AnsiCleaner_Clean_RemovesColorCodes", Test_AnsiCleaner_Clean_RemovesColorCodes);
+            RunTest("AnsiCleaner_Clean_RemovesCursorMovementCodes", Test_AnsiCleaner_Clean_RemovesCursorMovementCodes);
+            RunTest("AnsiCleaner_Clean_PreservesRegularLogTextAndPunctuation", Test_AnsiCleaner_Clean_PreservesRegularLogTextAndPunctuation);
+
             // 2. TestExecutionLogParser Tests
             RunTest("TestExecutionLogParser_ParseCustomRunner_ExtractsFailedClassAndAssertion", Test_TestExecutionLogParser_ParseCustomRunner);
             RunTest("TestExecutionLogParser_ParseDotnetTest_ExtractsClassMethodAndError", Test_TestExecutionLogParser_ParseDotnetTest);
+            RunTest("TestExecutionLogParser_ParseDotnetTest_ConsecutiveFailuresWithMultiLineStackTrace", Test_TestExecutionLogParser_ParseDotnetTest_ConsecutiveFailuresWithMultiLineStackTrace);
             RunTest("TestExecutionLogParser_ParseBracketFail_ExtractsFailure", Test_TestExecutionLogParser_ParseBracketFail);
 
             // 3. InterfaceDefinitionResolver Tests
             RunTest("InterfaceDefinitionResolver_ParseCs0535Message_ExtractsComponents", Test_InterfaceDefinitionResolver_ParseCs0535Message);
             RunTest("InterfaceDefinitionResolver_ExtractMemberFromInterfaceSource_FindsMethod", Test_InterfaceDefinitionResolver_ExtractMemberFromInterfaceSource);
             RunTest("InterfaceDefinitionResolver_ExtractMemberFromInterfaceSource_FindsProperty", Test_InterfaceDefinitionResolver_ExtractProperty);
+            RunTest("InterfaceDefinitionResolver_Caching_ReadsFileOnce", Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce);
+            RunTest("InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches", Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches);
+            RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache);
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesToExistingOverload", Test_PatchGenerator_GenerateMemberStub_Delegates);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
+            RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -55,6 +66,14 @@ namespace MSBuildDiagnosticPatcher.Tests
 
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
+
+            // 8. Program.Main Exit Code Tests
+            RunTest("Program_Main_ReturnsZero_WhenNoErrorsOrFailures", Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures);
+            RunTest("Program_Main_ReturnsZero_WhenWarningsOnly", Test_Program_Main_ReturnsZero_WhenWarningsOnly);
+            RunTest("Program_Main_ReturnsOne_WhenCompilerErrorsPresent", Test_Program_Main_ReturnsOne_WhenCompilerErrorsPresent);
+            RunTest("Program_Main_ReturnsOne_WhenTestFailuresPresent", Test_Program_Main_ReturnsOne_WhenTestFailuresPresent);
+            RunTest("Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent", Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent);
+            RunTest("Program_Main_ReturnsOne_WhenInputFileNotFound", Test_Program_Main_ReturnsOne_WhenInputFileNotFound);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -171,6 +190,79 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(parsed.Count == 1200, $"Expected 1200 diagnostics, got {parsed.Count}.");
         }
 
+        // 1.5 AnsiCleaner Tests
+        static void Test_AnsiCleaner_Clean_HandlesNullAndEmpty()
+        {
+            Assert(AnsiCleaner.Clean(null) == string.Empty, "Expected empty string for null input.");
+            Assert(AnsiCleaner.Sanitize(null) == string.Empty, "Expected empty string for null input using Sanitize.");
+            Assert(AnsiCleaner.Clean(string.Empty) == string.Empty, "Expected empty string for empty input.");
+            Assert(AnsiCleaner.Sanitize(string.Empty) == string.Empty, "Expected empty string for empty input using Sanitize.");
+            Assert(AnsiCleaner.Clean("   ") == string.Empty, "Expected empty string for whitespace input.");
+            Assert(AnsiCleaner.Clean("\t\r\n") == string.Empty, "Expected empty string for tab/newline input.");
+            Assert(AnsiCleaner.Clean("\u001b[0m") == string.Empty, "Expected empty string for escape-only input.");
+            Assert(AnsiCleaner.Clean("   \u001b[31m\u001b[0m   ") == string.Empty, "Expected empty string for escaped whitespace input.");
+        }
+
+        static void Test_AnsiCleaner_Clean_RemovesColorCodes()
+        {
+            // Standard 16-color codes & reset
+            string basicColor = "\u001b[31mError message\u001b[0m";
+            Assert(AnsiCleaner.Clean(basicColor) == "Error message", "Failed standard 16-color stripping.");
+
+            // Bold & bright foreground/background combinations
+            string boldColored = "\u001b[1;32;40mBuild: 1 succeeded, 0 failed\u001b[0m";
+            Assert(AnsiCleaner.Clean(boldColored) == "Build: 1 succeeded, 0 failed", "Failed multi-attribute SGR stripping.");
+
+            // 256-color palette sequence: ESC[38;5;<n>m
+            string color256 = "\u001b[38;5;196mHigh-intensity red warning\u001b[0m";
+            Assert(AnsiCleaner.Clean(color256) == "High-intensity red warning", "Failed 256-color sequence stripping.");
+
+            // 24-bit TrueColor RGB sequence: ESC[38;2;<r>;<g>;<b>m
+            string rgbColor = "\u001b[38;2;255;128;0mOrange TrueColor output\u001b[0m";
+            Assert(AnsiCleaner.Clean(rgbColor) == "Orange TrueColor output", "Failed TrueColor RGB sequence stripping.");
+
+            // Multiple chained style sequences
+            string chained = "\u001b[1m\u001b[4m\u001b[33mUnderlined Bold Yellow Warning\u001b[0m";
+            Assert(AnsiCleaner.Clean(chained) == "Underlined Bold Yellow Warning", "Failed chained style sequence stripping.");
+        }
+
+        static void Test_AnsiCleaner_Clean_RemovesCursorMovementCodes()
+        {
+            // Cursor Up (A), Down (B), Forward (C), Back (D)
+            string cursorRelative = "\u001b[2A\u001b[10CProcessing line...\u001b[3B\u001b[4D";
+            Assert(AnsiCleaner.Clean(cursorRelative) == "Processing line...", "Failed cursor movement (A,B,C,D) stripping.");
+
+            // Cursor Position: ESC[<row>;<col>H and ESC[<row>;<col>f
+            string cursorAbsolute = "\u001b[12;34HCoordinates line";
+            Assert(AnsiCleaner.Clean(cursorAbsolute) == "Coordinates line", "Failed cursor position (H) stripping.");
+            string cursorHome = "\u001b[;fHome positioned text";
+            Assert(AnsiCleaner.Clean(cursorHome) == "Home positioned text", "Failed cursor home (f) stripping.");
+
+            // Erase in Display (J) and Erase in Line (K)
+            string eraseControls = "\u001b[2J\u001b[KCleared screen line text";
+            Assert(AnsiCleaner.Clean(eraseControls) == "Cleared screen line text", "Failed erase controls (J, K) stripping.");
+
+            // Device / cursor control private modes: ESC[?25h and ESC[?25l
+            string privateModes = "\u001b[?25hLog status: Ready\u001b[?25l";
+            Assert(AnsiCleaner.Clean(privateModes) == "Log status: Ready", "Failed private mode escape sequence stripping.");
+        }
+
+        static void Test_AnsiCleaner_Clean_PreservesRegularLogTextAndPunctuation()
+        {
+            // Plain text without ANSI escapes
+            string plainText = "  CollationModifier.Tests.Program: Passed  ";
+            Assert(AnsiCleaner.Clean(plainText) == "CollationModifier.Tests.Program: Passed", "Failed plain text whitespace trimming.");
+
+            // Complex log line with parentheses, commas, colons, brackets, backslashes
+            string complexLog = "C:\\src\\Project\\Services\\DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface [C:\\src\\Project.csproj]";
+            Assert(AnsiCleaner.Clean(complexLog) == complexLog, "Corrupted standard log line structure without escapes.");
+
+            // Mixed ANSI escape in the middle of log line
+            string mixedLog = "Services/DatabaseService.cs(11,36): \u001b[31;1merror CS0535\u001b[0m: 'DatabaseService' does not implement interface member";
+            string expectedClean = "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member";
+            Assert(AnsiCleaner.Clean(mixedLog) == expectedClean, "Failed inline ANSI escape sequence removal in log line.");
+        }
+
         // 2. TestExecutionLogParser Tests
         static void Test_TestExecutionLogParser_ParseCustomRunner()
         {
@@ -211,6 +303,84 @@ Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
             Assert(failures[0].TestMethod == "ProcessCollationChangeAsync_UpdatesCollationInMemory", $"Expected method name, got '{failures[0].TestMethod}'");
             Assert(failures[0].AssertionFailureMessage.Contains("Expected status ready"), "Expected error message");
             Assert(failures[0].StackTrace.Contains("at CollationModifier.Tests.MainViewModelTests"), "Expected stack trace");
+        }
+
+        static void Test_TestExecutionLogParser_ParseDotnetTest_ConsecutiveFailuresWithMultiLineStackTrace()
+        {
+            var parser = new TestExecutionLogParser();
+            string failure1 = @"Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
+  Error Message:
+   Assertion Failed: Expected status ready
+  Stack Trace:
+   at CollationModifier.Tests.MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory() in /app/Tests.cs:line 80
+   at CollationModifier.Tests.MainViewModelTests.RunAsync() in /app/Tests.cs:line 120
+   at System.Threading.Tasks.Task.Execute() in /runtime/Task.cs:line 450";
+
+            string failure2 = @"Failed DatabaseServiceTests.AlterCollationAsync [60 ms]
+  Error Message:
+   Assertion Failed: Database was not put in SINGLE_USER mode
+  Stack Trace:
+   at CollationModifier.Tests.DatabaseServiceTests.AlterCollationAsync() in /app/DbTests.cs:line 150
+   at CollationModifier.Tests.DatabaseServiceTests.RunAsync() in /app/DbTests.cs:line 200";
+
+            string log = $@"
+Starting test execution, please wait...
+{failure1}
+{failure2}
+Passed MainViewModelTests.TestConnectionAsync [12 ms]
+
+Total tests: 3. Passed: 1. Failed: 2. Skipped: 0.
+";
+
+            // Parse consecutive failures together
+            var failures = parser.ParseText(log);
+            Assert(failures.Count == 2, $"Expected 2 failures, got {failures.Count}");
+
+            // Parse individual failures in isolation
+            var singleFailure1 = parser.ParseText(failure1);
+            var singleFailure2 = parser.ParseText(failure2);
+            Assert(singleFailure1.Count == 1, "Expected single failure 1 to parse.");
+            Assert(singleFailure2.Count == 1, "Expected single failure 2 to parse.");
+
+            // Verify first failure properties and multi-line stack trace
+            Assert(failures[0].TestClass == "MainViewModelTests", $"Expected MainViewModelTests, got '{failures[0].TestClass}'");
+            Assert(failures[0].TestMethod == "ProcessCollationChangeAsync_UpdatesCollationInMemory", $"Expected method name, got '{failures[0].TestMethod}'");
+            Assert(failures[0].AssertionFailureMessage.Contains("Expected status ready"), "Expected error message for failure 1");
+            Assert(failures[0].StackTrace.Contains("ProcessCollationChangeAsync_UpdatesCollationInMemory") &&
+                   failures[0].StackTrace.Contains("RunAsync") &&
+                   failures[0].StackTrace.Contains("Task.Execute"),
+                   "Expected multi-line stack trace with all 3 frames for failure 1");
+
+            // Verify second failure properties and multi-line stack trace
+            Assert(failures[1].TestClass == "DatabaseServiceTests", $"Expected DatabaseServiceTests, got '{failures[1].TestClass}'");
+            Assert(failures[1].TestMethod == "AlterCollationAsync", $"Expected AlterCollationAsync, got '{failures[1].TestMethod}'");
+            Assert(failures[1].AssertionFailureMessage.Contains("Database was not put in SINGLE_USER mode"), "Expected error message for failure 2");
+            Assert(failures[1].StackTrace.Contains("AlterCollationAsync") &&
+                   failures[1].StackTrace.Contains("RunAsync"),
+                   "Expected multi-line stack trace with all frames for failure 2");
+
+            // Assert that the parser extracts identical TestFailure fields for consecutive dotnet test failures vs isolated parsing
+            Assert(failures[0].TestClass == singleFailure1[0].TestClass, "TestClass must be identical");
+            Assert(failures[0].TestMethod == singleFailure1[0].TestMethod, "TestMethod must be identical");
+            Assert(failures[0].AssertionFailureMessage == singleFailure1[0].AssertionFailureMessage, "AssertionFailureMessage must be identical");
+            Assert(failures[0].StackTrace == singleFailure1[0].StackTrace, "StackTrace must be identical");
+            Assert(failures[0].RawLine == singleFailure1[0].RawLine, "RawLine must be identical");
+
+            Assert(failures[1].TestClass == singleFailure2[0].TestClass, "TestClass must be identical");
+            Assert(failures[1].TestMethod == singleFailure2[0].TestMethod, "TestMethod must be identical");
+            Assert(failures[1].AssertionFailureMessage == singleFailure2[0].AssertionFailureMessage, "AssertionFailureMessage must be identical");
+            Assert(failures[1].StackTrace == singleFailure2[0].StackTrace, "StackTrace must be identical");
+            Assert(failures[1].RawLine == singleFailure2[0].RawLine, "RawLine must be identical");
+
+            // Also test identical consecutive failures to verify field equivalence across consecutive identical failures
+            string identicalLog = $"{failure1}\n{failure1}";
+            var identicalFailures = parser.ParseText(identicalLog);
+            Assert(identicalFailures.Count == 2, $"Expected 2 failures, got {identicalFailures.Count}");
+            Assert(identicalFailures[0].TestClass == identicalFailures[1].TestClass, "Consecutive identical failures must have identical TestClass");
+            Assert(identicalFailures[0].TestMethod == identicalFailures[1].TestMethod, "Consecutive identical failures must have identical TestMethod");
+            Assert(identicalFailures[0].AssertionFailureMessage == identicalFailures[1].AssertionFailureMessage, "Consecutive identical failures must have identical AssertionFailureMessage");
+            Assert(identicalFailures[0].StackTrace == identicalFailures[1].StackTrace, "Consecutive identical failures must have identical StackTrace");
+            Assert(identicalFailures[0].RawLine == identicalFailures[1].RawLine, "Consecutive identical failures must have identical RawLine");
         }
 
         static void Test_TestExecutionLogParser_ParseBracketFail()
@@ -284,6 +454,121 @@ public interface IConfigService
             Assert(member!.IsProperty, "Expected IsProperty == true");
             Assert(member.ReturnType == "string", $"Expected return type string, got '{member.ReturnType}'");
             Assert(member.HasGetter && member.HasSetter, "Expected getter and setter");
+        }
+
+        static void Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "ICacheDemoService.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface ICacheDemoService
+{
+    string MethodA(string input);
+    int MethodB(int count);
+}
+");
+                string contextFile = Path.Combine(tempDir, "CacheDemoService.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                // First resolution: reads file from disk and populates caches
+                var memberA = resolver.ResolveInterfaceMember("ICacheDemoService", "MethodA", "string", contextFile, tempDir);
+                Assert(memberA != null, "Expected MethodA to be resolved.");
+                Assert(memberA!.ReturnType == "string", "Expected return type string for MethodA.");
+
+                // Now delete the interface file from disk!
+                File.Delete(ifaceFile);
+                Assert(!File.Exists(ifaceFile), "Interface file should be deleted.");
+
+                // Second resolution for different member of same interface: should succeed from cached content without reading disk
+                var memberB = resolver.ResolveInterfaceMember("ICacheDemoService", "MethodB", "int", contextFile, tempDir);
+                Assert(memberB != null, "Expected MethodB to be resolved from in-memory cache even though file was deleted from disk.");
+                Assert(memberB!.ReturnType == "int", "Expected return type int for MethodB from cache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"neg_cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string contextFile = Path.Combine(tempDir, "SampleClass.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                // 1. Initial lookup for non-existent interface returns null and caches negative lookup
+                string? missing = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
+                Assert(missing == null, "Expected null for non-existent interface.");
+
+                // 2. Create the file on disk after negative lookup
+                string lateFile = Path.Combine(tempDir, "IMissingInterface.cs");
+                File.WriteAllText(lateFile, "public interface IMissingInterface { }");
+
+                // 3. Repeated lookup returns cached null, preventing repeated disk scans
+                string? cachedResult = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
+                Assert(cachedResult == null, "Expected negative cache hit returning null even after file was created.");
+
+                // 4. Calling ClearCache invalidates cache and allows discovering the newly created file
+                resolver.ClearCache();
+                string? refreshedResult = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
+                Assert(refreshedResult != null, "Expected non-null after ClearCache re-scans disk.");
+                Assert(Path.GetFullPath(refreshedResult!) == Path.GetFullPath(lateFile), "Expected resolved path to match created file.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"clear_cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IMutableInterface.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface IMutableInterface
+{
+    string GetValue();
+}
+");
+                string contextFile = Path.Combine(tempDir, "MutableClass.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                // 1. Resolve initial version
+                var member1 = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
+                Assert(member1 != null && member1.ReturnType == "string", "Expected initial return type string.");
+
+                // 2. Overwrite file with new signature
+                File.WriteAllText(ifaceFile, @"
+public interface IMutableInterface
+{
+    int GetValue();
+}
+");
+                // 3. Without ClearCache, cached content returns 'string'
+                var memberCached = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
+                Assert(memberCached != null && memberCached.ReturnType == "string", "Expected cached return type 'string' prior to ClearCache.");
+
+                // 4. After ClearCache, disk content is re-read and returns 'int'
+                resolver.ClearCache();
+                var memberRefreshed = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
+                Assert(memberRefreshed != null && memberRefreshed.ReturnType == "int", "Expected refreshed return type 'int' after ClearCache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
         }
 
         // 4. PatchGenerator Tests
@@ -361,6 +646,80 @@ public class EmptyService : ISampleService
             Assert(diff.Contains("--- a/Test.cs"), "Expected --- header");
             Assert(diff.Contains("+++ b/Test.cs"), "Expected +++ header");
             Assert(diff.Contains("+line 2.5 added"), "Expected + line");
+        }
+
+        static void Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"patch_cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "ISqlWorker.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface ISqlWorker
+{
+    Task<string> ExecuteJobAsync(string jobName, CancellationToken cancellationToken = default);
+    Task ClearStateAsync();
+}
+");
+                string classFile = Path.Combine(tempDir, "SqlWorker.cs");
+                File.WriteAllText(classFile, @"
+public class SqlWorker : ISqlWorker
+{
+    public virtual async Task<string> ExecuteJobAsync(string jobName, int retryCount = 3, CancellationToken cancellationToken = default)
+    {
+        return ""done"";
+    }
+}
+");
+                // Diagnostics for two missing members on the same class
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'SqlWorker' does not implement interface member 'ISqlWorker.ExecuteJobAsync(string, CancellationToken)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'SqlWorker' does not implement interface member 'ISqlWorker.ClearStateAsync()'"
+                    }
+                };
+
+                var resolver = new InterfaceDefinitionResolver();
+                var generator = new PatchGenerator(resolver);
+
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches.Count == 1, $"Expected 1 patch file, got {patches.Count}");
+
+                string diff = patches[0].UnifiedDiff;
+                // Verify interpreted regex correctly matched the overload and delegated
+                Assert(diff.Contains("return ExecuteJobAsync(jobName, null, cancellationToken);"),
+                    $"Expected delegation call in diff, got:\n{diff}");
+                // Verify missing method without overload generates NotImplementedException
+                Assert(diff.Contains("throw new NotImplementedException();"),
+                    $"Expected NotImplementedException in diff, got:\n{diff}");
+
+                // Delete the interface file from disk to verify second run uses cached content
+                File.Delete(ifaceFile);
+                var patches2 = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches2.Count == 1, "Expected patch generation to succeed from cache after file deletion.");
+                Assert(patches2[0].UnifiedDiff == diff, "Expected identical diff output from cache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
         }
 
         // 5. PatchApplicator Tests
@@ -551,6 +910,128 @@ public class Greeter : IGreeter
             {
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
+        }
+
+        // 8. Program.Main Exit Code Tests
+        static void Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_zero_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean_build.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+Time Elapsed 00:00:01.23
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsZero_WhenWarningsOnly()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_warn_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "warning_build.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [CollationModifier.csproj]
+Build succeeded.
+    1 Warning(s)
+    0 Error(s)
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 when only warnings are present, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenCompilerErrorsPresent()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_error_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "error_build.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]
+Build FAILED.
+    1 Error(s)
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 for compiler errors, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenTestFailuresPresent()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_fail_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "test_failure.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
+  Error Message:
+   Assertion Failed: Expected status ready
+Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 for test failures, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_both_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "errors_and_failures.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]
+Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
+  Error Message:
+   Assertion Failed: Expected status ready
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 for both compiler errors and test failures, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenInputFileNotFound()
+        {
+            string missingPath = Path.Combine(Path.GetTempPath(), $"missing_log_{Guid.NewGuid():N}.log");
+            int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { missingPath });
+            Assert(exitCode == 1, $"Expected exit code 1 when input file is not found, got {exitCode}");
         }
     }
 }

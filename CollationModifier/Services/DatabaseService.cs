@@ -12,6 +12,51 @@ namespace CollationModifier.Services
     public class DatabaseService : IDatabaseService
     {
         private static readonly Regex CollationRegex = new Regex(@"^[a-zA-Z0-9_]+$", RegexOptions.Compiled);
+        private const string DefaultBackupDirectoryQuery = @"
+                        DECLARE @path NVARCHAR(4000) = NULL;
+
+                        BEGIN TRY
+                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
+                        END TRY
+                        BEGIN CATCH
+                        END CATCH;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                EXEC master.dbo.xp_instance_regread
+                                    N'HKEY_LOCAL_MACHINE',
+                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
+                                    N'BackupDirectory',
+                                    @path OUTPUT;
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        IF @path IS NULL OR @path = ''
+                        BEGIN
+                            BEGIN TRY
+                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
+                            END TRY
+                            BEGIN CATCH
+                            END CATCH;
+                        END;
+
+                        SELECT ISNULL(@path, '') AS DefaultBackupPath;";
         private readonly LoggerService _logger;
         private string _connectionString = string.Empty;
         private readonly object _collationCacheLock = new object();
@@ -170,53 +215,7 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync(cancellationToken);
 
-                    var query = @"
-                        DECLARE @path NVARCHAR(4000) = NULL;
-
-                        BEGIN TRY
-                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
-                        END TRY
-                        BEGIN CATCH
-                        END CATCH;
-
-                        IF @path IS NULL OR @path = ''
-                        BEGIN
-                            BEGIN TRY
-                                EXEC master.dbo.xp_instance_regread
-                                    N'HKEY_LOCAL_MACHINE',
-                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
-                                    N'BackupDirectory',
-                                    @path OUTPUT;
-                            END TRY
-                            BEGIN CATCH
-                            END CATCH;
-                        END;
-
-                        IF @path IS NULL OR @path = ''
-                        BEGIN
-                            BEGIN TRY
-                                EXEC master.dbo.xp_instance_regread
-                                    N'HKEY_LOCAL_MACHINE',
-                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
-                                    N'BackupDirectory',
-                                    @path OUTPUT;
-                            END TRY
-                            BEGIN CATCH
-                            END CATCH;
-                        END;
-
-                        IF @path IS NULL OR @path = ''
-                        BEGIN
-                            BEGIN TRY
-                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
-                            END TRY
-                            BEGIN CATCH
-                            END CATCH;
-                        END;
-
-                        SELECT ISNULL(@path, '') AS DefaultBackupPath;";
-
-                    using (var command = new SqlCommand(query, connection))
+                    using (var command = new SqlCommand(DefaultBackupDirectoryQuery, connection))
                     {
                         var result = await command.ExecuteScalarAsync(cancellationToken);
                         if (result != null && result != DBNull.Value)
@@ -249,52 +248,9 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync(cancellationToken);
 
-                    var batchedQuery = @"
+                    var batchedQuery = $@"
                         -- 1. Default Backup Directory
-                        DECLARE @path NVARCHAR(4000) = NULL;
-
-                        BEGIN TRY
-                            SET @path = CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS NVARCHAR(4000));
-                        END TRY
-                        BEGIN CATCH
-                        END CATCH;
-
-                        IF @path IS NULL OR @path = ''
-                        BEGIN
-                            BEGIN TRY
-                                EXEC master.dbo.xp_instance_regread
-                                    N'HKEY_LOCAL_MACHINE',
-                                    N'Software\Microsoft\MSSQLServer\MSSQLServer',
-                                    N'BackupDirectory',
-                                    @path OUTPUT;
-                            END TRY
-                            BEGIN CATCH
-                            END CATCH;
-                        END;
-
-                        IF @path IS NULL OR @path = ''
-                        BEGIN
-                            BEGIN TRY
-                                EXEC master.dbo.xp_instance_regread
-                                    N'HKEY_LOCAL_MACHINE',
-                                    N'Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer',
-                                    N'BackupDirectory',
-                                    @path OUTPUT;
-                            END TRY
-                            BEGIN CATCH
-                            END CATCH;
-                        END;
-
-                        IF @path IS NULL OR @path = ''
-                        BEGIN
-                            BEGIN TRY
-                                SET @path = CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS NVARCHAR(4000));
-                            END TRY
-                            BEGIN CATCH
-                            END CATCH;
-                        END;
-
-                        SELECT ISNULL(@path, '') AS DefaultBackupPath;
+{DefaultBackupDirectoryQuery}
 
                         -- 2. Databases Catalog
                         SELECT
@@ -801,26 +757,6 @@ namespace CollationModifier.Services
             {
                  _logger.LogError($"Failed emergency MULTI_USER reset for database: {databaseName}", ex);
                  throw;
-            }
-        }
-
-        private async Task ExecuteEmergencyMultiUserResetAsync(
-            string databaseName,
-            Exception primaryException,
-            string operationContext,
-            string actionDescription,
-            CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                await TrySetMultiUserAsync(databaseName, cancellationToken);
-            }
-            catch (Exception resetEx)
-            {
-                _logger.LogError($"Emergency MULTI_USER reset failed following {operationContext} error on {databaseName}", resetEx);
-                throw new AggregateException(
-                    $"Failed to {actionDescription} '{databaseName}' ({primaryException.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
-                    primaryException, resetEx);
             }
         }
 
