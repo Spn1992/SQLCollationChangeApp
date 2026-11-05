@@ -1,6 +1,7 @@
 using CollationModifier.Models;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using Microsoft.Data.SqlClient;
 using System.IO;
 using System.Text.RegularExpressions;
@@ -11,6 +12,23 @@ namespace CollationModifier.Services
 {
     public class DatabaseService : IDatabaseService
     {
+        private const string DatabaseCatalogQuery = @"
+                        SELECT
+                            d.name,
+                            d.collation_name,
+                            d.compatibility_level,
+                            SUSER_SNAME(d.owner_sid) as owner,
+                            mf.size_mb
+                        FROM sys.databases d
+                        LEFT JOIN (
+                            SELECT
+                                database_id,
+                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
+                            FROM sys.master_files
+                            GROUP BY database_id
+                        ) mf ON d.database_id = mf.database_id
+                        WHERE d.database_id > 4";
+
         private static readonly Regex CollationRegex = new Regex(@"^[a-zA-Z0-9_]+$", RegexOptions.Compiled);
         private const string DefaultBackupDirectoryQuery = @"
                         DECLARE @path NVARCHAR(4000) = NULL;
@@ -126,37 +144,12 @@ namespace CollationModifier.Services
                 {
                     await connection.OpenAsync(cancellationToken);
 
-                    // Exclude system databases
-                    var query = @"
-                        SELECT
-                            d.name,
-                            d.collation_name,
-                            d.compatibility_level,
-                            SUSER_SNAME(d.owner_sid) as owner,
-                            mf.size_mb
-                        FROM sys.databases d
-                        LEFT JOIN (
-                            SELECT
-                                database_id,
-                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
-                            FROM sys.master_files
-                            GROUP BY database_id
-                        ) mf ON d.database_id = mf.database_id
-                        WHERE d.database_id > 4";
-
-                    using (var command = new SqlCommand(query, connection))
+                    using (var command = new SqlCommand(DatabaseCatalogQuery, connection))
                     using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                     {
                         while (await reader.ReadAsync(cancellationToken))
                         {
-                            databases.Add(new DatabaseInfo
-                            {
-                                Name = reader.GetString(0),
-                                Collation = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
-                                CompatibilityLevel = reader.GetByte(2).ToString(),
-                                Owner = reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
-                                Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt64(4)} MB"
-                            });
+                            databases.Add(MapDatabaseInfo(reader));
                         }
                     }
                 }
@@ -168,6 +161,33 @@ namespace CollationModifier.Services
             }
 
             return databases;
+        }
+
+        private static DatabaseInfo MapDatabaseInfo(SqlDataReader reader)
+        {
+            if (reader == null)
+            {
+                throw new ArgumentNullException(nameof(reader));
+            }
+
+            return MapDatabaseInfo((IDataRecord)reader);
+        }
+
+        public static DatabaseInfo MapDatabaseInfo(IDataRecord record)
+        {
+            if (record == null)
+            {
+                throw new ArgumentNullException(nameof(record));
+            }
+
+            return new DatabaseInfo
+            {
+                Name = record.GetString(0),
+                Collation = record.IsDBNull(1) ? "Unknown" : record.GetString(1),
+                CompatibilityLevel = record.GetByte(2).ToString(),
+                Owner = record.IsDBNull(3) ? "Unknown" : record.GetString(3),
+                Size = record.IsDBNull(4) ? "Unknown" : $"{record.GetInt64(4)} MB"
+            };
         }
 
         public virtual async Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
@@ -253,21 +273,7 @@ namespace CollationModifier.Services
 {DefaultBackupDirectoryQuery}
 
                         -- 2. Databases Catalog
-                        SELECT
-                            d.name,
-                            d.collation_name,
-                            d.compatibility_level,
-                            SUSER_SNAME(d.owner_sid) as owner,
-                            mf.size_mb
-                        FROM sys.databases d
-                        LEFT JOIN (
-                            SELECT
-                                database_id,
-                                SUM(CAST(size AS bigint)) * 8 / 1024 as size_mb
-                            FROM sys.master_files
-                            GROUP BY database_id
-                        ) mf ON d.database_id = mf.database_id
-                        WHERE d.database_id > 4;
+                        {DatabaseCatalogQuery};
 
                         -- 3. Supported Collations
                         SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
@@ -294,14 +300,7 @@ namespace CollationModifier.Services
                         {
                             while (await reader.ReadAsync(cancellationToken))
                             {
-                                initData.Databases.Add(new DatabaseInfo
-                                {
-                                    Name = reader.GetString(0),
-                                    Collation = reader.IsDBNull(1) ? "Unknown" : reader.GetString(1),
-                                    CompatibilityLevel = reader.GetByte(2).ToString(),
-                                    Owner = reader.IsDBNull(3) ? "Unknown" : reader.GetString(3),
-                                    Size = reader.IsDBNull(4) ? "Unknown" : $"{reader.GetInt64(4)} MB"
-                                });
+                                initData.Databases.Add(MapDatabaseInfo(reader));
                             }
                             _logger.LogInfo($"Retrieved {initData.Databases.Count} databases.");
                         }
