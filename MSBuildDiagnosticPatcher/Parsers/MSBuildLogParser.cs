@@ -42,30 +42,6 @@ namespace MSBuildDiagnosticPatcher.Parsers
             return results;
         }
 
-        public List<CompilerDiagnostic> ParseFile(string filePath)
-        {
-            if (!File.Exists(filePath))
-            {
-                throw new FileNotFoundException($"Log file not found: {filePath}");
-            }
-
-            using var stream = File.OpenRead(filePath);
-            using var reader = new StreamReader(stream);
-            var results = new List<CompilerDiagnostic>();
-
-            string? line;
-            while ((line = reader.ReadLine()) != null)
-            {
-                var diag = ParseLine(line);
-                if (diag != null)
-                {
-                    results.Add(diag);
-                }
-            }
-
-            return results;
-        }
-
         public CompilerDiagnostic? ParseLine(string rawLine)
         {
             if (string.IsNullOrWhiteSpace(rawLine))
