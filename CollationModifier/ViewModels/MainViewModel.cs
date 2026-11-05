@@ -64,6 +64,7 @@ namespace CollationModifier.ViewModels
                 if (SetProperty(ref _isBusy, value))
                 {
                     OnPropertyChanged(nameof(IsNotBusy));
+                    OnPropertyChanged(nameof(IsConnecting));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
                     InvalidateRequerySuggested();
@@ -71,6 +72,7 @@ namespace CollationModifier.ViewModels
             }
         }
         public bool IsNotBusy => !IsBusy;
+        public bool IsConnecting => IsBusy && !IsConnected;
 
         private string _statusMessage = "Ready";
         public string StatusMessage
@@ -201,6 +203,7 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
+                    OnPropertyChanged(nameof(IsConnecting));
                     if (previous != value)
                     {
                         if (value)
