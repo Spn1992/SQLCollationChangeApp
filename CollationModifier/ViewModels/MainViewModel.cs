@@ -613,9 +613,12 @@ namespace CollationModifier.ViewModels
                 // Update in-memory model directly without calling LoadDatabasesAsync()
                 SelectedDatabase.Collation = TargetCollation;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
+
+                Exception? restoreEx = null;
+                Exception? resetEx = null;
 
                 if (backupFile != null && SelectedDatabase != null)
                 {
@@ -629,8 +632,9 @@ namespace CollationModifier.ViewModels
                         });
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
                     }
-                    catch (Exception restoreEx)
+                    catch (Exception rex)
                     {
+                        restoreEx = rex;
                         _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
                     }
                 }
@@ -641,13 +645,31 @@ namespace CollationModifier.ViewModels
                     {
                         await _databaseService.TrySetMultiUserAsync(SelectedDatabase.Name, CancellationToken.None);
                     }
-                    catch (Exception resetEx)
+                    catch (Exception rex)
                     {
+                        resetEx = rex;
                         _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
                     }
                 }
 
-                SetStatus("Operation cancelled by user.");
+                if (restoreEx != null || resetEx != null)
+                {
+                    Exception recoveryEx = (restoreEx != null && resetEx != null)
+                        ? new AggregateException(restoreEx, resetEx)
+                        : (restoreEx ?? resetEx)!;
+
+                    var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(
+                        ex,
+                        backupFile,
+                        recoveryEx,
+                        restoreAttempted: backupFile != null);
+
+                    SetStatus(statusText, toolTipText, detailedError);
+                }
+                else
+                {
+                    SetStatus("Operation cancelled by user.");
+                }
             }
             catch (Exception ex)
             {
