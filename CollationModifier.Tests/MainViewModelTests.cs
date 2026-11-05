@@ -935,6 +935,11 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include explicit SINGLE_USER lock warning, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Status message should include secondary reset failure details, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError should be true when emergency reset fails");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError should be populated when emergency reset fails");
+                Assert(vm.DetailedError.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"DetailedError should contain lock warning, got: '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand should be executable when HasDetailedError is true");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_ConfirmsMultiUserRestored_WhenEmergencyResetSucceeds", async () =>
@@ -959,6 +964,74 @@ namespace CollationModifier.Tests
                 Assert(mockService.IsMultiUser, "Database should be restored to MULTI_USER mode!");
                 Assert(vm.StatusMessage.Contains("Database restored to MULTI_USER mode successfully"), $"Status message should confirm MULTI_USER restoration, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError should be true after successful auto-restore");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError should be populated after successful auto-restore");
+                Assert(vm.DetailedError.Contains("Table constraint violation"), $"DetailedError should contain primary error details, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError.Contains("Database was restored to MULTI_USER mode successfully from backup"), $"DetailedError should contain restore confirmation, got: '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand should be executable when HasDetailedError is true");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_AutoRestoreSuccess_PopulatesTooltipAndLockWarning_WhenLockStateDetected", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "LockWarningDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedErrorDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedErrorDetails = details;
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include single-user lock warning, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError must be true after successful auto-restore with lock warning");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError must be populated");
+                Assert(vm.DetailedError.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "DetailedError must contain single-user lock warning");
+                Assert(vm.DetailedError.Contains("Table constraint violation"), "DetailedError must contain primary error text");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand must be executable");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedErrorDetails == vm.DetailedError, "ShowErrorDetailsHandler should receive the formatted DetailedError text");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_AutoRestoreSuccess_EnablesShowErrorDetailsCommand_AndPassesDiagnostics", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DetailsDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedDetails = details;
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.HasDetailedError == true, "HasDetailedError must be true");
+                Assert(vm.StatusToolTip != null, "StatusToolTip must be populated");
+                Assert(vm.StatusToolTip == vm.StatusMessage, "StatusToolTip must match StatusMessage");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand must be enabled");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedDetails != null && capturedDetails.Contains("Database was restored to MULTI_USER mode successfully"),
+                    "ShowErrorDetailsHandler should be called with full diagnostic information");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_RollsBackWithUncancelledToken_WhenCancelledAfterBackup", async () =>
