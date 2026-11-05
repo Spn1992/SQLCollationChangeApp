@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace MSBuildDiagnosticPatcher.Models
 {
@@ -17,5 +18,6 @@ namespace MSBuildDiagnosticPatcher.Models
         public int WarningCount => Diagnostics.FindAll(d => d.Severity == DiagnosticSeverity.Warning).Count;
         public int FailureCount => TestFailures.Count;
         public int PatchCount => CandidatePatches.Count;
+        public int UnresolvedErrorCount => Math.Max(0, ErrorCount - CandidatePatches.Where(p => p.IsApplied).Sum(p => p.ResolvedErrorCount));
     }
 }
