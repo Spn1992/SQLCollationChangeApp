@@ -2532,6 +2532,150 @@ namespace CollationModifier.Tests
                     $"Expected subsequent connection transition to announce operations panel unlock, got '{vm.StatusMessage}'");
             });
 
+            RunSyncTest("MainViewModel_IsConnecting_PropertyEvaluationAndNotifications", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(!vm.IsConnecting, "IsConnecting should default to false.");
+
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        notifiedProperties.Add(args.PropertyName);
+                    }
+                };
+
+                // Transition to busy while disconnected -> IsConnecting becomes true
+                vm.IsBusy = true;
+                Assert(vm.IsConnecting, "IsConnecting should be true when IsBusy is true and IsConnected is false.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsBusy becomes true, got: {string.Join(", ", notifiedProperties)}");
+
+                // Transition to connected while busy -> IsConnecting becomes false
+                notifiedProperties.Clear();
+                vm.IsConnected = true;
+                Assert(!vm.IsConnecting, "IsConnecting should be false when IsConnected is true.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsConnected becomes true, got: {string.Join(", ", notifiedProperties)}");
+
+                // Transition busy back to false -> IsConnecting remains false
+                notifiedProperties.Clear();
+                vm.IsBusy = false;
+                Assert(!vm.IsConnecting, "IsConnecting should remain false when IsBusy is false.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsBusy becomes false, got: {string.Join(", ", notifiedProperties)}");
+
+                // Transition connected back to false
+                notifiedProperties.Clear();
+                vm.IsConnected = false;
+                Assert(!vm.IsConnecting, "IsConnecting should be false when IsBusy is false and IsConnected is false.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsConnected becomes false, got: {string.Join(", ", notifiedProperties)}");
+            });
+
+            await RunAsyncTest("ConnectAsync_UpdatesIsConnectingState_DuringAndAfterConnection", async () =>
+            {
+                var connectionStarted = new TaskCompletionSource<bool>();
+                var releaseConnection = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    OnTestConnection = async (token) =>
+                    {
+                        connectionStarted.SetResult(true);
+                        await releaseConnection.Task;
+                        return true;
+                    },
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(!vm.IsConnecting, "IsConnecting should be false before connect.");
+
+                var connectTask = vm.ConnectAsync();
+                await connectionStarted.Task;
+
+                Assert(vm.IsConnecting, "IsConnecting should be true while ConnectAsync is executing.");
+                Assert(vm.IsBusy, "IsBusy should be true while ConnectAsync is executing.");
+                Assert(!vm.IsConnected, "IsConnected should be false while ConnectAsync is executing.");
+
+                releaseConnection.SetResult(true);
+                await connectTask;
+
+                Assert(!vm.IsConnecting, "IsConnecting should be false after successful connection.");
+                Assert(vm.IsConnected, "IsConnected should be true after successful connection.");
+                Assert(!vm.IsBusy, "IsBusy should be false after successful connection.");
+
+                // Test cancellation during connection attempt
+                var cancelStarted = new TaskCompletionSource<bool>();
+                var cancelMockService = new MockDatabaseService
+                {
+                    OnTestConnection = async (token) =>
+                    {
+                        cancelStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        return await tcs.Task;
+                    }
+                };
+
+                var cancelVm = new MainViewModel(cancelMockService);
+                var cancelConnectTask = cancelVm.ConnectAsync();
+                await cancelStarted.Task;
+
+                Assert(cancelVm.IsConnecting, "IsConnecting should be true during connection attempt prior to cancel.");
+                cancelVm.CancelCommand.Execute(null);
+                await cancelConnectTask;
+
+                Assert(!cancelVm.IsConnecting, "IsConnecting should be false after cancellation.");
+                Assert(!cancelVm.IsConnected, "IsConnected should be false after cancellation.");
+                Assert(!cancelVm.IsBusy, "IsBusy should be false after cancellation.");
+            });
+
+            RunSyncTest("MainWindowXaml_ConnectionPanel_CancelButton_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+                var btnCancelConnect = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnCancelConnect"));
+
+                Assert(btnCancelConnect != null, "MainWindow.xaml must declare btnCancelConnect button.");
+
+                var parent = btnCancelConnect!.Parent;
+                Assert(parent != null && parent.Name.LocalName == "StackPanel", "btnCancelConnect must be wrapped inside a StackPanel.");
+                Assert(parent!.Attribute("Orientation")?.Value == "Horizontal", "Containing StackPanel for connection controls must have Orientation=\"Horizontal\".");
+
+                var siblingButtons = parent.Elements().Where(e => e.Name.LocalName == "Button").ToList();
+                Assert(siblingButtons.Any(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnConnect")),
+                    "Containing StackPanel must contain both btnConnect and btnCancelConnect.");
+
+                var commandAttr = btnCancelConnect.Attribute("Command")?.Value;
+                Assert(commandAttr != null && commandAttr.Contains("CancelCommand"),
+                    $"btnCancelConnect must bind Command to CancelCommand, got '{commandAttr}'");
+
+                var visibilityAttr = btnCancelConnect.Attribute("Visibility")?.Value;
+                Assert(visibilityAttr != null && visibilityAttr.Contains("IsConnecting"),
+                    $"btnCancelConnect must bind Visibility to IsConnecting, got '{visibilityAttr}'");
+                Assert(visibilityAttr.Contains("BooleanToVisibilityConverter"),
+                    $"btnCancelConnect Visibility binding must use BooleanToVisibilityConverter, got '{visibilityAttr}'");
+
+                var automationName = btnCancelConnect.Attributes().FirstOrDefault(a => a.Name.LocalName == "Name" && a.Name.NamespaceName.Contains("AutomationProperties") || a.Name.ToString().Contains("AutomationProperties.Name"))?.Value;
+                Assert(automationName == "Cancel Connection",
+                    $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
