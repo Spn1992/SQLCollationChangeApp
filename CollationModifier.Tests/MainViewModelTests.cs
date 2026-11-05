@@ -1842,6 +1842,25 @@ namespace CollationModifier.Tests
                 Assert(wasAbortedWithCancellation, "GetServerInitializationDataAsync must abort with OperationCanceledException when cancellation token is cancelled.");
             });
 
+            RunSyncTest("DatabaseService_DefaultBackupDirectoryQuery_ContainsExpectedFallbackSteps", () =>
+            {
+                var field = typeof(DatabaseService).GetField("DefaultBackupDirectoryQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(field != null, "DefaultBackupDirectoryQuery constant not found on DatabaseService.");
+                var query = field!.GetValue(null) as string;
+                Assert(!string.IsNullOrEmpty(query), "DefaultBackupDirectoryQuery should not be null or empty.");
+
+                Assert(query!.Contains("SERVERPROPERTY('InstanceDefaultBackupPath')"),
+                    "DefaultBackupDirectoryQuery should attempt InstanceDefaultBackupPath first.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt secondary registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains("SERVERPROPERTY('InstanceDefaultDataPath')"),
+                    "DefaultBackupDirectoryQuery should fall back to InstanceDefaultDataPath.");
+                Assert(query.Contains("SELECT ISNULL(@path, '') AS DefaultBackupPath;"),
+                    "DefaultBackupDirectoryQuery should return DefaultBackupPath column with fallback to empty string.");
+            });
+
             await RunAsyncTest("ConnectAsync_CallsGetServerInitializationDataAsync_InSingleStep", async () =>
             {
                 var mockService = new MockDatabaseService
