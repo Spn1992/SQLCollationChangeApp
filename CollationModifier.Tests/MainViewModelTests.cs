@@ -1748,6 +1748,27 @@ namespace CollationModifier.Tests
                 Assert(method!.ReturnType == typeof(Task<ServerInitializationData>), "GetServerInitializationDataAsync must return Task<ServerInitializationData>.");
             });
 
+            RunSyncTest("ServerInitializationData_DoesNotExposeObsoletePropertyShims", () =>
+            {
+                var backupDirectoryProp = typeof(ServerInitializationData).GetProperty("BackupDirectory");
+                Assert(backupDirectoryProp == null, "ServerInitializationData must not expose obsolete BackupDirectory property shim.");
+
+                var collationsProp = typeof(ServerInitializationData).GetProperty("Collations");
+                Assert(collationsProp == null, "ServerInitializationData must not expose obsolete Collations property shim.");
+
+                var defaultBackupDirProp = typeof(ServerInitializationData).GetProperty("DefaultBackupDirectory");
+                Assert(defaultBackupDirProp != null, "ServerInitializationData must expose canonical DefaultBackupDirectory property.");
+                Assert(defaultBackupDirProp!.PropertyType == typeof(string), "DefaultBackupDirectory must be of type string.");
+
+                var supportedCollationsProp = typeof(ServerInitializationData).GetProperty("SupportedCollations");
+                Assert(supportedCollationsProp != null, "ServerInitializationData must expose canonical SupportedCollations property.");
+                Assert(supportedCollationsProp!.PropertyType == typeof(List<string>), "SupportedCollations must be of type List<string>.");
+
+                var databasesProp = typeof(ServerInitializationData).GetProperty("Databases");
+                Assert(databasesProp != null, "ServerInitializationData must expose canonical Databases property.");
+                Assert(databasesProp!.PropertyType == typeof(List<DatabaseInfo>), "Databases must be of type List<DatabaseInfo>.");
+            });
+
             await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
             {
                 using var logger = new LoggerService();
