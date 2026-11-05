@@ -1777,7 +1777,14 @@ namespace CollationModifier.Tests
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
                 Assert(content.Contains("Text=\"{Binding StatusMessage}\""), "MainWindow.xaml should contain status message binding");
+                Assert(content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip=\"{Binding StatusToolTip}\"");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml status TextBlock should have AutomationProperties.LiveSetting=\"Polite\"");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var statusTextBlock = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock" && (e.Attribute(xNameAttr)?.Value == "StatusTextBlock" || e.Attribute("Name")?.Value == "StatusTextBlock"));
+                Assert(statusTextBlock != null, "MainWindow.xaml should define StatusTextBlock TextBlock");
+                Assert(statusTextBlock!.Attribute("ToolTip")?.Value == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip=\"{Binding StatusToolTip}\"");
             });
 
             RunSyncTest("AppXaml_ButtonControlTemplates_IncorporateFocusVisualBorderAndTrigger", () =>
