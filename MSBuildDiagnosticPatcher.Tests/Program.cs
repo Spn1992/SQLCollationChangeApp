@@ -32,6 +32,7 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 2. TestExecutionLogParser Tests
             RunTest("TestExecutionLogParser_ParseCustomRunner_ExtractsFailedClassAndAssertion", Test_TestExecutionLogParser_ParseCustomRunner);
             RunTest("TestExecutionLogParser_ParseDotnetTest_ExtractsClassMethodAndError", Test_TestExecutionLogParser_ParseDotnetTest);
+            RunTest("TestExecutionLogParser_ParseDotnetTest_ConsecutiveFailuresWithMultiLineStackTrace", Test_TestExecutionLogParser_ParseDotnetTest_ConsecutiveFailuresWithMultiLineStackTrace);
             RunTest("TestExecutionLogParser_ParseBracketFail_ExtractsFailure", Test_TestExecutionLogParser_ParseBracketFail);
 
             // 3. InterfaceDefinitionResolver Tests
@@ -211,6 +212,84 @@ Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
             Assert(failures[0].TestMethod == "ProcessCollationChangeAsync_UpdatesCollationInMemory", $"Expected method name, got '{failures[0].TestMethod}'");
             Assert(failures[0].AssertionFailureMessage.Contains("Expected status ready"), "Expected error message");
             Assert(failures[0].StackTrace.Contains("at CollationModifier.Tests.MainViewModelTests"), "Expected stack trace");
+        }
+
+        static void Test_TestExecutionLogParser_ParseDotnetTest_ConsecutiveFailuresWithMultiLineStackTrace()
+        {
+            var parser = new TestExecutionLogParser();
+            string failure1 = @"Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
+  Error Message:
+   Assertion Failed: Expected status ready
+  Stack Trace:
+   at CollationModifier.Tests.MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory() in /app/Tests.cs:line 80
+   at CollationModifier.Tests.MainViewModelTests.RunAsync() in /app/Tests.cs:line 120
+   at System.Threading.Tasks.Task.Execute() in /runtime/Task.cs:line 450";
+
+            string failure2 = @"Failed DatabaseServiceTests.AlterCollationAsync [60 ms]
+  Error Message:
+   Assertion Failed: Database was not put in SINGLE_USER mode
+  Stack Trace:
+   at CollationModifier.Tests.DatabaseServiceTests.AlterCollationAsync() in /app/DbTests.cs:line 150
+   at CollationModifier.Tests.DatabaseServiceTests.RunAsync() in /app/DbTests.cs:line 200";
+
+            string log = $@"
+Starting test execution, please wait...
+{failure1}
+{failure2}
+Passed MainViewModelTests.TestConnectionAsync [12 ms]
+
+Total tests: 3. Passed: 1. Failed: 2. Skipped: 0.
+";
+
+            // Parse consecutive failures together
+            var failures = parser.ParseText(log);
+            Assert(failures.Count == 2, $"Expected 2 failures, got {failures.Count}");
+
+            // Parse individual failures in isolation
+            var singleFailure1 = parser.ParseText(failure1);
+            var singleFailure2 = parser.ParseText(failure2);
+            Assert(singleFailure1.Count == 1, "Expected single failure 1 to parse.");
+            Assert(singleFailure2.Count == 1, "Expected single failure 2 to parse.");
+
+            // Verify first failure properties and multi-line stack trace
+            Assert(failures[0].TestClass == "MainViewModelTests", $"Expected MainViewModelTests, got '{failures[0].TestClass}'");
+            Assert(failures[0].TestMethod == "ProcessCollationChangeAsync_UpdatesCollationInMemory", $"Expected method name, got '{failures[0].TestMethod}'");
+            Assert(failures[0].AssertionFailureMessage.Contains("Expected status ready"), "Expected error message for failure 1");
+            Assert(failures[0].StackTrace.Contains("ProcessCollationChangeAsync_UpdatesCollationInMemory") &&
+                   failures[0].StackTrace.Contains("RunAsync") &&
+                   failures[0].StackTrace.Contains("Task.Execute"),
+                   "Expected multi-line stack trace with all 3 frames for failure 1");
+
+            // Verify second failure properties and multi-line stack trace
+            Assert(failures[1].TestClass == "DatabaseServiceTests", $"Expected DatabaseServiceTests, got '{failures[1].TestClass}'");
+            Assert(failures[1].TestMethod == "AlterCollationAsync", $"Expected AlterCollationAsync, got '{failures[1].TestMethod}'");
+            Assert(failures[1].AssertionFailureMessage.Contains("Database was not put in SINGLE_USER mode"), "Expected error message for failure 2");
+            Assert(failures[1].StackTrace.Contains("AlterCollationAsync") &&
+                   failures[1].StackTrace.Contains("RunAsync"),
+                   "Expected multi-line stack trace with all frames for failure 2");
+
+            // Assert that the parser extracts identical TestFailure fields for consecutive dotnet test failures vs isolated parsing
+            Assert(failures[0].TestClass == singleFailure1[0].TestClass, "TestClass must be identical");
+            Assert(failures[0].TestMethod == singleFailure1[0].TestMethod, "TestMethod must be identical");
+            Assert(failures[0].AssertionFailureMessage == singleFailure1[0].AssertionFailureMessage, "AssertionFailureMessage must be identical");
+            Assert(failures[0].StackTrace == singleFailure1[0].StackTrace, "StackTrace must be identical");
+            Assert(failures[0].RawLine == singleFailure1[0].RawLine, "RawLine must be identical");
+
+            Assert(failures[1].TestClass == singleFailure2[0].TestClass, "TestClass must be identical");
+            Assert(failures[1].TestMethod == singleFailure2[0].TestMethod, "TestMethod must be identical");
+            Assert(failures[1].AssertionFailureMessage == singleFailure2[0].AssertionFailureMessage, "AssertionFailureMessage must be identical");
+            Assert(failures[1].StackTrace == singleFailure2[0].StackTrace, "StackTrace must be identical");
+            Assert(failures[1].RawLine == singleFailure2[0].RawLine, "RawLine must be identical");
+
+            // Also test identical consecutive failures to verify field equivalence across consecutive identical failures
+            string identicalLog = $"{failure1}\n{failure1}";
+            var identicalFailures = parser.ParseText(identicalLog);
+            Assert(identicalFailures.Count == 2, $"Expected 2 failures, got {identicalFailures.Count}");
+            Assert(identicalFailures[0].TestClass == identicalFailures[1].TestClass, "Consecutive identical failures must have identical TestClass");
+            Assert(identicalFailures[0].TestMethod == identicalFailures[1].TestMethod, "Consecutive identical failures must have identical TestMethod");
+            Assert(identicalFailures[0].AssertionFailureMessage == identicalFailures[1].AssertionFailureMessage, "Consecutive identical failures must have identical AssertionFailureMessage");
+            Assert(identicalFailures[0].StackTrace == identicalFailures[1].StackTrace, "Consecutive identical failures must have identical StackTrace");
+            Assert(identicalFailures[0].RawLine == identicalFailures[1].RawLine, "Consecutive identical failures must have identical RawLine");
         }
 
         static void Test_TestExecutionLogParser_ParseBracketFail()
