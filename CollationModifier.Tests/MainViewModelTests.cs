@@ -1993,6 +1993,46 @@ namespace CollationModifier.Tests
                 Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_ResetsProgressAndEnablesIndeterminate_DuringAlterCollation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "AlterProgressDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                int capturedProgressPercent = -1;
+                bool? capturedIsIndeterminate = null;
+                string? capturedStatusMessage = null;
+
+                MainViewModel? vm = null;
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    BackupProgressSimulator = progress =>
+                    {
+                        // Simulate backup finishing at 100%, which turns off indeterminate mode
+                        progress?.Report(100);
+                    },
+                    OnAlterCollation = async ct =>
+                    {
+                        capturedProgressPercent = vm!.ProgressPercent;
+                        capturedIsIndeterminate = vm.IsIndeterminateProgress;
+                        capturedStatusMessage = vm.StatusMessage;
+                        await Task.CompletedTask;
+                    }
+                };
+
+                vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(capturedProgressPercent == 0, $"Expected ProgressPercent to be 0 during AlterCollationAsync, but was {capturedProgressPercent}");
+                Assert(capturedIsIndeterminate == true, $"Expected IsIndeterminateProgress to be true during AlterCollationAsync, but was {capturedIsIndeterminate}");
+                Assert(capturedStatusMessage != null && capturedStatusMessage.Contains("Altering database collation"), $"Expected status message during AlterCollationAsync to indicate collation alteration, got '{capturedStatusMessage}'");
+                Assert(vm.ProgressPercent == 0, $"Expected ProgressPercent to reset to 0 after completion, got {vm.ProgressPercent}");
+                Assert(vm.IsIndeterminateProgress == true, $"Expected IsIndeterminateProgress to reset to true after completion, got {vm.IsIndeterminateProgress}");
+            });
+
             RunSyncTest("ErrorFormattingHelper_IsSingleUserLockState_Detection", () =>
             {
                 Assert(!ErrorFormattingHelper.IsSingleUserLockState(null), "Null exception should not be detected as lock state.");
