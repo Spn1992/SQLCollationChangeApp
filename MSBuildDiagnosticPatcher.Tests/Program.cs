@@ -29,6 +29,12 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_HandlesAnsiEscapes", Test_MSBuildLogParser_ParseLine_HandlesAnsiEscapes);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
 
+            // 1.5 AnsiCleaner Tests
+            RunTest("AnsiCleaner_Clean_HandlesNullAndEmpty", Test_AnsiCleaner_Clean_HandlesNullAndEmpty);
+            RunTest("AnsiCleaner_Clean_RemovesColorCodes", Test_AnsiCleaner_Clean_RemovesColorCodes);
+            RunTest("AnsiCleaner_Clean_RemovesCursorMovementCodes", Test_AnsiCleaner_Clean_RemovesCursorMovementCodes);
+            RunTest("AnsiCleaner_Clean_PreservesRegularLogTextAndPunctuation", Test_AnsiCleaner_Clean_PreservesRegularLogTextAndPunctuation);
+
             // 2. TestExecutionLogParser Tests
             RunTest("TestExecutionLogParser_ParseCustomRunner_ExtractsFailedClassAndAssertion", Test_TestExecutionLogParser_ParseCustomRunner);
             RunTest("TestExecutionLogParser_ParseDotnetTest_ExtractsClassMethodAndError", Test_TestExecutionLogParser_ParseDotnetTest);
@@ -169,6 +175,79 @@ namespace MSBuildDiagnosticPatcher.Tests
             Console.WriteLine($"    Parsed 20,000 lines in {sw.ElapsedMilliseconds} ms (Extracted {parsed.Count} diagnostics).");
             Assert(sw.Elapsed.TotalSeconds < 10.0, $"Expected parse duration under 10 seconds, got {sw.Elapsed.TotalSeconds:F2} seconds.");
             Assert(parsed.Count == 1200, $"Expected 1200 diagnostics, got {parsed.Count}.");
+        }
+
+        // 1.5 AnsiCleaner Tests
+        static void Test_AnsiCleaner_Clean_HandlesNullAndEmpty()
+        {
+            Assert(AnsiCleaner.Clean(null) == string.Empty, "Expected empty string for null input.");
+            Assert(AnsiCleaner.Sanitize(null) == string.Empty, "Expected empty string for null input using Sanitize.");
+            Assert(AnsiCleaner.Clean(string.Empty) == string.Empty, "Expected empty string for empty input.");
+            Assert(AnsiCleaner.Sanitize(string.Empty) == string.Empty, "Expected empty string for empty input using Sanitize.");
+            Assert(AnsiCleaner.Clean("   ") == string.Empty, "Expected empty string for whitespace input.");
+            Assert(AnsiCleaner.Clean("\t\r\n") == string.Empty, "Expected empty string for tab/newline input.");
+            Assert(AnsiCleaner.Clean("\u001b[0m") == string.Empty, "Expected empty string for escape-only input.");
+            Assert(AnsiCleaner.Clean("   \u001b[31m\u001b[0m   ") == string.Empty, "Expected empty string for escaped whitespace input.");
+        }
+
+        static void Test_AnsiCleaner_Clean_RemovesColorCodes()
+        {
+            // Standard 16-color codes & reset
+            string basicColor = "\u001b[31mError message\u001b[0m";
+            Assert(AnsiCleaner.Clean(basicColor) == "Error message", "Failed standard 16-color stripping.");
+
+            // Bold & bright foreground/background combinations
+            string boldColored = "\u001b[1;32;40mBuild: 1 succeeded, 0 failed\u001b[0m";
+            Assert(AnsiCleaner.Clean(boldColored) == "Build: 1 succeeded, 0 failed", "Failed multi-attribute SGR stripping.");
+
+            // 256-color palette sequence: ESC[38;5;<n>m
+            string color256 = "\u001b[38;5;196mHigh-intensity red warning\u001b[0m";
+            Assert(AnsiCleaner.Clean(color256) == "High-intensity red warning", "Failed 256-color sequence stripping.");
+
+            // 24-bit TrueColor RGB sequence: ESC[38;2;<r>;<g>;<b>m
+            string rgbColor = "\u001b[38;2;255;128;0mOrange TrueColor output\u001b[0m";
+            Assert(AnsiCleaner.Clean(rgbColor) == "Orange TrueColor output", "Failed TrueColor RGB sequence stripping.");
+
+            // Multiple chained style sequences
+            string chained = "\u001b[1m\u001b[4m\u001b[33mUnderlined Bold Yellow Warning\u001b[0m";
+            Assert(AnsiCleaner.Clean(chained) == "Underlined Bold Yellow Warning", "Failed chained style sequence stripping.");
+        }
+
+        static void Test_AnsiCleaner_Clean_RemovesCursorMovementCodes()
+        {
+            // Cursor Up (A), Down (B), Forward (C), Back (D)
+            string cursorRelative = "\u001b[2A\u001b[10CProcessing line...\u001b[3B\u001b[4D";
+            Assert(AnsiCleaner.Clean(cursorRelative) == "Processing line...", "Failed cursor movement (A,B,C,D) stripping.");
+
+            // Cursor Position: ESC[<row>;<col>H and ESC[<row>;<col>f
+            string cursorAbsolute = "\u001b[12;34HCoordinates line";
+            Assert(AnsiCleaner.Clean(cursorAbsolute) == "Coordinates line", "Failed cursor position (H) stripping.");
+            string cursorHome = "\u001b[;fHome positioned text";
+            Assert(AnsiCleaner.Clean(cursorHome) == "Home positioned text", "Failed cursor home (f) stripping.");
+
+            // Erase in Display (J) and Erase in Line (K)
+            string eraseControls = "\u001b[2J\u001b[KCleared screen line text";
+            Assert(AnsiCleaner.Clean(eraseControls) == "Cleared screen line text", "Failed erase controls (J, K) stripping.");
+
+            // Device / cursor control private modes: ESC[?25h and ESC[?25l
+            string privateModes = "\u001b[?25hLog status: Ready\u001b[?25l";
+            Assert(AnsiCleaner.Clean(privateModes) == "Log status: Ready", "Failed private mode escape sequence stripping.");
+        }
+
+        static void Test_AnsiCleaner_Clean_PreservesRegularLogTextAndPunctuation()
+        {
+            // Plain text without ANSI escapes
+            string plainText = "  CollationModifier.Tests.Program: Passed  ";
+            Assert(AnsiCleaner.Clean(plainText) == "CollationModifier.Tests.Program: Passed", "Failed plain text whitespace trimming.");
+
+            // Complex log line with parentheses, commas, colons, brackets, backslashes
+            string complexLog = "C:\\src\\Project\\Services\\DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface [C:\\src\\Project.csproj]";
+            Assert(AnsiCleaner.Clean(complexLog) == complexLog, "Corrupted standard log line structure without escapes.");
+
+            // Mixed ANSI escape in the middle of log line
+            string mixedLog = "Services/DatabaseService.cs(11,36): \u001b[31;1merror CS0535\u001b[0m: 'DatabaseService' does not implement interface member";
+            string expectedClean = "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member";
+            Assert(AnsiCleaner.Clean(mixedLog) == expectedClean, "Failed inline ANSI escape sequence removal in log line.");
         }
 
         // 2. TestExecutionLogParser Tests
