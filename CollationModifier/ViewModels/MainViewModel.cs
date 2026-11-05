@@ -619,6 +619,8 @@ namespace CollationModifier.ViewModels
 
                 // 3. Execution Phase
                 StatusMessage = "Altering database collation... This may take a while.";
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 StatusMessage = "Collation changed successfully!";
