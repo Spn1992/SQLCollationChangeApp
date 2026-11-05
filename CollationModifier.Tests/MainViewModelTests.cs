@@ -1019,6 +1019,107 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesRestoreFailure_WhenRestoreThrowsDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelRestoreFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = new InvalidOperationException("Restore disk I/O error occurred."),
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have been called.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called.");
+                Assert(vm.StatusMessage.Contains("CRITICAL: Auto-restore also failed"), $"Expected auto-restore failure message in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Restore disk I/O error occurred"), $"Expected restore error details in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip != null && vm.StatusToolTip.Contains("CRITICAL: Auto-restore also failed"), "StatusToolTip should contain restore error diagnostics.");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true to activate error details dialog.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Restore disk I/O error occurred"), "DetailedError should contain restore error details.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesSingleUserLockWarning_WhenResetThrowsDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelResetFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = null,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have succeeded.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been attempted.");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Expected SINGLE_USER lock warning in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Expected reset failure details in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true when single-user reset fails during cancellation.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Connection reset failed"), "DetailedError should contain reset failure details.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesAggregatedErrors_WhenBothRestoreAndResetFailDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelBothFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = new InvalidOperationException("Restore disk I/O error occurred."),
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have been attempted.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been attempted.");
+                Assert(vm.StatusMessage.Contains("CRITICAL: Auto-restore also failed"), $"Expected auto-restore failure message in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Expected lock warning in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true when both restore and reset fail.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Restore disk I/O error occurred"), "DetailedError should contain restore error details.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Connection reset failed"), "DetailedError should contain reset error details.");
+            });
+
             await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ExecutesWithoutCancellation_WhenTokenIsCancelled", async () =>
             {
                 using var logger = new LoggerService();
