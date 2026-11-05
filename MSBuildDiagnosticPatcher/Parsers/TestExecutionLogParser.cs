@@ -113,6 +113,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
                         StackTrace = stackTrace,
                         RawLine = rawLine
                     });
+                    i = j - 1;
                     continue;
                 }
 

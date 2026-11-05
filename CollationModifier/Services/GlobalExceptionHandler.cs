@@ -38,10 +38,7 @@ namespace CollationModifier.Services
 
             if (ex is OutOfMemoryException
                 || ex is StackOverflowException
-                || ex is AccessViolationException
-                || ex is AppDomainUnloadedException
-                || ex is ThreadAbortException
-                || ex.GetType().FullName == "System.ExecutionEngineException")
+                || ex is AccessViolationException)
             {
                 return true;
             }

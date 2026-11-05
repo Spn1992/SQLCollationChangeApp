@@ -24,6 +24,21 @@ namespace MSBuildDiagnosticPatcher.Patcher
             @"^'(?<class>[^']+)'\s+does not implement interface member\s+'(?<interface>[^.]+)\.(?<member>[^'(]+)(?:\((?<params>.*)\))?'",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+        private readonly object _cacheLock = new object();
+        private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string?> _rootSearchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _fileContentCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        public void ClearCache()
+        {
+            lock (_cacheLock)
+            {
+                _filePathCache.Clear();
+                _rootSearchCache.Clear();
+                _fileContentCache.Clear();
+            }
+        }
+
         public static (string ClassName, string InterfaceName, string MemberName, string ExpectedParamTypes)? ParseCs0535Message(string message)
         {
             var match = Cs0535Regex.Match(message.Trim());
@@ -48,13 +63,18 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string? projectRoot = null)
         {
             string? interfaceFile = FindInterfaceFile(interfaceName, contextFilePath, projectRoot);
-            if (interfaceFile == null || !File.Exists(interfaceFile))
+            if (interfaceFile == null)
             {
                 // Fallback: construct signature directly from diagnostic error if interface file not found
                 return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes);
             }
 
-            string content = File.ReadAllText(interfaceFile);
+            string? content = GetOrReadFileContent(interfaceFile);
+            if (content == null)
+            {
+                return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
+            }
+
             var memberInfo = ExtractMemberFromInterfaceSource(content, interfaceName, memberName, expectedParamTypes);
             if (memberInfo != null)
             {
@@ -65,7 +85,53 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
         }
 
+        private string? GetOrReadFileContent(string filePath)
+        {
+            lock (_cacheLock)
+            {
+                if (_fileContentCache.TryGetValue(filePath, out var content))
+                {
+                    return content;
+                }
+            }
+
+            if (!File.Exists(filePath))
+            {
+                return null;
+            }
+
+            string diskContent = File.ReadAllText(filePath);
+            lock (_cacheLock)
+            {
+                _fileContentCache[filePath] = diskContent;
+            }
+            return diskContent;
+        }
+
         public string? FindInterfaceFile(string interfaceName, string contextFilePath, string? projectRoot)
+        {
+            string root = string.IsNullOrWhiteSpace(projectRoot) ? Directory.GetCurrentDirectory() : projectRoot;
+            string cacheKey = $"{interfaceName}|{contextFilePath}|{root}";
+
+            lock (_cacheLock)
+            {
+                if (_filePathCache.TryGetValue(cacheKey, out var cachedPath))
+                {
+                    return cachedPath;
+                }
+            }
+
+            string? resolvedPath = ResolveInterfaceFilePathInternal(interfaceName, contextFilePath, root);
+
+            lock (_cacheLock)
+            {
+                _filePathCache[cacheKey] = resolvedPath;
+            }
+
+            return resolvedPath;
+        }
+
+        private string? ResolveInterfaceFilePathInternal(string interfaceName, string contextFilePath, string root)
         {
             string fileName = $"{interfaceName}.cs";
 
@@ -90,13 +156,22 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             // 3. Search under project root
-            string root = string.IsNullOrWhiteSpace(projectRoot) ? Directory.GetCurrentDirectory() : projectRoot;
+            string rootSearchKey = $"{fileName}|{root}";
+            lock (_cacheLock)
+            {
+                if (_rootSearchCache.TryGetValue(rootSearchKey, out var cachedRootPath))
+                {
+                    return cachedRootPath;
+                }
+            }
+
+            string? foundRootPath = null;
             try
             {
                 var files = Directory.GetFiles(root, fileName, SearchOption.AllDirectories);
                 if (files.Length > 0)
                 {
-                    return files[0];
+                    foundRootPath = files[0];
                 }
             }
             catch
@@ -104,7 +179,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 // Ignore search permission exceptions
             }
 
-            return null;
+            lock (_cacheLock)
+            {
+                _rootSearchCache[rootSearchKey] = foundRootPath;
+            }
+
+            return foundRootPath;
         }
 
         public InterfaceMemberInfo? ExtractMemberFromInterfaceSource(
@@ -118,8 +198,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             // Pattern for method declaration in interface:
             // e.g.: Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default);
             var methodRegex = new Regex(
-                $@"(?<return>[\w\<\>\?,\.\s]+?)\s+{Regex.Escape(memberName)}\s*\((?<params>[^)]*)\)\s*;",
-                RegexOptions.Compiled);
+                $@"(?<return>[\w\<\>\?,\.\s]+?)\s+{Regex.Escape(memberName)}\s*\((?<params>[^)]*)\)\s*;");
 
             var matches = methodRegex.Matches(searchBody);
             InterfaceMemberInfo? bestMatch = null;
@@ -156,8 +235,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             // Pattern for property declaration in interface:
             // e.g.: string ConnectionString { get; set; }
             var propRegex = new Regex(
-                $@"(?<return>[\w\<\>\?,\.\s]+?)\s+{Regex.Escape(memberName)}\s*\{{\s*(?<access>[^}}]*)\s*\}}",
-                RegexOptions.Compiled);
+                $@"(?<return>[\w\<\>\?,\.\s]+?)\s+{Regex.Escape(memberName)}\s*\{{\s*(?<access>[^}}]*)\s*\}}");
 
             var propMatch = propRegex.Match(searchBody);
             if (propMatch.Success)
