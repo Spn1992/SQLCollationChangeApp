@@ -148,8 +148,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             // Look for existing method in class with the same name:
             // e.g. BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
             var pattern = new Regex(
-                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^)]*)\)",
-                RegexOptions.Compiled);
+                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^)]*)\)");
 
             var matches = pattern.Matches(classSource);
             var myParamNames = ExtractParameterNames(member.ParameterList);

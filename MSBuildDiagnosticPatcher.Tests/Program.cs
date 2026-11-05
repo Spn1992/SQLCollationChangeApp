@@ -45,12 +45,16 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("InterfaceDefinitionResolver_ParseCs0535Message_ExtractsComponents", Test_InterfaceDefinitionResolver_ParseCs0535Message);
             RunTest("InterfaceDefinitionResolver_ExtractMemberFromInterfaceSource_FindsMethod", Test_InterfaceDefinitionResolver_ExtractMemberFromInterfaceSource);
             RunTest("InterfaceDefinitionResolver_ExtractMemberFromInterfaceSource_FindsProperty", Test_InterfaceDefinitionResolver_ExtractProperty);
+            RunTest("InterfaceDefinitionResolver_Caching_ReadsFileOnce", Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce);
+            RunTest("InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches", Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches);
+            RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache);
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesToExistingOverload", Test_PatchGenerator_GenerateMemberStub_Delegates);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
+            RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -452,6 +456,121 @@ public interface IConfigService
             Assert(member.HasGetter && member.HasSetter, "Expected getter and setter");
         }
 
+        static void Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "ICacheDemoService.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface ICacheDemoService
+{
+    string MethodA(string input);
+    int MethodB(int count);
+}
+");
+                string contextFile = Path.Combine(tempDir, "CacheDemoService.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                // First resolution: reads file from disk and populates caches
+                var memberA = resolver.ResolveInterfaceMember("ICacheDemoService", "MethodA", "string", contextFile, tempDir);
+                Assert(memberA != null, "Expected MethodA to be resolved.");
+                Assert(memberA!.ReturnType == "string", "Expected return type string for MethodA.");
+
+                // Now delete the interface file from disk!
+                File.Delete(ifaceFile);
+                Assert(!File.Exists(ifaceFile), "Interface file should be deleted.");
+
+                // Second resolution for different member of same interface: should succeed from cached content without reading disk
+                var memberB = resolver.ResolveInterfaceMember("ICacheDemoService", "MethodB", "int", contextFile, tempDir);
+                Assert(memberB != null, "Expected MethodB to be resolved from in-memory cache even though file was deleted from disk.");
+                Assert(memberB!.ReturnType == "int", "Expected return type int for MethodB from cache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"neg_cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string contextFile = Path.Combine(tempDir, "SampleClass.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                // 1. Initial lookup for non-existent interface returns null and caches negative lookup
+                string? missing = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
+                Assert(missing == null, "Expected null for non-existent interface.");
+
+                // 2. Create the file on disk after negative lookup
+                string lateFile = Path.Combine(tempDir, "IMissingInterface.cs");
+                File.WriteAllText(lateFile, "public interface IMissingInterface { }");
+
+                // 3. Repeated lookup returns cached null, preventing repeated disk scans
+                string? cachedResult = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
+                Assert(cachedResult == null, "Expected negative cache hit returning null even after file was created.");
+
+                // 4. Calling ClearCache invalidates cache and allows discovering the newly created file
+                resolver.ClearCache();
+                string? refreshedResult = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
+                Assert(refreshedResult != null, "Expected non-null after ClearCache re-scans disk.");
+                Assert(Path.GetFullPath(refreshedResult!) == Path.GetFullPath(lateFile), "Expected resolved path to match created file.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"clear_cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IMutableInterface.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface IMutableInterface
+{
+    string GetValue();
+}
+");
+                string contextFile = Path.Combine(tempDir, "MutableClass.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                // 1. Resolve initial version
+                var member1 = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
+                Assert(member1 != null && member1.ReturnType == "string", "Expected initial return type string.");
+
+                // 2. Overwrite file with new signature
+                File.WriteAllText(ifaceFile, @"
+public interface IMutableInterface
+{
+    int GetValue();
+}
+");
+                // 3. Without ClearCache, cached content returns 'string'
+                var memberCached = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
+                Assert(memberCached != null && memberCached.ReturnType == "string", "Expected cached return type 'string' prior to ClearCache.");
+
+                // 4. After ClearCache, disk content is re-read and returns 'int'
+                resolver.ClearCache();
+                var memberRefreshed = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
+                Assert(memberRefreshed != null && memberRefreshed.ReturnType == "int", "Expected refreshed return type 'int' after ClearCache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
         // 4. PatchGenerator Tests
         static void Test_PatchGenerator_FindClassInsertionPoint()
         {
@@ -527,6 +646,80 @@ public class EmptyService : ISampleService
             Assert(diff.Contains("--- a/Test.cs"), "Expected --- header");
             Assert(diff.Contains("+++ b/Test.cs"), "Expected +++ header");
             Assert(diff.Contains("+line 2.5 added"), "Expected + line");
+        }
+
+        static void Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"patch_cache_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "ISqlWorker.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface ISqlWorker
+{
+    Task<string> ExecuteJobAsync(string jobName, CancellationToken cancellationToken = default);
+    Task ClearStateAsync();
+}
+");
+                string classFile = Path.Combine(tempDir, "SqlWorker.cs");
+                File.WriteAllText(classFile, @"
+public class SqlWorker : ISqlWorker
+{
+    public virtual async Task<string> ExecuteJobAsync(string jobName, int retryCount = 3, CancellationToken cancellationToken = default)
+    {
+        return ""done"";
+    }
+}
+");
+                // Diagnostics for two missing members on the same class
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'SqlWorker' does not implement interface member 'ISqlWorker.ExecuteJobAsync(string, CancellationToken)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'SqlWorker' does not implement interface member 'ISqlWorker.ClearStateAsync()'"
+                    }
+                };
+
+                var resolver = new InterfaceDefinitionResolver();
+                var generator = new PatchGenerator(resolver);
+
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches.Count == 1, $"Expected 1 patch file, got {patches.Count}");
+
+                string diff = patches[0].UnifiedDiff;
+                // Verify interpreted regex correctly matched the overload and delegated
+                Assert(diff.Contains("return ExecuteJobAsync(jobName, null, cancellationToken);"),
+                    $"Expected delegation call in diff, got:\n{diff}");
+                // Verify missing method without overload generates NotImplementedException
+                Assert(diff.Contains("throw new NotImplementedException();"),
+                    $"Expected NotImplementedException in diff, got:\n{diff}");
+
+                // Delete the interface file from disk to verify second run uses cached content
+                File.Delete(ifaceFile);
+                var patches2 = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches2.Count == 1, "Expected patch generation to succeed from cache after file deletion.");
+                Assert(patches2[0].UnifiedDiff == diff, "Expected identical diff output from cache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
         }
 
         // 5. PatchApplicator Tests
