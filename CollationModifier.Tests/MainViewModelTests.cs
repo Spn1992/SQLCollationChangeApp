@@ -1504,10 +1504,71 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Style TargetType=\"Button\">"), "App.xaml should define implicit TargetType=\"Button\" style");
                 Assert(content.Contains("<Setter Property=\"FocusVisualStyle\" Value=\"{StaticResource FocusVisualStyle}\" />"), "App.xaml should apply FocusVisualStyle across implicit control styles");
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
+                Assert(content.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
                 Assert(content.Contains("#047857"), "App.xaml should define PrimaryButton background with #047857");
                 Assert(content.Contains("#1D4ED8"), "App.xaml should define SecondaryButton background with #1D4ED8");
                 Assert(!content.Contains("#10B981"), "App.xaml should not contain non-compliant color #10B981");
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_CopyStatus_UsesAccessibleStatusSuccessBrush", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string appContent = System.IO.File.ReadAllText(appXamlPath);
+                Assert(appContent.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
+
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string errorDetailsContent = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(errorDetailsContent);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+                var copiedStatusTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "lblCopiedStatus"));
+
+                Assert(copiedStatusTb != null, "ErrorDetailsWindow.xaml must contain lblCopiedStatus TextBlock");
+                Assert(copiedStatusTb!.Attribute("Foreground")?.Value == "{StaticResource StatusSuccessBrush}",
+                    "lblCopiedStatus should bind Foreground to {StaticResource StatusSuccessBrush}");
+                Assert(!errorDetailsContent.Contains("#16A34A"),
+                    "ErrorDetailsWindow.xaml must not contain non-compliant hardcoded color #16A34A");
+
+                // Verify relative luminance and contrast ratio calculation for #047857 vs #F8FAFC window background (WCAG 2.2 SC 1.4.3 >= 4.5:1)
+                double sR1 = 4.0 / 255.0;
+                double sG1 = 120.0 / 255.0;
+                double sB1 = 87.0 / 255.0;
+                double rLin1 = sR1 <= 0.04045 ? sR1 / 12.92 : Math.Pow((sR1 + 0.055) / 1.055, 2.4);
+                double gLin1 = sG1 <= 0.04045 ? sG1 / 12.92 : Math.Pow((sG1 + 0.055) / 1.055, 2.4);
+                double bLin1 = sB1 <= 0.04045 ? sB1 / 12.92 : Math.Pow((sB1 + 0.055) / 1.055, 2.4);
+                double lumFg = 0.2126 * rLin1 + 0.7152 * gLin1 + 0.0722 * bLin1;
+
+                double sR2 = 248.0 / 255.0;
+                double sG2 = 250.0 / 255.0;
+                double sB2 = 252.0 / 255.0;
+                double rLin2 = sR2 <= 0.04045 ? sR2 / 12.92 : Math.Pow((sR2 + 0.055) / 1.055, 2.4);
+                double gLin2 = sG2 <= 0.04045 ? sG2 / 12.92 : Math.Pow((sG2 + 0.055) / 1.055, 2.4);
+                double bLin2 = sB2 <= 0.04045 ? sB2 / 12.92 : Math.Pow((sB2 + 0.055) / 1.055, 2.4);
+                double lumBg = 0.2126 * rLin2 + 0.7152 * gLin2 + 0.0722 * bLin2;
+
+                double contrastRatio = (lumBg + 0.05) / (lumFg + 0.05);
+                Assert(contrastRatio >= 4.5, $"Contrast ratio {contrastRatio:F2}:1 against window background #F8FAFC must meet or exceed 4.5:1 under WCAG 2.2 1.4.3");
             });
 
             RunSyncTest("AppXaml_InputRestingBorderBrush_HighContrastConfiguration", () =>
@@ -1724,7 +1785,14 @@ namespace CollationModifier.Tests
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
                 Assert(content.Contains("Text=\"{Binding StatusMessage}\""), "MainWindow.xaml should contain status message binding");
+                Assert(content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip=\"{Binding StatusToolTip}\"");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml status TextBlock should have AutomationProperties.LiveSetting=\"Polite\"");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var statusTextBlock = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock" && (e.Attribute(xNameAttr)?.Value == "StatusTextBlock" || e.Attribute("Name")?.Value == "StatusTextBlock"));
+                Assert(statusTextBlock != null, "MainWindow.xaml should define StatusTextBlock TextBlock");
+                Assert(statusTextBlock!.Attribute("ToolTip")?.Value == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip=\"{Binding StatusToolTip}\"");
             });
 
             RunSyncTest("AppXaml_ButtonControlTemplates_IncorporateFocusVisualBorderAndTrigger", () =>
@@ -1756,6 +1824,27 @@ namespace CollationModifier.Tests
                 Assert(method!.ReturnType == typeof(Task<ServerInitializationData>), "GetServerInitializationDataAsync must return Task<ServerInitializationData>.");
             });
 
+            RunSyncTest("ServerInitializationData_DoesNotExposeObsoletePropertyShims", () =>
+            {
+                var backupDirectoryProp = typeof(ServerInitializationData).GetProperty("BackupDirectory");
+                Assert(backupDirectoryProp == null, "ServerInitializationData must not expose obsolete BackupDirectory property shim.");
+
+                var collationsProp = typeof(ServerInitializationData).GetProperty("Collations");
+                Assert(collationsProp == null, "ServerInitializationData must not expose obsolete Collations property shim.");
+
+                var defaultBackupDirProp = typeof(ServerInitializationData).GetProperty("DefaultBackupDirectory");
+                Assert(defaultBackupDirProp != null, "ServerInitializationData must expose canonical DefaultBackupDirectory property.");
+                Assert(defaultBackupDirProp!.PropertyType == typeof(string), "DefaultBackupDirectory must be of type string.");
+
+                var supportedCollationsProp = typeof(ServerInitializationData).GetProperty("SupportedCollations");
+                Assert(supportedCollationsProp != null, "ServerInitializationData must expose canonical SupportedCollations property.");
+                Assert(supportedCollationsProp!.PropertyType == typeof(List<string>), "SupportedCollations must be of type List<string>.");
+
+                var databasesProp = typeof(ServerInitializationData).GetProperty("Databases");
+                Assert(databasesProp != null, "ServerInitializationData must expose canonical Databases property.");
+                Assert(databasesProp!.PropertyType == typeof(List<DatabaseInfo>), "Databases must be of type List<DatabaseInfo>.");
+            });
+
             await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
             {
                 using var logger = new LoggerService();
@@ -1780,6 +1869,25 @@ namespace CollationModifier.Tests
                 }
 
                 Assert(wasAbortedWithCancellation, "GetServerInitializationDataAsync must abort with OperationCanceledException when cancellation token is cancelled.");
+            });
+
+            RunSyncTest("DatabaseService_DefaultBackupDirectoryQuery_ContainsExpectedFallbackSteps", () =>
+            {
+                var field = typeof(DatabaseService).GetField("DefaultBackupDirectoryQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(field != null, "DefaultBackupDirectoryQuery constant not found on DatabaseService.");
+                var query = field!.GetValue(null) as string;
+                Assert(!string.IsNullOrEmpty(query), "DefaultBackupDirectoryQuery should not be null or empty.");
+
+                Assert(query!.Contains("SERVERPROPERTY('InstanceDefaultBackupPath')"),
+                    "DefaultBackupDirectoryQuery should attempt InstanceDefaultBackupPath first.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt secondary registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains("SERVERPROPERTY('InstanceDefaultDataPath')"),
+                    "DefaultBackupDirectoryQuery should fall back to InstanceDefaultDataPath.");
+                Assert(query.Contains("SELECT ISNULL(@path, '') AS DefaultBackupPath;"),
+                    "DefaultBackupDirectoryQuery should return DefaultBackupPath column with fallback to empty string.");
             });
 
             await RunAsyncTest("ConnectAsync_CallsGetServerInitializationDataAsync_InSingleStep", async () =>
@@ -2407,6 +2515,33 @@ namespace CollationModifier.Tests
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
+            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_UsesInputRestingBorderBrush", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBoxes = doc.Descendants().Where(e => e.Name.LocalName == "TextBox").ToList();
+
+                var errorDetailsTb = textBoxes.FirstOrDefault(tb =>
+                    tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "txtErrorDetails" ||
+                    tb.Attribute("Name")?.Value == "txtErrorDetails");
+                Assert(errorDetailsTb != null, "ErrorDetailsWindow.xaml must contain txtErrorDetails TextBox");
+                Assert(errorDetailsTb!.Attribute("BorderBrush")?.Value == "{StaticResource InputRestingBorderBrush}",
+                    "txtErrorDetails must set BorderBrush to '{StaticResource InputRestingBorderBrush}' to satisfy WCAG 2.2 non-text contrast requirements");
+                Assert(!content.Contains("BorderBrush=\"#CBD5E1\""),
+                    "ErrorDetailsWindow.xaml must not use hardcoded low-contrast '#CBD5E1' border brush");
+            });
+
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
@@ -2673,6 +2808,89 @@ namespace CollationModifier.Tests
                 Assert(mockService.BackupCount == 1, "Backup SHOULD execute when target collation differs!");
                 Assert(mockService.AlterCollationCount == 1, "AlterCollation SHOULD execute when target collation differs!");
                 Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected success message, got: '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("MainWindowXaml_TargetConfiguration_StackedVertically_AndFullWidthBackupDirectory", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                // 1. Verify there is no ColumnDefinition with Width="200"
+                var colDefs = doc.Descendants().Where(e => e.Name.LocalName == "ColumnDefinition").ToList();
+                Assert(!colDefs.Any(c => c.Attribute("Width")?.Value == "200"),
+                    "MainWindow.xaml should not contain a 200 DIP ColumnDefinition constraining backup directory.");
+
+                // 2. Find Target Configuration label
+                var labels = doc.Descendants().Where(e => e.Name.LocalName == "Label").ToList();
+                var targetConfigLabel = labels.FirstOrDefault(l => l.Attribute("Content")?.Value == "Target Configuration");
+                Assert(targetConfigLabel != null, "MainWindow.xaml should contain 'Target Configuration' Label");
+
+                // 3. The container immediately following Target Configuration label must be a StackPanel
+                var targetConfigParent = targetConfigLabel!.Parent;
+                Assert(targetConfigParent != null, "Target Configuration Label should have a parent");
+
+                var siblings = targetConfigParent!.Elements().ToList();
+                int labelIndex = siblings.IndexOf(targetConfigLabel);
+                var targetConfigContainer = siblings[labelIndex + 1];
+                Assert(targetConfigContainer.Name.LocalName == "StackPanel",
+                    "Target Configuration fields container must be a vertical StackPanel, not a two-column Grid");
+
+                // 4. Verify vertical stacking and margins of the inner StackPanels
+                var innerPanels = targetConfigContainer.Elements().Where(e => e.Name.LocalName == "StackPanel").ToList();
+                Assert(innerPanels.Count == 2, "Target Configuration StackPanel should contain 2 stacked row panels");
+
+                var targetCollationPanel = innerPanels[0];
+                var backupDirPanel = innerPanels[1];
+
+                // Target collation row has bottom margin to separate rows cleanly
+                Assert(targetCollationPanel.Attribute("Margin")?.Value == "0,0,0,16",
+                    "Target collation container must specify bottom margin (Margin=\"0,0,0,16\") to cleanly separate rows");
+                Assert(targetCollationPanel.Attribute("Grid.Column") == null,
+                    "Target collation container should not specify Grid.Column");
+
+                // Backup directory row
+                Assert(backupDirPanel.Attribute("Grid.Column") == null,
+                    "Backup directory container should not specify Grid.Column");
+
+                // 5. Verify Backup Directory TextBox attributes, bindings, tooltips, and automation properties
+                var textBoxes = backupDirPanel.Elements().Where(e => e.Name.LocalName == "TextBox").ToList();
+                Assert(textBoxes.Count == 1, "Backup directory container must contain a TextBox");
+                var backupTextBox = textBoxes[0];
+
+                Assert(backupTextBox.Attribute("Text")?.Value == "{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}",
+                    "Backup directory TextBox must bind to BackupDirectory");
+                Assert(backupTextBox.Attribute("IsEnabled")?.Value == "{Binding IsNotBusy}",
+                    "Backup directory TextBox must bind IsEnabled to IsNotBusy");
+                Assert(backupTextBox.Attribute("AutomationProperties.LabeledBy")?.Value == "{Binding ElementName=BackupDirectoryLabel}",
+                    "Backup directory TextBox must preserve AutomationProperties.LabeledBy");
+                Assert(backupTextBox.Attribute("AutomationProperties.Name")?.Value == "Backup Directory (Server Host)",
+                    "Backup directory TextBox must preserve AutomationProperties.Name");
+                Assert(backupTextBox.Attribute("AutomationProperties.HelpText")?.Value == "Path is evaluated on the SQL Server host filesystem, not the local client.",
+                    "Backup directory TextBox must preserve AutomationProperties.HelpText");
+                Assert(backupTextBox.Attribute("ToolTip")?.Value == "Path is evaluated on the SQL Server host filesystem, not the local client.",
+                    "Backup directory TextBox must preserve ToolTip");
+                Assert(backupTextBox.Attribute("Width") == null,
+                    "Backup directory TextBox must not have a fixed Width attribute so it spans full width");
+            });
+
+            RunSyncTest("MainViewModel_LongBackupPath_PreservesFullPath", () =>
+            {
+                var vm = new MainViewModel();
+                string longPath = @"C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup\DefaultInstanceSubfolder";
+                Assert(longPath.Length > 60, "Test path should exceed 60 characters");
+                vm.BackupDirectory = longPath;
+                Assert(vm.BackupDirectory == longPath, "MainViewModel should preserve long backup path without truncation");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
