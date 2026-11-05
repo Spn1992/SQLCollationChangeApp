@@ -760,26 +760,6 @@ namespace CollationModifier.Services
             }
         }
 
-        private async Task ExecuteEmergencyMultiUserResetAsync(
-            string databaseName,
-            Exception primaryException,
-            string operationContext,
-            string actionDescription,
-            CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                await TrySetMultiUserAsync(databaseName, cancellationToken);
-            }
-            catch (Exception resetEx)
-            {
-                _logger.LogError($"Emergency MULTI_USER reset failed following {operationContext} error on {databaseName}", resetEx);
-                throw new AggregateException(
-                    $"Failed to {actionDescription} '{databaseName}' ({primaryException.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
-                    primaryException, resetEx);
-            }
-        }
-
         private static string EscapeIdentifier(string identifier)
         {
             return identifier.Replace("]", "]]");
