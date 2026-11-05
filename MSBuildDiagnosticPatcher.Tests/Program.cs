@@ -56,6 +56,14 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
 
+            // 8. Program.Main Exit Code Tests
+            RunTest("Program_Main_ReturnsZero_WhenNoErrorsOrFailures", Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures);
+            RunTest("Program_Main_ReturnsZero_WhenWarningsOnly", Test_Program_Main_ReturnsZero_WhenWarningsOnly);
+            RunTest("Program_Main_ReturnsOne_WhenCompilerErrorsPresent", Test_Program_Main_ReturnsOne_WhenCompilerErrorsPresent);
+            RunTest("Program_Main_ReturnsOne_WhenTestFailuresPresent", Test_Program_Main_ReturnsOne_WhenTestFailuresPresent);
+            RunTest("Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent", Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent);
+            RunTest("Program_Main_ReturnsOne_WhenInputFileNotFound", Test_Program_Main_ReturnsOne_WhenInputFileNotFound);
+
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
             Console.WriteLine("=================================================");
@@ -551,6 +559,128 @@ public class Greeter : IGreeter
             {
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
+        }
+
+        // 8. Program.Main Exit Code Tests
+        static void Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_zero_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean_build.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+Time Elapsed 00:00:01.23
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsZero_WhenWarningsOnly()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_warn_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "warning_build.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [CollationModifier.csproj]
+Build succeeded.
+    1 Warning(s)
+    0 Error(s)
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 when only warnings are present, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenCompilerErrorsPresent()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_error_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "error_build.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]
+Build FAILED.
+    1 Error(s)
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 for compiler errors, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenTestFailuresPresent()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_fail_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "test_failure.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
+  Error Message:
+   Assertion Failed: Expected status ready
+Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 for test failures, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_both_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "errors_and_failures.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, @"
+Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]
+Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
+  Error Message:
+   Assertion Failed: Expected status ready
+");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 for both compiler errors and test failures, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsOne_WhenInputFileNotFound()
+        {
+            string missingPath = Path.Combine(Path.GetTempPath(), $"missing_log_{Guid.NewGuid():N}.log");
+            int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { missingPath });
+            Assert(exitCode == 1, $"Expected exit code 1 when input file is not found, got {exitCode}");
         }
     }
 }
