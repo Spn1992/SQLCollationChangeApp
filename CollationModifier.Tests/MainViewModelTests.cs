@@ -1951,14 +1951,91 @@ namespace CollationModifier.Tests
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
                 Assert(content.Contains("Text=\"{Binding StatusMessage}\""), "MainWindow.xaml should contain status message binding");
-                Assert(content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip=\"{Binding StatusToolTip}\"");
+                Assert(content.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\"") || content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip binding");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml status TextBlock should have AutomationProperties.LiveSetting=\"Polite\"");
 
                 var doc = System.Xml.Linq.XDocument.Parse(content);
                 var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
                 var statusTextBlock = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock" && (e.Attribute(xNameAttr)?.Value == "StatusTextBlock" || e.Attribute("Name")?.Value == "StatusTextBlock"));
                 Assert(statusTextBlock != null, "MainWindow.xaml should define StatusTextBlock TextBlock");
-                Assert(statusTextBlock!.Attribute("ToolTip")?.Value == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip=\"{Binding StatusToolTip}\"");
+                var tooltipValue = statusTextBlock!.Attribute("ToolTip")?.Value;
+                Assert(tooltipValue == "{Binding EffectiveStatusToolTip}" || tooltipValue == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip binding");
+            });
+
+            RunSyncTest("MainWindowXaml_StatusBar_UsesConstrainedGridWithTextTrimming", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                int statusBarIndex = content.IndexOf("<!-- Status Bar at the bottom -->");
+                Assert(statusBarIndex >= 0, "MainWindow.xaml should contain status bar section");
+                string statusBarSection = content.Substring(statusBarIndex);
+
+                Assert(statusBarSection.Contains("<Grid.ColumnDefinitions>"), "Status bar should contain Grid.ColumnDefinitions");
+                Assert(statusBarSection.Contains("Width=\"*\""), "Status bar Grid should define star width column");
+                Assert(statusBarSection.Contains("Width=\"Auto\""), "Status bar Grid should define Auto width column");
+                Assert(statusBarSection.Contains("TextTrimming=\"CharacterEllipsis\""), "StatusTextBlock should have TextTrimming=\"CharacterEllipsis\"");
+                Assert(statusBarSection.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\""), "StatusTextBlock should bind ToolTip to EffectiveStatusToolTip");
+                Assert(statusBarSection.Contains("Grid.Column=\"0\""), "StatusTextBlock should be placed in Grid.Column 0");
+                Assert(statusBarSection.Contains("Grid.Column=\"1\""), "ProgressBar should be placed in Grid.Column 1");
+            });
+
+            RunSyncTest("MainViewModel_EffectiveStatusToolTip_FallsBackToStatusMessage", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                // Initial state: StatusToolTip is null, StatusMessage is "Ready"
+                Assert(vm.StatusToolTip == null, "Initial StatusToolTip should be null");
+                Assert(vm.StatusMessage == "Ready", "Initial StatusMessage should be 'Ready'");
+                Assert(vm.EffectiveStatusToolTip == "Ready", $"Expected EffectiveStatusToolTip to fall back to 'Ready', got '{vm.EffectiveStatusToolTip}'");
+
+                var changedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) changedProperties.Add(e.PropertyName);
+                };
+
+                // Changing StatusMessage should raise PropertyChanged for EffectiveStatusToolTip when StatusToolTip is null
+                changedProperties.Clear();
+                vm.StatusMessage = "Processing database collation...";
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to update to new StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.StatusMessage)), "StatusMessage property change should be notified");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusMessage changes");
+
+                // Setting StatusToolTip should override StatusMessage in EffectiveStatusToolTip
+                changedProperties.Clear();
+                vm.StatusToolTip = "Detailed progress tooltip text";
+                Assert(vm.EffectiveStatusToolTip == "Detailed progress tooltip text", $"Expected EffectiveStatusToolTip to return StatusToolTip, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.StatusToolTip)), "StatusToolTip property change should be notified");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusToolTip changes");
+
+                // Resetting StatusToolTip to null should fall back to StatusMessage again
+                changedProperties.Clear();
+                vm.StatusToolTip = null;
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage after nulling tooltip, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusToolTip cleared");
+
+                // Setting empty StatusToolTip should also fall back to StatusMessage
+                vm.StatusToolTip = string.Empty;
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage when tooltip is empty string, got '{vm.EffectiveStatusToolTip}'");
+
+                // SetStatus helper method should also update EffectiveStatusToolTip
+                vm.SetStatus("Final status", "Explicit tooltip");
+                Assert(vm.EffectiveStatusToolTip == "Explicit tooltip", $"Expected EffectiveStatusToolTip 'Explicit tooltip', got '{vm.EffectiveStatusToolTip}'");
+
+                vm.SetStatus("Another status");
+                Assert(vm.EffectiveStatusToolTip == "Another status", $"Expected EffectiveStatusToolTip 'Another status', got '{vm.EffectiveStatusToolTip}'");
             });
 
             RunSyncTest("AppXaml_ButtonControlTemplates_IncorporateFocusVisualBorderAndTrigger", () =>
