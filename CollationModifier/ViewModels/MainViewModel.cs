@@ -76,15 +76,29 @@ namespace CollationModifier.ViewModels
         public string StatusMessage
         {
             get => _statusMessage;
-            set => SetProperty(ref _statusMessage, value);
+            set
+            {
+                if (SetProperty(ref _statusMessage, value))
+                {
+                    OnPropertyChanged(nameof(EffectiveStatusToolTip));
+                }
+            }
         }
 
         private string? _statusToolTip;
         public string? StatusToolTip
         {
             get => _statusToolTip;
-            set => SetProperty(ref _statusToolTip, value);
+            set
+            {
+                if (SetProperty(ref _statusToolTip, value))
+                {
+                    OnPropertyChanged(nameof(EffectiveStatusToolTip));
+                }
+            }
         }
+
+        public string? EffectiveStatusToolTip => !string.IsNullOrEmpty(StatusToolTip) ? StatusToolTip : StatusMessage;
 
         private string? _detailedError;
         public string? DetailedError
@@ -605,6 +619,8 @@ namespace CollationModifier.ViewModels
 
                 // 3. Execution Phase
                 StatusMessage = "Altering database collation... This may take a while.";
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 StatusMessage = "Collation changed successfully!";

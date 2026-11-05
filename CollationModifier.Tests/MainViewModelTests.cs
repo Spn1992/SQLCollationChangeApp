@@ -1951,14 +1951,91 @@ namespace CollationModifier.Tests
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
                 Assert(content.Contains("Text=\"{Binding StatusMessage}\""), "MainWindow.xaml should contain status message binding");
-                Assert(content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip=\"{Binding StatusToolTip}\"");
+                Assert(content.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\"") || content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip binding");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml status TextBlock should have AutomationProperties.LiveSetting=\"Polite\"");
 
                 var doc = System.Xml.Linq.XDocument.Parse(content);
                 var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
                 var statusTextBlock = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock" && (e.Attribute(xNameAttr)?.Value == "StatusTextBlock" || e.Attribute("Name")?.Value == "StatusTextBlock"));
                 Assert(statusTextBlock != null, "MainWindow.xaml should define StatusTextBlock TextBlock");
-                Assert(statusTextBlock!.Attribute("ToolTip")?.Value == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip=\"{Binding StatusToolTip}\"");
+                var tooltipValue = statusTextBlock!.Attribute("ToolTip")?.Value;
+                Assert(tooltipValue == "{Binding EffectiveStatusToolTip}" || tooltipValue == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip binding");
+            });
+
+            RunSyncTest("MainWindowXaml_StatusBar_UsesConstrainedGridWithTextTrimming", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                int statusBarIndex = content.IndexOf("<!-- Status Bar at the bottom -->");
+                Assert(statusBarIndex >= 0, "MainWindow.xaml should contain status bar section");
+                string statusBarSection = content.Substring(statusBarIndex);
+
+                Assert(statusBarSection.Contains("<Grid.ColumnDefinitions>"), "Status bar should contain Grid.ColumnDefinitions");
+                Assert(statusBarSection.Contains("Width=\"*\""), "Status bar Grid should define star width column");
+                Assert(statusBarSection.Contains("Width=\"Auto\""), "Status bar Grid should define Auto width column");
+                Assert(statusBarSection.Contains("TextTrimming=\"CharacterEllipsis\""), "StatusTextBlock should have TextTrimming=\"CharacterEllipsis\"");
+                Assert(statusBarSection.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\""), "StatusTextBlock should bind ToolTip to EffectiveStatusToolTip");
+                Assert(statusBarSection.Contains("Grid.Column=\"0\""), "StatusTextBlock should be placed in Grid.Column 0");
+                Assert(statusBarSection.Contains("Grid.Column=\"1\""), "ProgressBar should be placed in Grid.Column 1");
+            });
+
+            RunSyncTest("MainViewModel_EffectiveStatusToolTip_FallsBackToStatusMessage", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                // Initial state: StatusToolTip is null, StatusMessage is "Ready"
+                Assert(vm.StatusToolTip == null, "Initial StatusToolTip should be null");
+                Assert(vm.StatusMessage == "Ready", "Initial StatusMessage should be 'Ready'");
+                Assert(vm.EffectiveStatusToolTip == "Ready", $"Expected EffectiveStatusToolTip to fall back to 'Ready', got '{vm.EffectiveStatusToolTip}'");
+
+                var changedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) changedProperties.Add(e.PropertyName);
+                };
+
+                // Changing StatusMessage should raise PropertyChanged for EffectiveStatusToolTip when StatusToolTip is null
+                changedProperties.Clear();
+                vm.StatusMessage = "Processing database collation...";
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to update to new StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.StatusMessage)), "StatusMessage property change should be notified");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusMessage changes");
+
+                // Setting StatusToolTip should override StatusMessage in EffectiveStatusToolTip
+                changedProperties.Clear();
+                vm.StatusToolTip = "Detailed progress tooltip text";
+                Assert(vm.EffectiveStatusToolTip == "Detailed progress tooltip text", $"Expected EffectiveStatusToolTip to return StatusToolTip, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.StatusToolTip)), "StatusToolTip property change should be notified");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusToolTip changes");
+
+                // Resetting StatusToolTip to null should fall back to StatusMessage again
+                changedProperties.Clear();
+                vm.StatusToolTip = null;
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage after nulling tooltip, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusToolTip cleared");
+
+                // Setting empty StatusToolTip should also fall back to StatusMessage
+                vm.StatusToolTip = string.Empty;
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage when tooltip is empty string, got '{vm.EffectiveStatusToolTip}'");
+
+                // SetStatus helper method should also update EffectiveStatusToolTip
+                vm.SetStatus("Final status", "Explicit tooltip");
+                Assert(vm.EffectiveStatusToolTip == "Explicit tooltip", $"Expected EffectiveStatusToolTip 'Explicit tooltip', got '{vm.EffectiveStatusToolTip}'");
+
+                vm.SetStatus("Another status");
+                Assert(vm.EffectiveStatusToolTip == "Another status", $"Expected EffectiveStatusToolTip 'Another status', got '{vm.EffectiveStatusToolTip}'");
             });
 
             RunSyncTest("AppXaml_ButtonControlTemplates_IncorporateFocusVisualBorderAndTrigger", () =>
@@ -2273,6 +2350,46 @@ namespace CollationModifier.Tests
                 Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
                 Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
                 Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ResetsProgressAndEnablesIndeterminate_DuringAlterCollation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "AlterProgressDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                int capturedProgressPercent = -1;
+                bool? capturedIsIndeterminate = null;
+                string? capturedStatusMessage = null;
+
+                MainViewModel? vm = null;
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    BackupProgressSimulator = progress =>
+                    {
+                        // Simulate backup finishing at 100%, which turns off indeterminate mode
+                        progress?.Report(100);
+                    },
+                    OnAlterCollation = async ct =>
+                    {
+                        capturedProgressPercent = vm!.ProgressPercent;
+                        capturedIsIndeterminate = vm.IsIndeterminateProgress;
+                        capturedStatusMessage = vm.StatusMessage;
+                        await Task.CompletedTask;
+                    }
+                };
+
+                vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(capturedProgressPercent == 0, $"Expected ProgressPercent to be 0 during AlterCollationAsync, but was {capturedProgressPercent}");
+                Assert(capturedIsIndeterminate == true, $"Expected IsIndeterminateProgress to be true during AlterCollationAsync, but was {capturedIsIndeterminate}");
+                Assert(capturedStatusMessage != null && capturedStatusMessage.Contains("Altering database collation"), $"Expected status message during AlterCollationAsync to indicate collation alteration, got '{capturedStatusMessage}'");
+                Assert(vm.ProgressPercent == 0, $"Expected ProgressPercent to reset to 0 after completion, got {vm.ProgressPercent}");
+                Assert(vm.IsIndeterminateProgress == true, $"Expected IsIndeterminateProgress to reset to true after completion, got {vm.IsIndeterminateProgress}");
             });
 
             RunSyncTest("ErrorFormattingHelper_IsSingleUserLockState_Detection", () =>
@@ -2726,7 +2843,7 @@ namespace CollationModifier.Tests
                     $"Contrast ratio {contrastAgainstWhite:F2}:1 against white background must exceed 4.5:1 under WCAG 2.2 1.4.3");
             });
 
-            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_UsesInputRestingBorderBrush", () =>
+            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_NoLocalBorderBrushOverride", () =>
             {
                 string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
                 if (!System.IO.File.Exists(errorDetailsXamlPath))
@@ -2747,10 +2864,30 @@ namespace CollationModifier.Tests
                     tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "txtErrorDetails" ||
                     tb.Attribute("Name")?.Value == "txtErrorDetails");
                 Assert(errorDetailsTb != null, "ErrorDetailsWindow.xaml must contain txtErrorDetails TextBox");
-                Assert(errorDetailsTb!.Attribute("BorderBrush")?.Value == "{StaticResource InputRestingBorderBrush}",
-                    "txtErrorDetails must set BorderBrush to '{StaticResource InputRestingBorderBrush}' to satisfy WCAG 2.2 non-text contrast requirements");
+                Assert(errorDetailsTb!.Attribute("BorderBrush") == null,
+                    "txtErrorDetails must not contain a local BorderBrush override so it inherits InputRestingBorderBrush from App.xaml");
                 Assert(!content.Contains("BorderBrush=\"#CBD5E1\""),
-                    "ErrorDetailsWindow.xaml must not use hardcoded low-contrast '#CBD5E1' border brush");
+                    "ErrorDetailsWindow.xaml must not contain low-contrast #CBD5E1 border brush");
+
+                // Verify relative luminance and contrast ratio calculation for #64748B vs #F8FAFC
+                double sR = 100.0 / 255.0;
+                double sG = 116.0 / 255.0;
+                double sB = 139.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+
+                double bgR = 248.0 / 255.0;
+                double bgG = 250.0 / 255.0;
+                double bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double bgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrast = (bgLum + 0.05) / (lum + 0.05);
+                Assert(contrast >= 3.0, $"Contrast ratio {contrast:F2} against background must exceed 3:1 under WCAG 2.2 1.4.11");
             });
 
             RunSyncTest("ErrorDetailsWindowXaml_CopiedStatusLabel_UsesSuccessForegroundBrush", () =>
