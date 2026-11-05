@@ -141,17 +141,6 @@ namespace MSBuildDiagnosticPatcher.Parsers
             return results;
         }
 
-        public List<TestFailure> ParseFile(string filePath)
-        {
-            if (!File.Exists(filePath))
-            {
-                throw new FileNotFoundException($"Log file not found: {filePath}");
-            }
-
-            string content = File.ReadAllText(filePath);
-            return ParseText(content);
-        }
-
         private static (string ClassName, string MethodName) SplitTestName(string fullName)
         {
             int lastDot = fullName.LastIndexOf('.');
