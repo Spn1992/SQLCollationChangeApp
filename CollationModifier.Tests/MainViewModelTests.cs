@@ -2420,6 +2420,33 @@ namespace CollationModifier.Tests
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
+            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_UsesInputRestingBorderBrush", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBoxes = doc.Descendants().Where(e => e.Name.LocalName == "TextBox").ToList();
+
+                var errorDetailsTb = textBoxes.FirstOrDefault(tb =>
+                    tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "txtErrorDetails" ||
+                    tb.Attribute("Name")?.Value == "txtErrorDetails");
+                Assert(errorDetailsTb != null, "ErrorDetailsWindow.xaml must contain txtErrorDetails TextBox");
+                Assert(errorDetailsTb!.Attribute("BorderBrush")?.Value == "{StaticResource InputRestingBorderBrush}",
+                    "txtErrorDetails must set BorderBrush to '{StaticResource InputRestingBorderBrush}' to satisfy WCAG 2.2 non-text contrast requirements");
+                Assert(!content.Contains("BorderBrush=\"#CBD5E1\""),
+                    "ErrorDetailsWindow.xaml must not use hardcoded low-contrast '#CBD5E1' border brush");
+            });
+
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
