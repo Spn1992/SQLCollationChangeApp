@@ -13,6 +13,7 @@ namespace MSBuildDiagnosticPatcher.Models
         public string UnifiedDiff { get; set; } = string.Empty;
         public string PatchFileName { get; set; } = string.Empty;
         public bool IsApplied { get; set; }
+        public int ResolvedErrorCount { get; set; }
         public string Description { get; set; } = string.Empty;
     }
 }

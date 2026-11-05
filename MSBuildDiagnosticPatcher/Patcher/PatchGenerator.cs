@@ -90,6 +90,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
                 if (patchCandidate != null)
                 {
+                    patchCandidate.ResolvedErrorCount = memberInfos.Count;
                     candidates.Add(patchCandidate);
                 }
             }

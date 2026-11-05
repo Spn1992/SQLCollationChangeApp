@@ -56,6 +56,13 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
 
+            // 8. Program.Main Exit Code & Unresolved Error Count Tests
+            RunTest("DiagnosticReport_UnresolvedErrorCount_Calculation", Test_DiagnosticReport_UnresolvedErrorCount_Calculation);
+            RunTest("Program_Main_ReturnsExitCode0_ForCleanBuildLog", Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog);
+            RunTest("Program_Main_ReturnsExitCode1_WhenBuildErrorsRemainWithoutPatch", Test_Program_Main_ReturnsExitCode1_WhenBuildErrorsRemainWithoutPatch);
+            RunTest("Program_Main_ReturnsExitCode1_WhenTestFailuresExist", Test_Program_Main_ReturnsExitCode1_WhenTestFailuresExist);
+            RunTest("Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics", Test_Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics);
+
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
             Console.WriteLine("=================================================");
@@ -546,6 +553,138 @@ public class Greeter : IGreeter
                 string patchedClass = File.ReadAllText(classFile);
                 Assert(patchedClass.Contains("public virtual string Greet(string name)"), "Expected Greet method in patched source file");
                 Assert(patchedClass.Contains("// Greeter implementation"), "Comments must be preserved");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        // 8. Exit Code & Unresolved Error Count Tests
+        static void Test_DiagnosticReport_UnresolvedErrorCount_Calculation()
+        {
+            var report = new DiagnosticReport
+            {
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" }
+                },
+                CandidatePatches = new List<PatchCandidate>
+                {
+                    new PatchCandidate { ResolvedErrorCount = 1, IsApplied = true },
+                    new PatchCandidate { ResolvedErrorCount = 1, IsApplied = false }
+                }
+            };
+
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2, got {report.ErrorCount}");
+            Assert(report.UnresolvedErrorCount == 1, $"Expected UnresolvedErrorCount 1, got {report.UnresolvedErrorCount}");
+
+            report.CandidatePatches[1].IsApplied = true;
+            Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
+        }
+
+        static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_clean_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean.log");
+                File.WriteAllText(logFile, "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.23\n");
+                string outputDir = Path.Combine(tempDir, "out");
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsExitCode1_WhenBuildErrorsRemainWithoutPatch()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_unpatched_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string classFile = Path.Combine(tempDir, "Greeter.cs");
+                File.WriteAllText(classFile, @"
+public class Greeter : IGreeter
+{
+}
+");
+                string logFile = Path.Combine(tempDir, "build_error.log");
+                File.WriteAllText(logFile, $@"{classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)'
+");
+                string outputDir = Path.Combine(tempDir, "out");
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir });
+                Assert(exitCode == 1, $"Expected exit code 1 when build errors remain unpatched, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsExitCode1_WhenTestFailuresExist()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_failures_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "test_failure.log");
+                File.WriteAllText(logFile, @"
+=== Running Unit Tests ===
+  [FAIL] GreeterTests.TestGreeting - Expected 'Hello' but was null
+  [PASS] GreeterTests.TestConstructor
+Test Suite Summary: 1 Passed, 1 Failed
+");
+                string outputDir = Path.Combine(tempDir, "out");
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 1, $"Expected exit code 1 when test runner failures exist, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_remediated_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IGreeter.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface IGreeter
+{
+    string Greet(string name);
+}
+");
+
+                string classFile = Path.Combine(tempDir, "Greeter.cs");
+                File.WriteAllText(classFile, @"
+public class Greeter : IGreeter
+{
+    // Greeter class
+}
+");
+                string logFile = Path.Combine(tempDir, "build.log");
+                File.WriteAllText(logFile, $@"{classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)'
+");
+                string outputDir = Path.Combine(tempDir, "out");
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
+                Assert(exitCode == 0, $"Expected exit code 0 when patches remediate all diagnostics, got {exitCode}");
+
+                string patchedContent = File.ReadAllText(classFile);
+                Assert(patchedContent.Contains("public virtual string Greet(string name)"), "Expected class to be patched with Greet method");
             }
             finally
             {
