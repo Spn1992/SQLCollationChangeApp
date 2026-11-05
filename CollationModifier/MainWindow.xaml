@@ -198,14 +198,22 @@
                         DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2" Margin="0,0,8,0"
                         AutomationProperties.Name="Error Details" ToolTip="View detailed error information"
                         Visibility="{Binding HasDetailedError, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="StatusTextBlock" Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155"
+                <Grid VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusTextBlock" Grid.Column="0"
+                               Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding EffectiveStatusToolTip}"
                                AutomationProperties.LiveSetting="Polite"
                                AutomationProperties.Name="Status Message" />
-                    <ProgressBar Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsIndeterminateProgress}" Minimum="0" Maximum="100" Width="100" Height="10" Margin="10,0,0,0"
+                    <ProgressBar Grid.Column="1"
+                                 Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsIndeterminateProgress}" Minimum="0" Maximum="100" Width="100" Height="10" Margin="10,0,0,0"
                                  AutomationProperties.Name="Operation Progress"
                                  Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                </StackPanel>
+                </Grid>
             </DockPanel>
         </Border>
     </Grid>
