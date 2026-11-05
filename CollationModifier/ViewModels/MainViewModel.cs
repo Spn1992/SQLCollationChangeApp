@@ -664,14 +664,8 @@ namespace CollationModifier.ViewModels
                             StatusMessage = $"Restoring database... {percent}%";
                         });
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
-                        if (ex is AggregateException)
-                        {
-                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
-                        }
-                        else
-                        {
-                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
-                        }
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: null, restoreAttempted: true);
+                        SetStatus(statusText, toolTipText, detailedError);
                     }
                     catch (Exception restoreEx)
                     {
