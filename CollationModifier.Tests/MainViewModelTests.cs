@@ -935,6 +935,11 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include explicit SINGLE_USER lock warning, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Status message should include secondary reset failure details, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError should be true when emergency reset fails");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError should be populated when emergency reset fails");
+                Assert(vm.DetailedError.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"DetailedError should contain lock warning, got: '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand should be executable when HasDetailedError is true");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_ConfirmsMultiUserRestored_WhenEmergencyResetSucceeds", async () =>
@@ -959,6 +964,74 @@ namespace CollationModifier.Tests
                 Assert(mockService.IsMultiUser, "Database should be restored to MULTI_USER mode!");
                 Assert(vm.StatusMessage.Contains("Database restored to MULTI_USER mode successfully"), $"Status message should confirm MULTI_USER restoration, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError should be true after successful auto-restore");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError should be populated after successful auto-restore");
+                Assert(vm.DetailedError.Contains("Table constraint violation"), $"DetailedError should contain primary error details, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError.Contains("Database was restored to MULTI_USER mode successfully from backup"), $"DetailedError should contain restore confirmation, got: '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand should be executable when HasDetailedError is true");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_AutoRestoreSuccess_PopulatesTooltipAndLockWarning_WhenLockStateDetected", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "LockWarningDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedErrorDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedErrorDetails = details;
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include single-user lock warning, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError must be true after successful auto-restore with lock warning");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError must be populated");
+                Assert(vm.DetailedError.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "DetailedError must contain single-user lock warning");
+                Assert(vm.DetailedError.Contains("Table constraint violation"), "DetailedError must contain primary error text");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand must be executable");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedErrorDetails == vm.DetailedError, "ShowErrorDetailsHandler should receive the formatted DetailedError text");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_AutoRestoreSuccess_EnablesShowErrorDetailsCommand_AndPassesDiagnostics", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DetailsDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedDetails = details;
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.HasDetailedError == true, "HasDetailedError must be true");
+                Assert(vm.StatusToolTip != null, "StatusToolTip must be populated");
+                Assert(vm.StatusToolTip == vm.StatusMessage, "StatusToolTip must match StatusMessage");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand must be enabled");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedDetails != null && capturedDetails.Contains("Database was restored to MULTI_USER mode successfully"),
+                    "ShowErrorDetailsHandler should be called with full diagnostic information");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_RollsBackWithUncancelledToken_WhenCancelledAfterBackup", async () =>
@@ -1017,6 +1090,107 @@ namespace CollationModifier.Tests
 
                 Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked if cancelled before backup completes.");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesRestoreFailure_WhenRestoreThrowsDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelRestoreFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = new InvalidOperationException("Restore disk I/O error occurred."),
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have been called.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called.");
+                Assert(vm.StatusMessage.Contains("CRITICAL: Auto-restore also failed"), $"Expected auto-restore failure message in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Restore disk I/O error occurred"), $"Expected restore error details in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip != null && vm.StatusToolTip.Contains("CRITICAL: Auto-restore also failed"), "StatusToolTip should contain restore error diagnostics.");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true to activate error details dialog.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Restore disk I/O error occurred"), "DetailedError should contain restore error details.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesSingleUserLockWarning_WhenResetThrowsDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelResetFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = null,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have succeeded.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been attempted.");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Expected SINGLE_USER lock warning in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Expected reset failure details in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true when single-user reset fails during cancellation.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Connection reset failed"), "DetailedError should contain reset failure details.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesAggregatedErrors_WhenBothRestoreAndResetFailDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelBothFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = new InvalidOperationException("Restore disk I/O error occurred."),
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have been attempted.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been attempted.");
+                Assert(vm.StatusMessage.Contains("CRITICAL: Auto-restore also failed"), $"Expected auto-restore failure message in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Expected lock warning in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true when both restore and reset fail.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Restore disk I/O error occurred"), "DetailedError should contain restore error details.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Connection reset failed"), "DetailedError should contain reset error details.");
             });
 
             await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ExecutesWithoutCancellation_WhenTokenIsCancelled", async () =>
@@ -1816,6 +1990,27 @@ namespace CollationModifier.Tests
                 Assert(method!.ReturnType == typeof(Task<ServerInitializationData>), "GetServerInitializationDataAsync must return Task<ServerInitializationData>.");
             });
 
+            RunSyncTest("ServerInitializationData_DoesNotExposeObsoletePropertyShims", () =>
+            {
+                var backupDirectoryProp = typeof(ServerInitializationData).GetProperty("BackupDirectory");
+                Assert(backupDirectoryProp == null, "ServerInitializationData must not expose obsolete BackupDirectory property shim.");
+
+                var collationsProp = typeof(ServerInitializationData).GetProperty("Collations");
+                Assert(collationsProp == null, "ServerInitializationData must not expose obsolete Collations property shim.");
+
+                var defaultBackupDirProp = typeof(ServerInitializationData).GetProperty("DefaultBackupDirectory");
+                Assert(defaultBackupDirProp != null, "ServerInitializationData must expose canonical DefaultBackupDirectory property.");
+                Assert(defaultBackupDirProp!.PropertyType == typeof(string), "DefaultBackupDirectory must be of type string.");
+
+                var supportedCollationsProp = typeof(ServerInitializationData).GetProperty("SupportedCollations");
+                Assert(supportedCollationsProp != null, "ServerInitializationData must expose canonical SupportedCollations property.");
+                Assert(supportedCollationsProp!.PropertyType == typeof(List<string>), "SupportedCollations must be of type List<string>.");
+
+                var databasesProp = typeof(ServerInitializationData).GetProperty("Databases");
+                Assert(databasesProp != null, "ServerInitializationData must expose canonical Databases property.");
+                Assert(databasesProp!.PropertyType == typeof(List<DatabaseInfo>), "Databases must be of type List<DatabaseInfo>.");
+            });
+
             await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
             {
                 using var logger = new LoggerService();
@@ -1840,6 +2035,25 @@ namespace CollationModifier.Tests
                 }
 
                 Assert(wasAbortedWithCancellation, "GetServerInitializationDataAsync must abort with OperationCanceledException when cancellation token is cancelled.");
+            });
+
+            RunSyncTest("DatabaseService_DefaultBackupDirectoryQuery_ContainsExpectedFallbackSteps", () =>
+            {
+                var field = typeof(DatabaseService).GetField("DefaultBackupDirectoryQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(field != null, "DefaultBackupDirectoryQuery constant not found on DatabaseService.");
+                var query = field!.GetValue(null) as string;
+                Assert(!string.IsNullOrEmpty(query), "DefaultBackupDirectoryQuery should not be null or empty.");
+
+                Assert(query!.Contains("SERVERPROPERTY('InstanceDefaultBackupPath')"),
+                    "DefaultBackupDirectoryQuery should attempt InstanceDefaultBackupPath first.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt secondary registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains("SERVERPROPERTY('InstanceDefaultDataPath')"),
+                    "DefaultBackupDirectoryQuery should fall back to InstanceDefaultDataPath.");
+                Assert(query.Contains("SELECT ISNULL(@path, '') AS DefaultBackupPath;"),
+                    "DefaultBackupDirectoryQuery should return DefaultBackupPath column with fallback to empty string.");
             });
 
             await RunAsyncTest("ConnectAsync_CallsGetServerInitializationDataAsync_InSingleStep", async () =>
