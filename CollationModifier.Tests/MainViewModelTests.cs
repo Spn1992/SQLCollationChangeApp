@@ -2399,6 +2399,76 @@ namespace CollationModifier.Tests
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
+            RunSyncTest("AppXaml_SuccessForegroundBrush_HighContrastConfiguration", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                Assert(content.Contains("x:Key=\"SuccessForegroundBrush\" Color=\"#15803D\""),
+                    "App.xaml should define SuccessForegroundBrush with #15803D");
+
+                // Verify relative luminance and contrast ratio calculation under WCAG 2.2 1.4.3
+                // Success color: #15803D (R=21, G=128, B=61)
+                double sR = 21.0 / 255.0;
+                double sG = 128.0 / 255.0;
+                double sB = 61.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double textLum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+
+                // Window background: #F8FAFC (R=248, G=250, B=252)
+                double bgR = 248.0 / 255.0;
+                double bgG = 250.0 / 255.0;
+                double bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double bgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrastAgainstWindowBg = (bgLum + 0.05) / (textLum + 0.05);
+                Assert(contrastAgainstWindowBg >= 4.5,
+                    $"Contrast ratio {contrastAgainstWindowBg:F2}:1 against #F8FAFC window background must exceed 4.5:1 under WCAG 2.2 1.4.3");
+
+                double contrastAgainstWhite = (1.0 + 0.05) / (textLum + 0.05);
+                Assert(contrastAgainstWhite >= 4.5,
+                    $"Contrast ratio {contrastAgainstWhite:F2}:1 against white background must exceed 4.5:1 under WCAG 2.2 1.4.3");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_CopiedStatusLabel_UsesSuccessForegroundBrush", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                var copiedLabel = textBlocks.FirstOrDefault(tb => tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "lblCopiedStatus");
+                Assert(copiedLabel != null, "ErrorDetailsWindow.xaml must contain 'lblCopiedStatus' TextBlock");
+                Assert(copiedLabel!.Attribute("Foreground")?.Value == "{StaticResource SuccessForegroundBrush}",
+                    "lblCopiedStatus TextBlock must bind Foreground to '{StaticResource SuccessForegroundBrush}'");
+                Assert(!content.Contains("#16A34A"),
+                    "ErrorDetailsWindow.xaml must not contain low-contrast hardcoded #16A34A foreground color");
+            });
+
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
