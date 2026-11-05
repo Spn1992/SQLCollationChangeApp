@@ -2399,6 +2399,53 @@ namespace CollationModifier.Tests
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
+            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_NoLocalBorderBrushOverride", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBoxes = doc.Descendants().Where(e => e.Name.LocalName == "TextBox").ToList();
+
+                var errorDetailsTb = textBoxes.FirstOrDefault(tb =>
+                    tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "txtErrorDetails" ||
+                    tb.Attribute("Name")?.Value == "txtErrorDetails");
+                Assert(errorDetailsTb != null, "ErrorDetailsWindow.xaml must contain txtErrorDetails TextBox");
+                Assert(errorDetailsTb!.Attribute("BorderBrush") == null,
+                    "txtErrorDetails must not contain a local BorderBrush override so it inherits InputRestingBorderBrush from App.xaml");
+                Assert(!content.Contains("BorderBrush=\"#CBD5E1\""),
+                    "ErrorDetailsWindow.xaml must not contain low-contrast #CBD5E1 border brush");
+
+                // Verify relative luminance and contrast ratio calculation for #64748B vs #F8FAFC
+                double sR = 100.0 / 255.0;
+                double sG = 116.0 / 255.0;
+                double sB = 139.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+
+                double bgR = 248.0 / 255.0;
+                double bgG = 250.0 / 255.0;
+                double bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double bgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrast = (bgLum + 0.05) / (lum + 0.05);
+                Assert(contrast >= 3.0, $"Contrast ratio {contrast:F2} against background must exceed 3:1 under WCAG 2.2 1.4.11");
+            });
+
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
