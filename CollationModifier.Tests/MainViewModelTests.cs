@@ -16,6 +16,7 @@ namespace CollationModifier.Tests
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
         public List<string>? CollationsToReturn { get; set; } = null;
+        public string? CurrentCollationToReturn { get; set; } = null;
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
@@ -139,6 +140,13 @@ namespace CollationModifier.Tests
                     {
                         PreflightReportToReturn.ValidationErrors.Add(ex.Message);
                     }
+                }
+
+                var currentDb = DatabasesToReturn.FirstOrDefault(d => string.Equals(d.Name, databaseName, StringComparison.OrdinalIgnoreCase));
+                var currentCollation = CurrentCollationToReturn ?? currentDb?.Collation;
+                if (!string.IsNullOrEmpty(currentCollation))
+                {
+                    DatabaseService.EvaluateCollation(databaseName, currentCollation, targetCollation, PreflightReportToReturn);
                 }
             }
             return Task.FromResult(PreflightReportToReturn);
@@ -2976,6 +2984,141 @@ namespace CollationModifier.Tests
                 Assert(vm.IsConnected, "IsConnected should be true after successful connection.");
                 Assert(vm.StatusMessage == "Connected to server. Database operations panel unlocked.",
                     $"Expected subsequent connection transition to announce operations panel unlock, got '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("DatabaseService_EvaluateCollation_Fails_WhenCollationsMatchIdentically", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "SQL_Latin1_General_CP1_CI_AS", report);
+
+                Assert(report.HasValidationErrors, "Report should have validation errors when target collation matches current collation.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when target collation matches current collation.");
+                Assert(!report.IsValid, "Report should not be valid when collations match.");
+                Assert(report.ValidationErrors.Count == 1, $"Expected 1 validation error, got {report.ValidationErrors.Count}");
+                Assert(report.ValidationErrors[0].Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), "Validation error must state database already uses collation.");
+                Assert(report.ValidationErrors[0].Contains("Target collation 'SQL_Latin1_General_CP1_CI_AS' is identical to the current database collation."), "Validation error must state target collation is identical to current collation.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluateCollation_Fails_WhenCollationsMatchCaseInsensitively", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "sql_latin1_general_cp1_ci_as", report);
+
+                Assert(report.HasValidationErrors, "Report should have validation errors for case-insensitive match.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions for case-insensitive match.");
+                Assert(!report.IsValid, "Report should not be valid for case-insensitive match.");
+                Assert(report.ValidationErrors.Count == 1, $"Expected 1 validation error, got {report.ValidationErrors.Count}");
+                Assert(report.ValidationErrors[0].Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), "Validation error must state database already uses current collation.");
+                Assert(report.ValidationErrors[0].Contains("Target collation 'sql_latin1_general_cp1_ci_as' is identical to the current database collation."), "Validation error must state target collation is identical.");
+            });
+
+            RunSyncTest("DatabaseService_EvaluateCollation_Succeeds_WhenCollationsDiffer", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS", report);
+
+                Assert(!report.HasValidationErrors, "Report should NOT have validation errors when collations differ.");
+                Assert(!report.HasBlockingConditions, "Report should NOT have blocking conditions when collations differ.");
+                Assert(report.IsValid, "Report should be valid when collations differ.");
+                Assert(report.ValidationErrors.Count == 0, $"Expected 0 validation errors, got {report.ValidationErrors.Count}");
+            });
+
+            RunSyncTest("DatabaseService_EvaluateCollation_HandlesNullOrWhitespaceGracefully", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", null, "SQL_Latin1_General_CP1_CI_AS", report);
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", null, report);
+                DatabaseService.EvaluateCollation("TestDB", "   ", "SQL_Latin1_General_CP1_CI_AS", report);
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "   ", report);
+                DatabaseService.EvaluateCollation("TestDB", null, null, report);
+
+                Assert(!report.HasValidationErrors, "Report should NOT have validation errors for null or whitespace inputs.");
+                Assert(!report.HasBlockingConditions, "Report should NOT have blocking conditions for null or whitespace inputs.");
+                Assert(report.IsValid, "Report should be valid.");
+            });
+
+            RunSyncTest("PreflightReport_GetDiagnosticSummary_DisplaysIdenticalCollationDiagnostic", () =>
+            {
+                var report = new PreflightReport { DatabaseName = "DiagDB" };
+                DatabaseService.EvaluateCollation("DiagDB", "SQL_Latin1_General_CP1_CI_AS", "SQL_Latin1_General_CP1_CI_AS", report);
+
+                string summary = report.GetDiagnosticSummary();
+                Assert(summary.Contains("FAILED (Blocking items found)"), "Diagnostic summary should indicate failure.");
+                Assert(summary.Contains("[Validation Errors (1)]"), "Diagnostic summary should include Validation Errors header.");
+                Assert(summary.Contains("Database 'DiagDB' already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), "Diagnostic summary must state database already uses collation.");
+                Assert(summary.Contains("Target collation 'SQL_Latin1_General_CP1_CI_AS' is identical to the current database collation."), "Diagnostic summary must state target collation is identical.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenTargetCollationMatchesCurrentCollation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "IdenticalDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup must NOT be performed when target collation matches current collation!");
+                Assert(mockService.AlterCollationCount == 0, "Alter Collation must NOT be performed when target collation matches current collation!");
+                Assert(mockService.IsMultiUser, "Database must remain in multi-user mode.");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected status message to indicate failure before backup, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), $"Status message should include collation diagnostic, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError must be true to allow user inspection.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Pre-flight Validation Report for Database 'IdenticalDb'"), $"DetailedError should contain preflight report, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), $"DetailedError should describe identical collation, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Target collation 'SQL_Latin1_General_CP1_CI_AS' is identical to the current database collation."), $"DetailedError should state collation is identical, got: '{vm.DetailedError}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null), "ShowErrorDetailsCommand should be executable.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenTargetCollationMatchesCaseInsensitively", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CaseDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "sql_latin1_general_cp1_ci_as";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup must NOT execute when target collation matches case-insensitively!");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollation must NOT execute when target collation matches case-insensitively!");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected failure before backup status, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), $"DetailedError should state database already uses collation, got: '{vm.DetailedError}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ProceedsNormally_WhenTargetCollationDiffers", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DistinctDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup SHOULD execute when target collation differs!");
+                Assert(mockService.AlterCollationCount == 1, "AlterCollation SHOULD execute when target collation differs!");
+                Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected success message, got: '{vm.StatusMessage}'");
             });
 
             RunSyncTest("MainWindowXaml_TargetConfiguration_StackedVertically_AndFullWidthBackupDirectory", () =>

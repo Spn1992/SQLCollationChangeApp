@@ -395,6 +395,23 @@ namespace CollationModifier.Services
             }
         }
 
+        public static void EvaluateCollation(string databaseName, string? currentCollation, string? targetCollation, PreflightReport report)
+        {
+            if (string.IsNullOrWhiteSpace(currentCollation) || string.IsNullOrWhiteSpace(targetCollation))
+            {
+                return;
+            }
+
+            if (string.Equals(targetCollation.Trim(), currentCollation.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                string errorMessage = $"Database '{databaseName}' already uses collation '{currentCollation}'. Target collation '{targetCollation}' is identical to the current database collation.";
+                if (!report.ValidationErrors.Contains(errorMessage))
+                {
+                    report.ValidationErrors.Add(errorMessage);
+                }
+            }
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
@@ -531,7 +548,10 @@ namespace CollationModifier.Services
                             ISNULL(chk.definition, '') AS expression
                         FROM sys.check_constraints chk
                         JOIN sys.tables t ON chk.parent_object_id = t.object_id
-                        JOIN sys.schemas s ON chk.schema_id = s.schema_id;";
+                        JOIN sys.schemas s ON chk.schema_id = s.schema_id;
+
+                        -- 4. Target database collation
+                        SELECT ISNULL(CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(@DbName, 'Collation')), ISNULL((SELECT collation_name FROM sys.databases WHERE name = @DbName), ''));";
 
                     using (var command = new SqlCommand(batchedQuery, connection))
                     {
@@ -619,6 +639,16 @@ namespace CollationModifier.Services
                                         ObjectType = "Check Constraint",
                                         Details = $"Check constraint on table '{reader.GetString(2)}': {reader.GetString(3)}"
                                     });
+                                }
+                            }
+
+                            // 4. Target database collation
+                            if (await reader.NextResultAsync(cancellationToken))
+                            {
+                                if (await reader.ReadAsync(cancellationToken))
+                                {
+                                    string currentCollation = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty;
+                                    EvaluateCollation(databaseName, currentCollation, targetCollation, report);
                                 }
                             }
                         }
