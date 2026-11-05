@@ -2627,6 +2627,89 @@ namespace CollationModifier.Tests
                     $"Expected subsequent connection transition to announce operations panel unlock, got '{vm.StatusMessage}'");
             });
 
+            RunSyncTest("MainWindowXaml_TargetConfiguration_StackedVertically_AndFullWidthBackupDirectory", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                // 1. Verify there is no ColumnDefinition with Width="200"
+                var colDefs = doc.Descendants().Where(e => e.Name.LocalName == "ColumnDefinition").ToList();
+                Assert(!colDefs.Any(c => c.Attribute("Width")?.Value == "200"),
+                    "MainWindow.xaml should not contain a 200 DIP ColumnDefinition constraining backup directory.");
+
+                // 2. Find Target Configuration label
+                var labels = doc.Descendants().Where(e => e.Name.LocalName == "Label").ToList();
+                var targetConfigLabel = labels.FirstOrDefault(l => l.Attribute("Content")?.Value == "Target Configuration");
+                Assert(targetConfigLabel != null, "MainWindow.xaml should contain 'Target Configuration' Label");
+
+                // 3. The container immediately following Target Configuration label must be a StackPanel
+                var targetConfigParent = targetConfigLabel!.Parent;
+                Assert(targetConfigParent != null, "Target Configuration Label should have a parent");
+
+                var siblings = targetConfigParent!.Elements().ToList();
+                int labelIndex = siblings.IndexOf(targetConfigLabel);
+                var targetConfigContainer = siblings[labelIndex + 1];
+                Assert(targetConfigContainer.Name.LocalName == "StackPanel",
+                    "Target Configuration fields container must be a vertical StackPanel, not a two-column Grid");
+
+                // 4. Verify vertical stacking and margins of the inner StackPanels
+                var innerPanels = targetConfigContainer.Elements().Where(e => e.Name.LocalName == "StackPanel").ToList();
+                Assert(innerPanels.Count == 2, "Target Configuration StackPanel should contain 2 stacked row panels");
+
+                var targetCollationPanel = innerPanels[0];
+                var backupDirPanel = innerPanels[1];
+
+                // Target collation row has bottom margin to separate rows cleanly
+                Assert(targetCollationPanel.Attribute("Margin")?.Value == "0,0,0,16",
+                    "Target collation container must specify bottom margin (Margin=\"0,0,0,16\") to cleanly separate rows");
+                Assert(targetCollationPanel.Attribute("Grid.Column") == null,
+                    "Target collation container should not specify Grid.Column");
+
+                // Backup directory row
+                Assert(backupDirPanel.Attribute("Grid.Column") == null,
+                    "Backup directory container should not specify Grid.Column");
+
+                // 5. Verify Backup Directory TextBox attributes, bindings, tooltips, and automation properties
+                var textBoxes = backupDirPanel.Elements().Where(e => e.Name.LocalName == "TextBox").ToList();
+                Assert(textBoxes.Count == 1, "Backup directory container must contain a TextBox");
+                var backupTextBox = textBoxes[0];
+
+                Assert(backupTextBox.Attribute("Text")?.Value == "{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}",
+                    "Backup directory TextBox must bind to BackupDirectory");
+                Assert(backupTextBox.Attribute("IsEnabled")?.Value == "{Binding IsNotBusy}",
+                    "Backup directory TextBox must bind IsEnabled to IsNotBusy");
+                Assert(backupTextBox.Attribute("AutomationProperties.LabeledBy")?.Value == "{Binding ElementName=BackupDirectoryLabel}",
+                    "Backup directory TextBox must preserve AutomationProperties.LabeledBy");
+                Assert(backupTextBox.Attribute("AutomationProperties.Name")?.Value == "Backup Directory (Server Host)",
+                    "Backup directory TextBox must preserve AutomationProperties.Name");
+                Assert(backupTextBox.Attribute("AutomationProperties.HelpText")?.Value == "Path is evaluated on the SQL Server host filesystem, not the local client.",
+                    "Backup directory TextBox must preserve AutomationProperties.HelpText");
+                Assert(backupTextBox.Attribute("ToolTip")?.Value == "Path is evaluated on the SQL Server host filesystem, not the local client.",
+                    "Backup directory TextBox must preserve ToolTip");
+                Assert(backupTextBox.Attribute("Width") == null,
+                    "Backup directory TextBox must not have a fixed Width attribute so it spans full width");
+            });
+
+            RunSyncTest("MainViewModel_LongBackupPath_PreservesFullPath", () =>
+            {
+                var vm = new MainViewModel();
+                string longPath = @"C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup\DefaultInstanceSubfolder";
+                Assert(longPath.Length > 60, "Test path should exceed 60 characters");
+                vm.BackupDirectory = longPath;
+                Assert(vm.BackupDirectory == longPath, "MainViewModel should preserve long backup path without truncation");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
