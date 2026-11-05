@@ -27,6 +27,7 @@ namespace CollationModifier.Tests
             try
             {
                 await MainViewModelTestsRunner.RunAllTestsAsync();
+                Console.WriteLine("PASS: MainViewModelTestsRunner");
             }
             catch (Exception ex)
             {
@@ -104,33 +105,12 @@ namespace CollationModifier.Tests
 
             try
             {
-                await MainViewModelTestsRunner.RunAllTestsAsync();
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
-                failed++;
-            }
-
-            try
-            {
                 TestLogFilePathProperty();
                 Console.WriteLine("PASS: TestLogFilePathProperty");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await MainViewModelTestsRunner.RunAllTestsAsync();
-                Console.WriteLine("PASS: MainViewModelTestsRunner");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
                 failed++;
             }
 

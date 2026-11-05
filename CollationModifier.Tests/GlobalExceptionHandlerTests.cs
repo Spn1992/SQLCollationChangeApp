@@ -123,39 +123,67 @@ namespace CollationModifier.Tests
 
         private static async Task Test_FatalExceptions_AreNotSuppressed_AndLoggedAsFatal()
         {
-            string logPath = Path.Combine(Path.GetTempPath(), $"test_fatal_oom_{Guid.NewGuid():N}.txt");
+            // 1. Verify direct fatal exceptions: OutOfMemoryException, AccessViolationException, and StackOverflowException
+            foreach (var (fatalEx, expectedTypeName) in new (Exception, string)[]
+            {
+                (new OutOfMemoryException("Memory allocation failed"), "OutOfMemoryException"),
+                (new AccessViolationException("Access violation occurred"), "AccessViolationException"),
+                (new StackOverflowException("Stack overflow occurred"), "StackOverflowException")
+            })
+            {
+                string path = Path.Combine(Path.GetTempPath(), $"test_fatal_{expectedTypeName}_{Guid.NewGuid():N}.txt");
+                try
+                {
+                    using var logger = new LoggerService(path);
+                    bool promptInvoked = false;
+                    bool handled = GlobalExceptionHandler.HandleDispatcherException(
+                        fatalEx,
+                        logger,
+                        (m, c) => { promptInvoked = true; return true; });
+
+                    Assert(!promptInvoked, $"Prompt should NOT be shown for fatal {expectedTypeName}");
+                    Assert(!handled, $"Fatal {expectedTypeName} must NOT be suppressed (handled must be false)");
+
+                    logger.Flush();
+                    string[] lines = File.ReadAllLines(path);
+                    Assert(lines.Any(l => l.Contains($"Fatal UI thread exception ({expectedTypeName})")), $"Fatal {expectedTypeName} must be logged as fatal error");
+                }
+                finally
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                }
+            }
+
+            // 2. AggregateException wrapping fatal exceptions
+            string aggLogPath = Path.Combine(Path.GetTempPath(), $"test_fatal_agg_{Guid.NewGuid():N}.txt");
             try
             {
-                using var logger = new LoggerService(logPath);
-
-                // 1. Direct OutOfMemoryException
-                var oom = new OutOfMemoryException("Memory allocation failed");
-                bool promptInvoked = false;
-                bool handled = GlobalExceptionHandler.HandleDispatcherException(
-                    oom,
-                    logger,
-                    (m, c) => { promptInvoked = true; return true; });
-
-                Assert(!promptInvoked, "Prompt should NOT be shown for fatal OutOfMemoryException");
-                Assert(!handled, "Fatal OutOfMemoryException must NOT be suppressed (handled must be false)");
-
-                // 2. AggregateException wrapping OutOfMemoryException
+                using var aggLogger = new LoggerService(aggLogPath);
                 var aggOom = new AggregateException(new OutOfMemoryException("Nested OOM"));
                 bool aggHandled = GlobalExceptionHandler.HandleDispatcherException(
                     aggOom,
-                    logger,
+                    aggLogger,
                     (m, c) => true);
 
                 Assert(!aggHandled, "Nested OutOfMemoryException in AggregateException must NOT be suppressed");
 
-                logger.Flush();
-                string[] lines = File.ReadAllLines(logPath);
-                Assert(lines.Any(l => l.Contains("Fatal UI thread exception (OutOfMemoryException)")), "Fatal OOM must be logged as fatal error");
+                aggLogger.Flush();
+                string[] lines = File.ReadAllLines(aggLogPath);
+                Assert(lines.Any(l => l.Contains("Fatal UI thread exception (AggregateException)")), "Nested fatal in AggregateException must be logged as fatal");
             }
             finally
             {
-                if (File.Exists(logPath)) File.Delete(logPath);
+                if (File.Exists(aggLogPath)) File.Delete(aggLogPath);
             }
+
+            // 3. Direct IsFatalException checks including nested and edge cases
+            Assert(!GlobalExceptionHandler.IsFatalException(null), "Null exception must not be fatal");
+            Assert(!GlobalExceptionHandler.IsFatalException(new InvalidOperationException("Non-fatal exception")), "Standard exception must not be fatal");
+            Assert(GlobalExceptionHandler.IsFatalException(new OutOfMemoryException()), "OutOfMemoryException must be fatal");
+            Assert(GlobalExceptionHandler.IsFatalException(new AccessViolationException()), "AccessViolationException must be fatal");
+            Assert(GlobalExceptionHandler.IsFatalException(new StackOverflowException()), "StackOverflowException must be fatal");
+            Assert(GlobalExceptionHandler.IsFatalException(new AggregateException(new AccessViolationException())), "Nested AccessViolationException in AggregateException must be fatal");
+            Assert(GlobalExceptionHandler.IsFatalException(new Exception("Wrapper", new StackOverflowException())), "Nested StackOverflowException in InnerException must be fatal");
         }
 
         private static void Test_SqlCredentialsAndPasswords_AreSanitizedInDialog()

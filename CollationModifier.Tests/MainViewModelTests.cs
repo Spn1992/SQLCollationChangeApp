@@ -18,6 +18,7 @@ namespace CollationModifier.Tests
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
         public List<string>? CollationsToReturn { get; set; } = null;
+        public string? CurrentCollationToReturn { get; set; } = null;
         public PreflightReport PreflightReportToReturn { get; set; } = new PreflightReport();
         public bool ThrowOnGetDatabases { get; set; } = false;
         public int GetDatabasesCount { get; private set; }
@@ -141,6 +142,13 @@ namespace CollationModifier.Tests
                     {
                         PreflightReportToReturn.ValidationErrors.Add(ex.Message);
                     }
+                }
+
+                var currentDb = DatabasesToReturn.FirstOrDefault(d => string.Equals(d.Name, databaseName, StringComparison.OrdinalIgnoreCase));
+                var currentCollation = CurrentCollationToReturn ?? currentDb?.Collation;
+                if (!string.IsNullOrEmpty(currentCollation))
+                {
+                    DatabaseService.EvaluateCollation(databaseName, currentCollation, targetCollation, PreflightReportToReturn);
                 }
             }
             return Task.FromResult(PreflightReportToReturn);
@@ -937,6 +945,11 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include explicit SINGLE_USER lock warning, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Status message should include secondary reset failure details, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError should be true when emergency reset fails");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError should be populated when emergency reset fails");
+                Assert(vm.DetailedError.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"DetailedError should contain lock warning, got: '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand should be executable when HasDetailedError is true");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_ConfirmsMultiUserRestored_WhenEmergencyResetSucceeds", async () =>
@@ -961,6 +974,74 @@ namespace CollationModifier.Tests
                 Assert(mockService.IsMultiUser, "Database should be restored to MULTI_USER mode!");
                 Assert(vm.StatusMessage.Contains("Database restored to MULTI_USER mode successfully"), $"Status message should confirm MULTI_USER restoration, got: '{vm.StatusMessage}'");
                 Assert(vm.StatusMessage.Contains("Table constraint violation"), $"Status message should include primary error details, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError should be true after successful auto-restore");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError should be populated after successful auto-restore");
+                Assert(vm.DetailedError.Contains("Table constraint violation"), $"DetailedError should contain primary error details, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError.Contains("Database was restored to MULTI_USER mode successfully from backup"), $"DetailedError should contain restore confirmation, got: '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand should be executable when HasDetailedError is true");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_AutoRestoreSuccess_PopulatesTooltipAndLockWarning_WhenLockStateDetected", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "LockWarningDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedErrorDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedErrorDetails = details;
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Status message should include single-user lock warning, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip == vm.StatusMessage, $"StatusToolTip should match StatusMessage, got: '{vm.StatusToolTip}'");
+                Assert(vm.HasDetailedError == true, "HasDetailedError must be true after successful auto-restore with lock warning");
+                Assert(!string.IsNullOrEmpty(vm.DetailedError), "DetailedError must be populated");
+                Assert(vm.DetailedError.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "DetailedError must contain single-user lock warning");
+                Assert(vm.DetailedError.Contains("Table constraint violation"), "DetailedError must contain primary error text");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand must be executable");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedErrorDetails == vm.DetailedError, "ShowErrorDetailsHandler should receive the formatted DetailedError text");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_AutoRestoreSuccess_EnablesShowErrorDetailsCommand_AndPassesDiagnostics", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DetailsDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldAlterCollationThrow = true,
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedDetails = details;
+
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.HasDetailedError == true, "HasDetailedError must be true");
+                Assert(vm.StatusToolTip != null, "StatusToolTip must be populated");
+                Assert(vm.StatusToolTip == vm.StatusMessage, "StatusToolTip must match StatusMessage");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "ShowErrorDetailsCommand must be enabled");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedDetails != null && capturedDetails.Contains("Database was restored to MULTI_USER mode successfully"),
+                    "ShowErrorDetailsHandler should be called with full diagnostic information");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_RollsBackWithUncancelledToken_WhenCancelledAfterBackup", async () =>
@@ -1019,6 +1100,107 @@ namespace CollationModifier.Tests
 
                 Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked if cancelled before backup completes.");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesRestoreFailure_WhenRestoreThrowsDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelRestoreFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = new InvalidOperationException("Restore disk I/O error occurred."),
+                    ShouldTrySetMultiUserFail = false
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have been called.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been called.");
+                Assert(vm.StatusMessage.Contains("CRITICAL: Auto-restore also failed"), $"Expected auto-restore failure message in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Restore disk I/O error occurred"), $"Expected restore error details in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusToolTip != null && vm.StatusToolTip.Contains("CRITICAL: Auto-restore also failed"), "StatusToolTip should contain restore error diagnostics.");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true to activate error details dialog.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Restore disk I/O error occurred"), "DetailedError should contain restore error details.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesSingleUserLockWarning_WhenResetThrowsDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelResetFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = null,
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have succeeded.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been attempted.");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Expected SINGLE_USER lock warning in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("Connection reset failed"), $"Expected reset failure details in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true when single-user reset fails during cancellation.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Connection reset failed"), "DetailedError should contain reset failure details.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SurfacesAggregatedErrors_WhenBothRestoreAndResetFailDuringCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelBothFailDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreExceptionToThrow = new InvalidOperationException("Restore disk I/O error occurred."),
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.CancelOperation();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup should have completed prior to cancellation.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should have been attempted.");
+                Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync should have been attempted.");
+                Assert(vm.StatusMessage.Contains("CRITICAL: Auto-restore also failed"), $"Expected auto-restore failure message in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("WARNING: Database remains locked in SINGLE_USER mode."), $"Expected lock warning in StatusMessage, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true when both restore and reset fail.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Restore disk I/O error occurred"), "DetailedError should contain restore error details.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Connection reset failed"), "DetailedError should contain reset error details.");
             });
 
             await RunAsyncTest("DatabaseService_TrySetMultiUserAsync_ExecutesWithoutCancellation_WhenTokenIsCancelled", async () =>
@@ -1498,10 +1680,71 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("<Style TargetType=\"Button\">"), "App.xaml should define implicit TargetType=\"Button\" style");
                 Assert(content.Contains("<Setter Property=\"FocusVisualStyle\" Value=\"{StaticResource FocusVisualStyle}\" />"), "App.xaml should apply FocusVisualStyle across implicit control styles");
                 Assert(!content.Contains("<Setter Property=\"BorderThickness\" Value=\"2\" />"), "App.xaml should not contain layout-shifting BorderThickness=2 trigger setters");
+                Assert(content.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
                 Assert(content.Contains("#047857"), "App.xaml should define PrimaryButton background with #047857");
                 Assert(content.Contains("#1D4ED8"), "App.xaml should define SecondaryButton background with #1D4ED8");
                 Assert(!content.Contains("#10B981"), "App.xaml should not contain non-compliant color #10B981");
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_CopyStatus_UsesAccessibleStatusSuccessBrush", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string appContent = System.IO.File.ReadAllText(appXamlPath);
+                Assert(appContent.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
+
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string errorDetailsContent = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(errorDetailsContent);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+                var copiedStatusTb = textBlocks.FirstOrDefault(tb =>
+                    tb.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "lblCopiedStatus"));
+
+                Assert(copiedStatusTb != null, "ErrorDetailsWindow.xaml must contain lblCopiedStatus TextBlock");
+                Assert(copiedStatusTb!.Attribute("Foreground")?.Value == "{StaticResource StatusSuccessBrush}",
+                    "lblCopiedStatus should bind Foreground to {StaticResource StatusSuccessBrush}");
+                Assert(!errorDetailsContent.Contains("#16A34A"),
+                    "ErrorDetailsWindow.xaml must not contain non-compliant hardcoded color #16A34A");
+
+                // Verify relative luminance and contrast ratio calculation for #047857 vs #F8FAFC window background (WCAG 2.2 SC 1.4.3 >= 4.5:1)
+                double sR1 = 4.0 / 255.0;
+                double sG1 = 120.0 / 255.0;
+                double sB1 = 87.0 / 255.0;
+                double rLin1 = sR1 <= 0.04045 ? sR1 / 12.92 : Math.Pow((sR1 + 0.055) / 1.055, 2.4);
+                double gLin1 = sG1 <= 0.04045 ? sG1 / 12.92 : Math.Pow((sG1 + 0.055) / 1.055, 2.4);
+                double bLin1 = sB1 <= 0.04045 ? sB1 / 12.92 : Math.Pow((sB1 + 0.055) / 1.055, 2.4);
+                double lumFg = 0.2126 * rLin1 + 0.7152 * gLin1 + 0.0722 * bLin1;
+
+                double sR2 = 248.0 / 255.0;
+                double sG2 = 250.0 / 255.0;
+                double sB2 = 252.0 / 255.0;
+                double rLin2 = sR2 <= 0.04045 ? sR2 / 12.92 : Math.Pow((sR2 + 0.055) / 1.055, 2.4);
+                double gLin2 = sG2 <= 0.04045 ? sG2 / 12.92 : Math.Pow((sG2 + 0.055) / 1.055, 2.4);
+                double bLin2 = sB2 <= 0.04045 ? sB2 / 12.92 : Math.Pow((sB2 + 0.055) / 1.055, 2.4);
+                double lumBg = 0.2126 * rLin2 + 0.7152 * gLin2 + 0.0722 * bLin2;
+
+                double contrastRatio = (lumBg + 0.05) / (lumFg + 0.05);
+                Assert(contrastRatio >= 4.5, $"Contrast ratio {contrastRatio:F2}:1 against window background #F8FAFC must meet or exceed 4.5:1 under WCAG 2.2 1.4.3");
             });
 
             RunSyncTest("AppXaml_InputRestingBorderBrush_HighContrastConfiguration", () =>
@@ -1718,7 +1961,91 @@ namespace CollationModifier.Tests
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
                 Assert(content.Contains("Text=\"{Binding StatusMessage}\""), "MainWindow.xaml should contain status message binding");
+                Assert(content.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\"") || content.Contains("ToolTip=\"{Binding StatusToolTip}\""), "MainWindow.xaml status TextBlock should have ToolTip binding");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml status TextBlock should have AutomationProperties.LiveSetting=\"Polite\"");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var statusTextBlock = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TextBlock" && (e.Attribute(xNameAttr)?.Value == "StatusTextBlock" || e.Attribute("Name")?.Value == "StatusTextBlock"));
+                Assert(statusTextBlock != null, "MainWindow.xaml should define StatusTextBlock TextBlock");
+                var tooltipValue = statusTextBlock!.Attribute("ToolTip")?.Value;
+                Assert(tooltipValue == "{Binding EffectiveStatusToolTip}" || tooltipValue == "{Binding StatusToolTip}", "StatusTextBlock must configure ToolTip binding");
+            });
+
+            RunSyncTest("MainWindowXaml_StatusBar_UsesConstrainedGridWithTextTrimming", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+
+                int statusBarIndex = content.IndexOf("<!-- Status Bar at the bottom -->");
+                Assert(statusBarIndex >= 0, "MainWindow.xaml should contain status bar section");
+                string statusBarSection = content.Substring(statusBarIndex);
+
+                Assert(statusBarSection.Contains("<Grid.ColumnDefinitions>"), "Status bar should contain Grid.ColumnDefinitions");
+                Assert(statusBarSection.Contains("Width=\"*\""), "Status bar Grid should define star width column");
+                Assert(statusBarSection.Contains("Width=\"Auto\""), "Status bar Grid should define Auto width column");
+                Assert(statusBarSection.Contains("TextTrimming=\"CharacterEllipsis\""), "StatusTextBlock should have TextTrimming=\"CharacterEllipsis\"");
+                Assert(statusBarSection.Contains("ToolTip=\"{Binding EffectiveStatusToolTip}\""), "StatusTextBlock should bind ToolTip to EffectiveStatusToolTip");
+                Assert(statusBarSection.Contains("Grid.Column=\"0\""), "StatusTextBlock should be placed in Grid.Column 0");
+                Assert(statusBarSection.Contains("Grid.Column=\"1\""), "ProgressBar should be placed in Grid.Column 1");
+            });
+
+            RunSyncTest("MainViewModel_EffectiveStatusToolTip_FallsBackToStatusMessage", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                // Initial state: StatusToolTip is null, StatusMessage is "Ready"
+                Assert(vm.StatusToolTip == null, "Initial StatusToolTip should be null");
+                Assert(vm.StatusMessage == "Ready", "Initial StatusMessage should be 'Ready'");
+                Assert(vm.EffectiveStatusToolTip == "Ready", $"Expected EffectiveStatusToolTip to fall back to 'Ready', got '{vm.EffectiveStatusToolTip}'");
+
+                var changedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) changedProperties.Add(e.PropertyName);
+                };
+
+                // Changing StatusMessage should raise PropertyChanged for EffectiveStatusToolTip when StatusToolTip is null
+                changedProperties.Clear();
+                vm.StatusMessage = "Processing database collation...";
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to update to new StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.StatusMessage)), "StatusMessage property change should be notified");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusMessage changes");
+
+                // Setting StatusToolTip should override StatusMessage in EffectiveStatusToolTip
+                changedProperties.Clear();
+                vm.StatusToolTip = "Detailed progress tooltip text";
+                Assert(vm.EffectiveStatusToolTip == "Detailed progress tooltip text", $"Expected EffectiveStatusToolTip to return StatusToolTip, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.StatusToolTip)), "StatusToolTip property change should be notified");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusToolTip changes");
+
+                // Resetting StatusToolTip to null should fall back to StatusMessage again
+                changedProperties.Clear();
+                vm.StatusToolTip = null;
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage after nulling tooltip, got '{vm.EffectiveStatusToolTip}'");
+                Assert(changedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "EffectiveStatusToolTip property change should be notified when StatusToolTip cleared");
+
+                // Setting empty StatusToolTip should also fall back to StatusMessage
+                vm.StatusToolTip = string.Empty;
+                Assert(vm.EffectiveStatusToolTip == "Processing database collation...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage when tooltip is empty string, got '{vm.EffectiveStatusToolTip}'");
+
+                // SetStatus helper method should also update EffectiveStatusToolTip
+                vm.SetStatus("Final status", "Explicit tooltip");
+                Assert(vm.EffectiveStatusToolTip == "Explicit tooltip", $"Expected EffectiveStatusToolTip 'Explicit tooltip', got '{vm.EffectiveStatusToolTip}'");
+
+                vm.SetStatus("Another status");
+                Assert(vm.EffectiveStatusToolTip == "Another status", $"Expected EffectiveStatusToolTip 'Another status', got '{vm.EffectiveStatusToolTip}'");
             });
 
             RunSyncTest("AppXaml_ButtonControlTemplates_IncorporateFocusVisualBorderAndTrigger", () =>
@@ -1750,6 +2077,27 @@ namespace CollationModifier.Tests
                 Assert(method!.ReturnType == typeof(Task<ServerInitializationData>), "GetServerInitializationDataAsync must return Task<ServerInitializationData>.");
             });
 
+            RunSyncTest("ServerInitializationData_DoesNotExposeObsoletePropertyShims", () =>
+            {
+                var backupDirectoryProp = typeof(ServerInitializationData).GetProperty("BackupDirectory");
+                Assert(backupDirectoryProp == null, "ServerInitializationData must not expose obsolete BackupDirectory property shim.");
+
+                var collationsProp = typeof(ServerInitializationData).GetProperty("Collations");
+                Assert(collationsProp == null, "ServerInitializationData must not expose obsolete Collations property shim.");
+
+                var defaultBackupDirProp = typeof(ServerInitializationData).GetProperty("DefaultBackupDirectory");
+                Assert(defaultBackupDirProp != null, "ServerInitializationData must expose canonical DefaultBackupDirectory property.");
+                Assert(defaultBackupDirProp!.PropertyType == typeof(string), "DefaultBackupDirectory must be of type string.");
+
+                var supportedCollationsProp = typeof(ServerInitializationData).GetProperty("SupportedCollations");
+                Assert(supportedCollationsProp != null, "ServerInitializationData must expose canonical SupportedCollations property.");
+                Assert(supportedCollationsProp!.PropertyType == typeof(List<string>), "SupportedCollations must be of type List<string>.");
+
+                var databasesProp = typeof(ServerInitializationData).GetProperty("Databases");
+                Assert(databasesProp != null, "ServerInitializationData must expose canonical Databases property.");
+                Assert(databasesProp!.PropertyType == typeof(List<DatabaseInfo>), "Databases must be of type List<DatabaseInfo>.");
+            });
+
             await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
             {
                 using var logger = new LoggerService();
@@ -1774,6 +2122,25 @@ namespace CollationModifier.Tests
                 }
 
                 Assert(wasAbortedWithCancellation, "GetServerInitializationDataAsync must abort with OperationCanceledException when cancellation token is cancelled.");
+            });
+
+            RunSyncTest("DatabaseService_DefaultBackupDirectoryQuery_ContainsExpectedFallbackSteps", () =>
+            {
+                var field = typeof(DatabaseService).GetField("DefaultBackupDirectoryQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+                Assert(field != null, "DefaultBackupDirectoryQuery constant not found on DatabaseService.");
+                var query = field!.GetValue(null) as string;
+                Assert(!string.IsNullOrEmpty(query), "DefaultBackupDirectoryQuery should not be null or empty.");
+
+                Assert(query!.Contains("SERVERPROPERTY('InstanceDefaultBackupPath')"),
+                    "DefaultBackupDirectoryQuery should attempt InstanceDefaultBackupPath first.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains(@"Software\Microsoft\MSSQLServer\MSSQLServer\MSSQLServer"),
+                    "DefaultBackupDirectoryQuery should attempt secondary registry lookup at Software\\Microsoft\\MSSQLServer\\MSSQLServer\\MSSQLServer.");
+                Assert(query.Contains("SERVERPROPERTY('InstanceDefaultDataPath')"),
+                    "DefaultBackupDirectoryQuery should fall back to InstanceDefaultDataPath.");
+                Assert(query.Contains("SELECT ISNULL(@path, '') AS DefaultBackupPath;"),
+                    "DefaultBackupDirectoryQuery should return DefaultBackupPath column with fallback to empty string.");
             });
 
             await RunAsyncTest("ConnectAsync_CallsGetServerInitializationDataAsync_InSingleStep", async () =>
@@ -1993,6 +2360,46 @@ namespace CollationModifier.Tests
                 Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
                 Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
                 Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ResetsProgressAndEnablesIndeterminate_DuringAlterCollation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "AlterProgressDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                int capturedProgressPercent = -1;
+                bool? capturedIsIndeterminate = null;
+                string? capturedStatusMessage = null;
+
+                MainViewModel? vm = null;
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    BackupProgressSimulator = progress =>
+                    {
+                        // Simulate backup finishing at 100%, which turns off indeterminate mode
+                        progress?.Report(100);
+                    },
+                    OnAlterCollation = async ct =>
+                    {
+                        capturedProgressPercent = vm!.ProgressPercent;
+                        capturedIsIndeterminate = vm.IsIndeterminateProgress;
+                        capturedStatusMessage = vm.StatusMessage;
+                        await Task.CompletedTask;
+                    }
+                };
+
+                vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(capturedProgressPercent == 0, $"Expected ProgressPercent to be 0 during AlterCollationAsync, but was {capturedProgressPercent}");
+                Assert(capturedIsIndeterminate == true, $"Expected IsIndeterminateProgress to be true during AlterCollationAsync, but was {capturedIsIndeterminate}");
+                Assert(capturedStatusMessage != null && capturedStatusMessage.Contains("Altering database collation"), $"Expected status message during AlterCollationAsync to indicate collation alteration, got '{capturedStatusMessage}'");
+                Assert(vm.ProgressPercent == 0, $"Expected ProgressPercent to reset to 0 after completion, got {vm.ProgressPercent}");
+                Assert(vm.IsIndeterminateProgress == true, $"Expected IsIndeterminateProgress to reset to true after completion, got {vm.IsIndeterminateProgress}");
             });
 
             RunSyncTest("ErrorFormattingHelper_IsSingleUserLockState_Detection", () =>
@@ -2401,6 +2808,124 @@ namespace CollationModifier.Tests
                     "ErrorDetailsWindow.xaml header TextBlock must expose AutomationProperties.HeadingLevel='Level1'");
             });
 
+            RunSyncTest("AppXaml_SuccessForegroundBrush_HighContrastConfiguration", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                Assert(content.Contains("x:Key=\"SuccessForegroundBrush\" Color=\"#15803D\""),
+                    "App.xaml should define SuccessForegroundBrush with #15803D");
+
+                // Verify relative luminance and contrast ratio calculation under WCAG 2.2 1.4.3
+                // Success color: #15803D (R=21, G=128, B=61)
+                double sR = 21.0 / 255.0;
+                double sG = 128.0 / 255.0;
+                double sB = 61.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double textLum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+
+                // Window background: #F8FAFC (R=248, G=250, B=252)
+                double bgR = 248.0 / 255.0;
+                double bgG = 250.0 / 255.0;
+                double bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double bgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrastAgainstWindowBg = (bgLum + 0.05) / (textLum + 0.05);
+                Assert(contrastAgainstWindowBg >= 4.5,
+                    $"Contrast ratio {contrastAgainstWindowBg:F2}:1 against #F8FAFC window background must exceed 4.5:1 under WCAG 2.2 1.4.3");
+
+                double contrastAgainstWhite = (1.0 + 0.05) / (textLum + 0.05);
+                Assert(contrastAgainstWhite >= 4.5,
+                    $"Contrast ratio {contrastAgainstWhite:F2}:1 against white background must exceed 4.5:1 under WCAG 2.2 1.4.3");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_NoLocalBorderBrushOverride", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBoxes = doc.Descendants().Where(e => e.Name.LocalName == "TextBox").ToList();
+
+                var errorDetailsTb = textBoxes.FirstOrDefault(tb =>
+                    tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "txtErrorDetails" ||
+                    tb.Attribute("Name")?.Value == "txtErrorDetails");
+                Assert(errorDetailsTb != null, "ErrorDetailsWindow.xaml must contain txtErrorDetails TextBox");
+                Assert(errorDetailsTb!.Attribute("BorderBrush") == null,
+                    "txtErrorDetails must not contain a local BorderBrush override so it inherits InputRestingBorderBrush from App.xaml");
+                Assert(!content.Contains("BorderBrush=\"#CBD5E1\""),
+                    "ErrorDetailsWindow.xaml must not contain low-contrast #CBD5E1 border brush");
+
+                // Verify relative luminance and contrast ratio calculation for #64748B vs #F8FAFC
+                double sR = 100.0 / 255.0;
+                double sG = 116.0 / 255.0;
+                double sB = 139.0 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lum = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+
+                double bgR = 248.0 / 255.0;
+                double bgG = 250.0 / 255.0;
+                double bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double bgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrast = (bgLum + 0.05) / (lum + 0.05);
+                Assert(contrast >= 3.0, $"Contrast ratio {contrast:F2} against background must exceed 3:1 under WCAG 2.2 1.4.11");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_CopiedStatusLabel_UsesSuccessForegroundBrush", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+
+                var copiedLabel = textBlocks.FirstOrDefault(tb => tb.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "lblCopiedStatus");
+                Assert(copiedLabel != null, "ErrorDetailsWindow.xaml must contain 'lblCopiedStatus' TextBlock");
+                var fg = copiedLabel!.Attribute("Foreground")?.Value;
+                Assert(fg == "{StaticResource StatusSuccessBrush}" || fg == "{StaticResource SuccessForegroundBrush}",
+                    "lblCopiedStatus TextBlock must bind Foreground to an accessible success brush");
+                Assert(!content.Contains("#16A34A"),
+                    "ErrorDetailsWindow.xaml must not contain low-contrast hardcoded #16A34A foreground color");
+            });
+
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
@@ -2534,102 +3059,366 @@ namespace CollationModifier.Tests
                     $"Expected subsequent connection transition to announce operations panel unlock, got '{vm.StatusMessage}'");
             });
 
-            RunSyncTest("DatabaseService_DatabaseCatalogQuery_IsDefinedAndContainsExpectedClauses", () =>
+            RunSyncTest("DatabaseService_EvaluateCollation_Fails_WhenCollationsMatchIdentically", () =>
             {
-                var field = typeof(DatabaseService).GetField("DatabaseCatalogQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                Assert(field != null, "DatabaseCatalogQuery constant field must be declared in DatabaseService.");
-                Assert(field!.IsLiteral && !field.IsInitOnly, "DatabaseCatalogQuery must be a const field.");
-                var query = field.GetValue(null) as string;
-                Assert(!string.IsNullOrWhiteSpace(query), "DatabaseCatalogQuery must not be null or empty.");
-                Assert(query!.Contains("sys.databases"), "DatabaseCatalogQuery must query sys.databases.");
-                Assert(query.Contains("sys.master_files"), "DatabaseCatalogQuery must query sys.master_files.");
-                Assert(query.Contains("d.database_id > 4"), "DatabaseCatalogQuery must exclude system databases with database_id > 4 filter.");
-                Assert(query.Contains("d.name") && query.Contains("d.collation_name") && query.Contains("d.compatibility_level") && query.Contains("size_mb"),
-                    "DatabaseCatalogQuery must select name, collation_name, compatibility_level, owner, and size_mb columns.");
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "SQL_Latin1_General_CP1_CI_AS", report);
+
+                Assert(report.HasValidationErrors, "Report should have validation errors when target collation matches current collation.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions when target collation matches current collation.");
+                Assert(!report.IsValid, "Report should not be valid when collations match.");
+                Assert(report.ValidationErrors.Count == 1, $"Expected 1 validation error, got {report.ValidationErrors.Count}");
+                Assert(report.ValidationErrors[0].Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), "Validation error must state database already uses collation.");
+                Assert(report.ValidationErrors[0].Contains("Target collation 'SQL_Latin1_General_CP1_CI_AS' is identical to the current database collation."), "Validation error must state target collation is identical to current collation.");
             });
 
-            RunSyncTest("DatabaseService_MapDatabaseInfo_MethodExistsAndHasExpectedSignature", () =>
+            RunSyncTest("DatabaseService_EvaluateCollation_Fails_WhenCollationsMatchCaseInsensitively", () =>
             {
-                var method = typeof(DatabaseService).GetMethod("MapDatabaseInfo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                Assert(method != null, "MapDatabaseInfo private static method must exist in DatabaseService.");
-                Assert(method!.ReturnType == typeof(DatabaseInfo), "MapDatabaseInfo must return DatabaseInfo.");
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "sql_latin1_general_cp1_ci_as", report);
 
-                var parameters = method.GetParameters();
-                Assert(parameters.Length == 1, $"Expected 1 parameter for MapDatabaseInfo, found {parameters.Length}.");
-                Assert(parameters[0].ParameterType == typeof(Microsoft.Data.SqlClient.SqlDataReader),
-                    $"Expected parameter type to be SqlDataReader, found {parameters[0].ParameterType.Name}.");
+                Assert(report.HasValidationErrors, "Report should have validation errors for case-insensitive match.");
+                Assert(report.HasBlockingConditions, "Report should have blocking conditions for case-insensitive match.");
+                Assert(!report.IsValid, "Report should not be valid for case-insensitive match.");
+                Assert(report.ValidationErrors.Count == 1, $"Expected 1 validation error, got {report.ValidationErrors.Count}");
+                Assert(report.ValidationErrors[0].Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), "Validation error must state database already uses current collation.");
+                Assert(report.ValidationErrors[0].Contains("Target collation 'sql_latin1_general_cp1_ci_as' is identical to the current database collation."), "Validation error must state target collation is identical.");
             });
 
-            RunSyncTest("DatabaseService_MapDatabaseInfo_ThrowsArgumentNullException_WhenReaderIsNull", () =>
+            RunSyncTest("DatabaseService_EvaluateCollation_Succeeds_WhenCollationsDiffer", () =>
             {
-                var method = typeof(DatabaseService).GetMethod("MapDatabaseInfo", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                Assert(method != null, "MapDatabaseInfo private static method must exist in DatabaseService.");
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS", report);
 
-                try
-                {
-                    method!.Invoke(null, new object?[] { null });
-                    throw new InvalidOperationException("MapDatabaseInfo should throw TargetInvocationException wrapping ArgumentNullException when null reader is passed.");
-                }
-                catch (System.Reflection.TargetInvocationException ex) when (ex.InnerException is ArgumentNullException)
-                {
-                    // Expected
-                }
-
-                try
-                {
-                    DatabaseService.MapDatabaseInfo((IDataRecord)null!);
-                    throw new InvalidOperationException("MapDatabaseInfo should throw ArgumentNullException when null record is passed.");
-                }
-                catch (ArgumentNullException)
-                {
-                    // Expected
-                }
+                Assert(!report.HasValidationErrors, "Report should NOT have validation errors when collations differ.");
+                Assert(!report.HasBlockingConditions, "Report should NOT have blocking conditions when collations differ.");
+                Assert(report.IsValid, "Report should be valid when collations differ.");
+                Assert(report.ValidationErrors.Count == 0, $"Expected 0 validation errors, got {report.ValidationErrors.Count}");
             });
 
-            RunSyncTest("DatabaseService_MapDatabaseInfo_MapsAllColumnsCorrectly", () =>
+            RunSyncTest("DatabaseService_EvaluateCollation_HandlesNullOrWhitespaceGracefully", () =>
             {
-                using var table = new DataTable();
-                table.Columns.Add("name", typeof(string));
-                table.Columns.Add("collation_name", typeof(string));
-                table.Columns.Add("compatibility_level", typeof(byte));
-                table.Columns.Add("owner", typeof(string));
-                table.Columns.Add("size_mb", typeof(long));
+                var report = new PreflightReport { DatabaseName = "TestDB" };
+                DatabaseService.EvaluateCollation("TestDB", null, "SQL_Latin1_General_CP1_CI_AS", report);
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", null, report);
+                DatabaseService.EvaluateCollation("TestDB", "   ", "SQL_Latin1_General_CP1_CI_AS", report);
+                DatabaseService.EvaluateCollation("TestDB", "SQL_Latin1_General_CP1_CI_AS", "   ", report);
+                DatabaseService.EvaluateCollation("TestDB", null, null, report);
 
-                table.Rows.Add("ProductionDB", "SQL_Latin1_General_CP1_CI_AS", (byte)160, "CORP\\sql_admin", 40960L);
-
-                using var reader = table.CreateDataReader();
-                Assert(reader.Read(), "Reader should have 1 row.");
-
-                var info = DatabaseService.MapDatabaseInfo(reader);
-
-                Assert(info.Name == "ProductionDB", $"Expected Name 'ProductionDB', got '{info.Name}'");
-                Assert(info.Collation == "SQL_Latin1_General_CP1_CI_AS", $"Expected Collation 'SQL_Latin1_General_CP1_CI_AS', got '{info.Collation}'");
-                Assert(info.CompatibilityLevel == "160", $"Expected CompatibilityLevel '160', got '{info.CompatibilityLevel}'");
-                Assert(info.Owner == "CORP\\sql_admin", $"Expected Owner 'CORP\\sql_admin', got '{info.Owner}'");
-                Assert(info.Size == "40960 MB", $"Expected Size '40960 MB', got '{info.Size}'");
+                Assert(!report.HasValidationErrors, "Report should NOT have validation errors for null or whitespace inputs.");
+                Assert(!report.HasBlockingConditions, "Report should NOT have blocking conditions for null or whitespace inputs.");
+                Assert(report.IsValid, "Report should be valid.");
             });
 
-            RunSyncTest("DatabaseService_MapDatabaseInfo_HandlesNullsWithFallbacks", () =>
+            RunSyncTest("PreflightReport_GetDiagnosticSummary_DisplaysIdenticalCollationDiagnostic", () =>
             {
-                using var table = new DataTable();
-                table.Columns.Add("name", typeof(string));
-                table.Columns.Add("collation_name", typeof(string));
-                table.Columns.Add("compatibility_level", typeof(byte));
-                table.Columns.Add("owner", typeof(string));
-                table.Columns.Add("size_mb", typeof(long));
+                var report = new PreflightReport { DatabaseName = "DiagDB" };
+                DatabaseService.EvaluateCollation("DiagDB", "SQL_Latin1_General_CP1_CI_AS", "SQL_Latin1_General_CP1_CI_AS", report);
 
-                table.Rows.Add("ContosoAppDB", DBNull.Value, (byte)130, DBNull.Value, DBNull.Value);
+                string summary = report.GetDiagnosticSummary();
+                Assert(summary.Contains("FAILED (Blocking items found)"), "Diagnostic summary should indicate failure.");
+                Assert(summary.Contains("[Validation Errors (1)]"), "Diagnostic summary should include Validation Errors header.");
+                Assert(summary.Contains("Database 'DiagDB' already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), "Diagnostic summary must state database already uses collation.");
+                Assert(summary.Contains("Target collation 'SQL_Latin1_General_CP1_CI_AS' is identical to the current database collation."), "Diagnostic summary must state target collation is identical.");
+            });
 
-                using var reader = table.CreateDataReader();
-                Assert(reader.Read(), "Reader should have 1 row.");
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenTargetCollationMatchesCurrentCollation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "IdenticalDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
 
-                var info = DatabaseService.MapDatabaseInfo(reader);
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
 
-                Assert(info.Name == "ContosoAppDB", $"Expected Name 'ContosoAppDB', got '{info.Name}'");
-                Assert(info.Collation == "Unknown", $"Expected Collation fallback 'Unknown', got '{info.Collation}'");
-                Assert(info.CompatibilityLevel == "130", $"Expected CompatibilityLevel '130', got '{info.CompatibilityLevel}'");
-                Assert(info.Owner == "Unknown", $"Expected Owner fallback 'Unknown', got '{info.Owner}'");
-                Assert(info.Size == "Unknown", $"Expected Size fallback 'Unknown', got '{info.Size}'");
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup must NOT be performed when target collation matches current collation!");
+                Assert(mockService.AlterCollationCount == 0, "Alter Collation must NOT be performed when target collation matches current collation!");
+                Assert(mockService.IsMultiUser, "Database must remain in multi-user mode.");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected status message to indicate failure before backup, got: '{vm.StatusMessage}'");
+                Assert(vm.StatusMessage.Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), $"Status message should include collation diagnostic, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError must be true to allow user inspection.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Pre-flight Validation Report for Database 'IdenticalDb'"), $"DetailedError should contain preflight report, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), $"DetailedError should describe identical collation, got: '{vm.DetailedError}'");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("Target collation 'SQL_Latin1_General_CP1_CI_AS' is identical to the current database collation."), $"DetailedError should state collation is identical, got: '{vm.DetailedError}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null), "ShowErrorDetailsCommand should be executable.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenTargetCollationMatchesCaseInsensitively", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CaseDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "sql_latin1_general_cp1_ci_as";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "Backup must NOT execute when target collation matches case-insensitively!");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollation must NOT execute when target collation matches case-insensitively!");
+                Assert(vm.StatusMessage.Contains("Process failed before backup"), $"Expected failure before backup status, got: '{vm.StatusMessage}'");
+                Assert(vm.HasDetailedError, "HasDetailedError should be true.");
+                Assert(vm.DetailedError != null && vm.DetailedError.Contains("already uses collation 'SQL_Latin1_General_CP1_CI_AS'"), $"DetailedError should state database already uses collation, got: '{vm.DetailedError}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ProceedsNormally_WhenTargetCollationDiffers", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DistinctDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "Backup SHOULD execute when target collation differs!");
+                Assert(mockService.AlterCollationCount == 1, "AlterCollation SHOULD execute when target collation differs!");
+                Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected success message, got: '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("MainWindowXaml_TargetConfiguration_StackedVertically_AndFullWidthBackupDirectory", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                // 1. Verify there is no ColumnDefinition with Width="200"
+                var colDefs = doc.Descendants().Where(e => e.Name.LocalName == "ColumnDefinition").ToList();
+                Assert(!colDefs.Any(c => c.Attribute("Width")?.Value == "200"),
+                    "MainWindow.xaml should not contain a 200 DIP ColumnDefinition constraining backup directory.");
+
+                // 2. Find Target Configuration label
+                var labels = doc.Descendants().Where(e => e.Name.LocalName == "Label").ToList();
+                var targetConfigLabel = labels.FirstOrDefault(l => l.Attribute("Content")?.Value == "Target Configuration");
+                Assert(targetConfigLabel != null, "MainWindow.xaml should contain 'Target Configuration' Label");
+
+                // 3. The container immediately following Target Configuration label must be a StackPanel
+                var targetConfigParent = targetConfigLabel!.Parent;
+                Assert(targetConfigParent != null, "Target Configuration Label should have a parent");
+
+                var siblings = targetConfigParent!.Elements().ToList();
+                int labelIndex = siblings.IndexOf(targetConfigLabel);
+                var targetConfigContainer = siblings[labelIndex + 1];
+                Assert(targetConfigContainer.Name.LocalName == "StackPanel",
+                    "Target Configuration fields container must be a vertical StackPanel, not a two-column Grid");
+
+                // 4. Verify vertical stacking and margins of the inner StackPanels
+                var innerPanels = targetConfigContainer.Elements().Where(e => e.Name.LocalName == "StackPanel").ToList();
+                Assert(innerPanels.Count == 2, "Target Configuration StackPanel should contain 2 stacked row panels");
+
+                var targetCollationPanel = innerPanels[0];
+                var backupDirPanel = innerPanels[1];
+
+                // Target collation row has bottom margin to separate rows cleanly
+                Assert(targetCollationPanel.Attribute("Margin")?.Value == "0,0,0,16",
+                    "Target collation container must specify bottom margin (Margin=\"0,0,0,16\") to cleanly separate rows");
+                Assert(targetCollationPanel.Attribute("Grid.Column") == null,
+                    "Target collation container should not specify Grid.Column");
+
+                // Backup directory row
+                Assert(backupDirPanel.Attribute("Grid.Column") == null,
+                    "Backup directory container should not specify Grid.Column");
+
+                // 5. Verify Backup Directory TextBox attributes, bindings, tooltips, and automation properties
+                var textBoxes = backupDirPanel.Elements().Where(e => e.Name.LocalName == "TextBox").ToList();
+                Assert(textBoxes.Count == 1, "Backup directory container must contain a TextBox");
+                var backupTextBox = textBoxes[0];
+
+                Assert(backupTextBox.Attribute("Text")?.Value == "{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}",
+                    "Backup directory TextBox must bind to BackupDirectory");
+                Assert(backupTextBox.Attribute("IsEnabled")?.Value == "{Binding IsNotBusy}",
+                    "Backup directory TextBox must bind IsEnabled to IsNotBusy");
+                Assert(backupTextBox.Attribute("AutomationProperties.LabeledBy")?.Value == "{Binding ElementName=BackupDirectoryLabel}",
+                    "Backup directory TextBox must preserve AutomationProperties.LabeledBy");
+                Assert(backupTextBox.Attribute("AutomationProperties.Name")?.Value == "Backup Directory (Server Host)",
+                    "Backup directory TextBox must preserve AutomationProperties.Name");
+                Assert(backupTextBox.Attribute("AutomationProperties.HelpText")?.Value == "Path is evaluated on the SQL Server host filesystem, not the local client.",
+                    "Backup directory TextBox must preserve AutomationProperties.HelpText");
+                Assert(backupTextBox.Attribute("ToolTip")?.Value == "Path is evaluated on the SQL Server host filesystem, not the local client.",
+                    "Backup directory TextBox must preserve ToolTip");
+                Assert(backupTextBox.Attribute("Width") == null,
+                    "Backup directory TextBox must not have a fixed Width attribute so it spans full width");
+            });
+
+            RunSyncTest("MainViewModel_LongBackupPath_PreservesFullPath", () =>
+            {
+                var vm = new MainViewModel();
+                string longPath = @"C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Backup\DefaultInstanceSubfolder";
+                Assert(longPath.Length > 60, "Test path should exceed 60 characters");
+                vm.BackupDirectory = longPath;
+                Assert(vm.BackupDirectory == longPath, "MainViewModel should preserve long backup path without truncation");
+            });
+
+            RunSyncTest("MainViewModel_IsConnecting_PropertyEvaluationAndNotifications", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(!vm.IsConnecting, "IsConnecting should default to false.");
+
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        notifiedProperties.Add(args.PropertyName);
+                    }
+                };
+
+                // Transition to busy while disconnected -> IsConnecting becomes true
+                vm.IsBusy = true;
+                Assert(vm.IsConnecting, "IsConnecting should be true when IsBusy is true and IsConnected is false.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsBusy becomes true, got: {string.Join(", ", notifiedProperties)}");
+
+                // Transition to connected while busy -> IsConnecting becomes false
+                notifiedProperties.Clear();
+                vm.IsConnected = true;
+                Assert(!vm.IsConnecting, "IsConnecting should be false when IsConnected is true.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsConnected becomes true, got: {string.Join(", ", notifiedProperties)}");
+
+                // Transition busy back to false -> IsConnecting remains false
+                notifiedProperties.Clear();
+                vm.IsBusy = false;
+                Assert(!vm.IsConnecting, "IsConnecting should remain false when IsBusy is false.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsBusy becomes false, got: {string.Join(", ", notifiedProperties)}");
+
+                // Transition connected back to false
+                notifiedProperties.Clear();
+                vm.IsConnected = false;
+                Assert(!vm.IsConnecting, "IsConnecting should be false when IsBusy is false and IsConnected is false.");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsConnecting)),
+                    $"Expected PropertyChanged for 'IsConnecting' when IsConnected becomes false, got: {string.Join(", ", notifiedProperties)}");
+            });
+
+            await RunAsyncTest("ConnectAsync_UpdatesIsConnectingState_DuringAndAfterConnection", async () =>
+            {
+                var connectionStarted = new TaskCompletionSource<bool>();
+                var releaseConnection = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    OnTestConnection = async (token) =>
+                    {
+                        connectionStarted.SetResult(true);
+                        await releaseConnection.Task;
+                        return true;
+                    },
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "TestDB" } }
+                };
+
+                var vm = new MainViewModel(mockService);
+                Assert(!vm.IsConnecting, "IsConnecting should be false before connect.");
+
+                var connectTask = vm.ConnectAsync();
+                await connectionStarted.Task;
+
+                Assert(vm.IsConnecting, "IsConnecting should be true while ConnectAsync is executing.");
+                Assert(vm.IsBusy, "IsBusy should be true while ConnectAsync is executing.");
+                Assert(!vm.IsConnected, "IsConnected should be false while ConnectAsync is executing.");
+
+                releaseConnection.SetResult(true);
+                await connectTask;
+
+                Assert(!vm.IsConnecting, "IsConnecting should be false after successful connection.");
+                Assert(vm.IsConnected, "IsConnected should be true after successful connection.");
+                Assert(!vm.IsBusy, "IsBusy should be false after successful connection.");
+
+                // Test cancellation during connection attempt
+                var cancelStarted = new TaskCompletionSource<bool>();
+                var cancelMockService = new MockDatabaseService
+                {
+                    OnTestConnection = async (token) =>
+                    {
+                        cancelStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        return await tcs.Task;
+                    }
+                };
+
+                var cancelVm = new MainViewModel(cancelMockService);
+                var cancelConnectTask = cancelVm.ConnectAsync();
+                await cancelStarted.Task;
+
+                Assert(cancelVm.IsConnecting, "IsConnecting should be true during connection attempt prior to cancel.");
+                cancelVm.CancelCommand.Execute(null);
+                await cancelConnectTask;
+
+                Assert(!cancelVm.IsConnecting, "IsConnecting should be false after cancellation.");
+                Assert(!cancelVm.IsConnected, "IsConnected should be false after cancellation.");
+                Assert(!cancelVm.IsBusy, "IsBusy should be false after cancellation.");
+            });
+
+            RunSyncTest("MainWindowXaml_ConnectionPanel_CancelButton_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+                var btnCancelConnect = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnCancelConnect"));
+
+                Assert(btnCancelConnect != null, "MainWindow.xaml must declare btnCancelConnect button.");
+
+                var parent = btnCancelConnect!.Parent;
+                Assert(parent != null && parent.Name.LocalName == "StackPanel", "btnCancelConnect must be wrapped inside a StackPanel.");
+                Assert(parent!.Attribute("Orientation")?.Value == "Horizontal", "Containing StackPanel for connection controls must have Orientation=\"Horizontal\".");
+
+                var siblingButtons = parent.Elements().Where(e => e.Name.LocalName == "Button").ToList();
+                Assert(siblingButtons.Any(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnConnect")),
+                    "Containing StackPanel must contain both btnConnect and btnCancelConnect.");
+
+                var commandAttr = btnCancelConnect.Attribute("Command")?.Value;
+                Assert(commandAttr != null && commandAttr.Contains("CancelCommand"),
+                    $"btnCancelConnect must bind Command to CancelCommand, got '{commandAttr}'");
+
+                var visibilityAttr = btnCancelConnect.Attribute("Visibility")?.Value;
+                Assert(visibilityAttr != null && visibilityAttr.Contains("IsConnecting"),
+                    $"btnCancelConnect must bind Visibility to IsConnecting, got '{visibilityAttr}'");
+                Assert(visibilityAttr.Contains("BooleanToVisibilityConverter"),
+                    $"btnCancelConnect Visibility binding must use BooleanToVisibilityConverter, got '{visibilityAttr}'");
+
+                var automationName = btnCancelConnect.Attributes().FirstOrDefault(a => a.Name.LocalName == "Name" && a.Name.NamespaceName.Contains("AutomationProperties") || a.Name.ToString().Contains("AutomationProperties.Name"))?.Value;
+                Assert(automationName == "Cancel Connection",
+                    $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

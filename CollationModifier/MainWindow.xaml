@@ -51,7 +51,12 @@
                                  IsEnabled="{Binding CanEditSqlCredentials}"
                                  PasswordChanged="PasswordBox_PasswordChanged" />
 
-                    <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" Style="{StaticResource SecondaryButton}" />
+                    <StackPanel Orientation="Horizontal">
+                        <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" />
+                        <Button x:Name="btnCancelConnect" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
+                                Visibility="{Binding IsConnecting, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.Name="Cancel Connection" />
+                    </StackPanel>
                 </StackPanel>
             </Border>
 
@@ -131,13 +136,8 @@
                         <!-- Action Area -->
                         <Label Content="Target Configuration" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level2" Margin="0,0,0,8" />
 
-                        <Grid Margin="0,0,0,24">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="200" />
-                            </Grid.ColumnDefinitions>
-
-                            <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                        <StackPanel Margin="0,0,0,24">
+                            <StackPanel Margin="0,0,0,16">
                                 <TextBlock x:Name="TargetCollationLabel" Text="New Collation Name" Margin="0,0,0,4" />
                                 <ComboBox x:Name="TargetCollationInput"
                                           ItemsSource="{Binding SupportedCollations}"
@@ -159,7 +159,7 @@
                                 </ComboBox>
                             </StackPanel>
 
-                            <StackPanel Grid.Column="1">
+                            <StackPanel>
                                 <TextBlock x:Name="BackupDirectoryLabel" Text="Backup Directory (Server Host)" Margin="0,0,0,4"
                                            ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
                                 <TextBox Text="{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsNotBusy}"
@@ -168,7 +168,7 @@
                                          AutomationProperties.HelpText="Path is evaluated on the SQL Server host filesystem, not the local client."
                                          ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
                             </StackPanel>
-                        </Grid>
+                        </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0" />
@@ -198,14 +198,22 @@
                         DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2" Margin="0,0,8,0"
                         AutomationProperties.Name="Error Details" ToolTip="View detailed error information"
                         Visibility="{Binding HasDetailedError, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock x:Name="StatusTextBlock" Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155"
+                <Grid VerticalAlignment="Center">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="StatusTextBlock" Grid.Column="0"
+                               Text="{Binding StatusMessage}" FontWeight="SemiBold" Foreground="#334155"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding EffectiveStatusToolTip}"
                                AutomationProperties.LiveSetting="Polite"
                                AutomationProperties.Name="Status Message" />
-                    <ProgressBar Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsIndeterminateProgress}" Minimum="0" Maximum="100" Width="100" Height="10" Margin="10,0,0,0"
+                    <ProgressBar Grid.Column="1"
+                                 Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsIndeterminateProgress}" Minimum="0" Maximum="100" Width="100" Height="10" Margin="10,0,0,0"
                                  AutomationProperties.Name="Operation Progress"
                                  Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" />
-                </StackPanel>
+                </Grid>
             </DockPanel>
         </Border>
     </Grid>

@@ -64,6 +64,7 @@ namespace CollationModifier.ViewModels
                 if (SetProperty(ref _isBusy, value))
                 {
                     OnPropertyChanged(nameof(IsNotBusy));
+                    OnPropertyChanged(nameof(IsConnecting));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
                     InvalidateRequerySuggested();
@@ -71,20 +72,35 @@ namespace CollationModifier.ViewModels
             }
         }
         public bool IsNotBusy => !IsBusy;
+        public bool IsConnecting => IsBusy && !IsConnected;
 
         private string _statusMessage = "Ready";
         public string StatusMessage
         {
             get => _statusMessage;
-            set => SetProperty(ref _statusMessage, value);
+            set
+            {
+                if (SetProperty(ref _statusMessage, value))
+                {
+                    OnPropertyChanged(nameof(EffectiveStatusToolTip));
+                }
+            }
         }
 
         private string? _statusToolTip;
         public string? StatusToolTip
         {
             get => _statusToolTip;
-            set => SetProperty(ref _statusToolTip, value);
+            set
+            {
+                if (SetProperty(ref _statusToolTip, value))
+                {
+                    OnPropertyChanged(nameof(EffectiveStatusToolTip));
+                }
+            }
         }
+
+        public string? EffectiveStatusToolTip => !string.IsNullOrEmpty(StatusToolTip) ? StatusToolTip : StatusMessage;
 
         private string? _detailedError;
         public string? DetailedError
@@ -187,6 +203,7 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
+                    OnPropertyChanged(nameof(IsConnecting));
                     if (previous != value)
                     {
                         if (value)
@@ -605,6 +622,8 @@ namespace CollationModifier.ViewModels
 
                 // 3. Execution Phase
                 StatusMessage = "Altering database collation... This may take a while.";
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 StatusMessage = "Collation changed successfully!";
@@ -613,9 +632,12 @@ namespace CollationModifier.ViewModels
                 // Update in-memory model directly without calling LoadDatabasesAsync()
                 SelectedDatabase.Collation = TargetCollation;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
+
+                Exception? restoreEx = null;
+                Exception? resetEx = null;
 
                 if (backupFile != null && SelectedDatabase != null)
                 {
@@ -629,8 +651,9 @@ namespace CollationModifier.ViewModels
                         });
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
                     }
-                    catch (Exception restoreEx)
+                    catch (Exception rex)
                     {
+                        restoreEx = rex;
                         _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
                     }
                 }
@@ -641,13 +664,31 @@ namespace CollationModifier.ViewModels
                     {
                         await _databaseService.TrySetMultiUserAsync(SelectedDatabase.Name, CancellationToken.None);
                     }
-                    catch (Exception resetEx)
+                    catch (Exception rex)
                     {
+                        resetEx = rex;
                         _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
                     }
                 }
 
-                SetStatus("Operation cancelled by user.");
+                if (restoreEx != null || resetEx != null)
+                {
+                    Exception recoveryEx = (restoreEx != null && resetEx != null)
+                        ? new AggregateException(restoreEx, resetEx)
+                        : (restoreEx ?? resetEx)!;
+
+                    var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(
+                        ex,
+                        backupFile,
+                        recoveryEx,
+                        restoreAttempted: backupFile != null);
+
+                    SetStatus(statusText, toolTipText, detailedError);
+                }
+                else
+                {
+                    SetStatus("Operation cancelled by user.");
+                }
             }
             catch (Exception ex)
             {
@@ -664,14 +705,8 @@ namespace CollationModifier.ViewModels
                             StatusMessage = $"Restoring database... {percent}%";
                         });
                         await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
-                        if (ex is AggregateException)
-                        {
-                            StatusMessage = $"Process failed: {ex.Message}. WARNING: Database remains locked in SINGLE_USER mode.";
-                        }
-                        else
-                        {
-                            StatusMessage = $"Process failed: {ex.Message}. Database restored to MULTI_USER mode successfully.";
-                        }
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: null, restoreAttempted: true);
+                        SetStatus(statusText, toolTipText, detailedError);
                     }
                     catch (Exception restoreEx)
                     {

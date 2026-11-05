@@ -8,12 +8,14 @@
         <SolidColorBrush x:Key="DisabledForegroundBrush" Color="#475569" />
         <SolidColorBrush x:Key="FocusBorderBrush" Color="#0284C7" />
         <SolidColorBrush x:Key="InputRestingBorderBrush" Color="#64748B" />
+        <SolidColorBrush x:Key="StatusSuccessBrush" Color="#047857" />
         <SolidColorBrush x:Key="PrimaryButtonBackgroundBrush" Color="#047857" />
         <SolidColorBrush x:Key="PrimaryButtonHoverBackgroundBrush" Color="#065F46" />
         <SolidColorBrush x:Key="PrimaryButtonHoverBrush" Color="#065F46" />
         <SolidColorBrush x:Key="SecondaryButtonBackgroundBrush" Color="#1D4ED8" />
         <SolidColorBrush x:Key="SecondaryButtonHoverBackgroundBrush" Color="#1E40AF" />
         <SolidColorBrush x:Key="SecondaryButtonHoverBrush" Color="#1E40AF" />
+        <SolidColorBrush x:Key="SuccessForegroundBrush" Color="#15803D" />
 
         <!-- Global Focus Visual Style -->
         <Style x:Key="FocusVisualStyle">
