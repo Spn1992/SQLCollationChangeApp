@@ -9,11 +9,11 @@ namespace MSBuildDiagnosticPatcher.Parsers
     public class MSBuildLogParser
     {
         private static readonly Regex CompilerDiagnosticRegex = new Regex(
-            @"^(?<file>[a-zA-Z0-9_\-./\\]+(?:\.cs|\.xaml|\.props|\.targets)?)\((?<line>\d+)(?:,(?<col>\d+))?\):\s*(?<severity>error|warning|info)\s+(?<code>[A-Za-z]{1,4}\d{4,5}[a-zA-Z]?):\s*(?<message>.*?)(?:\s+\[(?<project>[^\]]+)\])?\s*$",
+            @"^(?<file>[a-zA-Z0-9_\-./\\]+(?:\.cs|\.xaml|\.props|\.targets)?)\((?<line>\d+)(?:,(?<col>\d+))?\):\s*(?<severity>error|warning|info)\s+(?<code>[A-Za-z]{1,8}\d{4,5}[a-zA-Z]?):\s*(?<message>.*?)(?:\s+\[(?<project>[^\]]+)\])?\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex MSBuildErrorRegex = new Regex(
-            @"^(?<file>[a-zA-Z0-9_\-./\\:]+)\s*:\s*(?<severity>error|warning)\s+(?<code>MSB\d{4}):\s*(?<message>.*?)(?:\s+\[(?<project>[^\]]+)\])?\s*$",
+            @"^(?<file>[a-zA-Z0-9_\-./\\:]+)\s*:\s*(?<severity>[a-zA-Z]+)\s+(?<code>(?:MSB|NETSDK|NU)\d{4,5}[a-zA-Z]?):\s*(?<message>.*?)(?:\s+\[(?<project>[^\]]+)\])?\s*$",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         public List<CompilerDiagnostic> ParseText(string logContent)
@@ -93,7 +93,9 @@ namespace MSBuildDiagnosticPatcher.Parsers
             string severityStr = match.Groups["severity"].Value;
             DiagnosticSeverity severity = severityStr.Equals("warning", StringComparison.OrdinalIgnoreCase)
                 ? DiagnosticSeverity.Warning
-                : DiagnosticSeverity.Error;
+                : severityStr.Equals("info", StringComparison.OrdinalIgnoreCase)
+                    ? DiagnosticSeverity.Info
+                    : DiagnosticSeverity.Error;
 
             return new CompilerDiagnostic
             {
