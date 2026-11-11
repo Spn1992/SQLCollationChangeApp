@@ -52,6 +52,7 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesToExistingOverload", Test_PatchGenerator_GenerateMemberStub_Delegates);
+            RunTest("PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters", Test_PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
@@ -625,6 +626,75 @@ public class DatabaseService : IDatabaseService
                 $"Expected delegation call, got:\n{stub}");
         }
 
+        static void Test_PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters()
+        {
+            var generator = new PatchGenerator();
+
+            // Case 1: Unsupplied CancellationToken with default value
+            string classSource1 = @"
+public class DatabaseService : IDatabaseService
+{
+    public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default)
+    {
+        return ""backup.bak"";
+    }
+}";
+
+            var member1 = new InterfaceMemberInfo
+            {
+                InterfaceName = "IDatabaseService",
+                MemberName = "BackupDatabaseAsync",
+                ReturnType = "Task<string>",
+                ParameterList = "string databaseName, string backupDirectory"
+            };
+
+            string stub1 = generator.GenerateMemberStub(member1, classSource1);
+            Assert(stub1.Contains("return BackupDatabaseAsync(databaseName, backupDirectory, default);"),
+                $"Expected delegation call with default for CancellationToken, got:\n{stub1}");
+
+            // Case 2: Unsupplied integer and boolean parameters with explicit literal defaults
+            string classSource2 = @"
+public class OperationsService : IOperationsService
+{
+    public virtual void ExecuteOperation(string operationName, int timeoutSeconds = 30, bool throwOnError = false, int retryCount = 0)
+    {
+    }
+}";
+
+            var member2 = new InterfaceMemberInfo
+            {
+                InterfaceName = "IOperationsService",
+                MemberName = "ExecuteOperation",
+                ReturnType = "void",
+                ParameterList = "string operationName"
+            };
+
+            string stub2 = generator.GenerateMemberStub(member2, classSource2);
+            Assert(stub2.Contains("ExecuteOperation(operationName, 30, false, 0);"),
+                $"Expected delegation call with explicit int and bool defaults, got:\n{stub2}");
+
+            // Case 3: Parameter hasDefault with whitespace defaultValue falls back to default, and nullable reference type without default emits null
+            string classSource3 = @"
+public class CacheService : ICacheService
+{
+    public virtual void CacheItem(string key, string? tag, CancellationToken cancellationToken =   )
+    {
+    }
+}";
+
+            var member3 = new InterfaceMemberInfo
+            {
+                InterfaceName = "ICacheService",
+                MemberName = "CacheItem",
+                ReturnType = "void",
+                ParameterList = "string key"
+            };
+
+            string stub3 = generator.GenerateMemberStub(member3, classSource3);
+            Assert(stub3.Contains("CacheItem(key, null, default);"),
+                $"Expected delegation call with null for nullable reference and default for whitespace defaultValue, got:\n{stub3}");
+        }
+
         static void Test_PatchGenerator_GenerateMemberStub_NotImplemented()
         {
             var generator = new PatchGenerator();
@@ -712,7 +782,7 @@ public class SqlWorker : ISqlWorker
 
                 string diff = patches[0].UnifiedDiff;
                 // Verify interpreted regex correctly matched the overload and delegated
-                Assert(diff.Contains("return ExecuteJobAsync(jobName, null, cancellationToken);"),
+                Assert(diff.Contains("return ExecuteJobAsync(jobName, 3, cancellationToken);"),
                     $"Expected delegation call in diff, got:\n{diff}");
                 // Verify missing method without overload generates NotImplementedException
                 Assert(diff.Contains("throw new NotImplementedException();"),
