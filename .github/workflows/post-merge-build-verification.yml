@@ -24,19 +24,19 @@ jobs:
             10.0.x
 
       - name: Restore CollationModifier dependencies
-        run: dotnet restore CollationModifier/CollationModifier.csproj
+        run: dotnet restore CollationModifier/CollationModifier.csproj 2>&1 | tee /tmp/build-and-test.log
 
       - name: Restore CollationModifier.Tests dependencies
-        run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj
+        run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Restore MSBuildDiagnosticPatcher dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj
+        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Restore MSBuildDiagnosticPatcher.Tests dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj
+        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Build CollationModifier
-        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee /tmp/build-and-test.log
+        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Build MSBuildDiagnosticPatcher
         run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false
