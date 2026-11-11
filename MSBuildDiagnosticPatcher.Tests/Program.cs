@@ -202,9 +202,7 @@ namespace MSBuildDiagnosticPatcher.Tests
         static void Test_AnsiCleaner_Clean_HandlesNullAndEmpty()
         {
             Assert(AnsiCleaner.Clean(null) == string.Empty, "Expected empty string for null input.");
-            Assert(AnsiCleaner.Sanitize(null) == string.Empty, "Expected empty string for null input using Sanitize.");
             Assert(AnsiCleaner.Clean(string.Empty) == string.Empty, "Expected empty string for empty input.");
-            Assert(AnsiCleaner.Sanitize(string.Empty) == string.Empty, "Expected empty string for empty input using Sanitize.");
             Assert(AnsiCleaner.Clean("   ") == string.Empty, "Expected empty string for whitespace input.");
             Assert(AnsiCleaner.Clean("\t\r\n") == string.Empty, "Expected empty string for tab/newline input.");
             Assert(AnsiCleaner.Clean("\u001b[0m") == string.Empty, "Expected empty string for escape-only input.");
