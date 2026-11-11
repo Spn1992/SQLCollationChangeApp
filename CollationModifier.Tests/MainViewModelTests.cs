@@ -1563,7 +1563,7 @@ namespace CollationModifier.Tests
                 DatabaseService.ValidateCollationFormat("Latin1_General_100_CI_AS");
                 DatabaseService.ValidateCollationFormat("Japanese_CI_AS");
                 DatabaseService.ValidateCollationFormat("Collation_123");
-                Assert(DatabaseService.IsValidCollationFormat("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationFormat should be true for valid format.");
+                Assert(DatabaseService.IsValidCollationName("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationName should be true for valid format.");
 
                 // Invalid collations with spaces, symbols, punctuation, or empty/null
                 string[] invalidInputs = new[]
@@ -1580,7 +1580,7 @@ namespace CollationModifier.Tests
 
                 foreach (var invalid in invalidInputs)
                 {
-                    Assert(!DatabaseService.IsValidCollationFormat(invalid), $"IsValidCollationFormat should be false for: '{invalid}'");
+                    Assert(!DatabaseService.IsValidCollationName(invalid), $"IsValidCollationName should be false for: '{invalid}'");
                     bool threw = false;
                     try
                     {
