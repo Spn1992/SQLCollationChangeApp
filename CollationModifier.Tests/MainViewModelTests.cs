@@ -396,7 +396,7 @@ namespace CollationModifier.Tests
                     lastAction = e.Action;
                 };
 
-                await vm.LoadCollationsAsync();
+                await vm.ConnectAsync();
 
                 Assert(collectionChangedCount == 1, $"Expected collectionChangedCount 1, got {collectionChangedCount}");
                 Assert(lastAction == NotifyCollectionChangedAction.Reset, $"Expected Reset action, got {lastAction}");
@@ -1293,21 +1293,7 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("Failed to restore database 'TestDB'"), $"AggregateException message should mention restore database failure, got: '{caughtAggEx.Message}'");
             });
 
-            await RunAsyncTest("LoadCollationsAsync_PopulatesSupportedCollations", async () =>
-            {
-                var mockService = new MockDatabaseService
-                {
-                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_SC" }
-                };
-                var vm = new MainViewModel(mockService);
-
-                await vm.LoadCollationsAsync();
-
-                Assert(vm.SupportedCollations.Count == 2, $"Expected 2 collations, got {vm.SupportedCollations.Count}");
-                Assert(vm.SupportedCollations[0] == "SQL_Latin1_General_CP1_CI_AS", $"Expected 'SQL_Latin1_General_CP1_CI_AS', got '{vm.SupportedCollations[0]}'");
-            });
-
-            await RunAsyncTest("ConnectAsync_InvokesLoadCollationsAsync_OnSuccessfulConnection", async () =>
+            await RunAsyncTest("ConnectAsync_PopulatesSupportedCollations_OnSuccessfulConnection", async () =>
             {
                 var mockService = new MockDatabaseService
                 {
@@ -1372,7 +1358,7 @@ namespace CollationModifier.Tests
                 var vm = new MainViewModel(mockService);
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                await vm.LoadCollationsAsync();
+                await vm.ConnectAsync();
                 sw.Stop();
 
                 Assert(vm.SupportedCollations.Count == 3885, $"Expected 3,885 collations loaded, got {vm.SupportedCollations.Count}");
@@ -1394,7 +1380,7 @@ namespace CollationModifier.Tests
                     CollationsToReturn = new List<string>()
                 };
                 var vm = new MainViewModel(mockService);
-                await vm.LoadCollationsAsync();
+                await vm.ConnectAsync();
 
                 Assert(vm.SupportedCollations.Count == 0, $"Expected 0 collations, got {vm.SupportedCollations.Count}");
 

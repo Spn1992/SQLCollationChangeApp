@@ -513,28 +513,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public async Task LoadCollationsAsync(CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                var collations = await _databaseService.GetSupportedCollationsAsync(cancellationToken);
-                SupportedCollations.ReplaceRange(collations);
-                _logger.LogInfo($"Fetched {SupportedCollations.Count} supported collations.");
-            }
-            catch (OperationCanceledException)
-            {
-                SupportedCollations.Clear();
-                _logger.LogInfo("Load collations operation was cancelled by user.");
-                SetStatus("Operation cancelled by user.");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                SupportedCollations.Clear();
-                _logger.LogError("Failed to load supported collations.", ex);
-            }
-        }
-
         public Func<string, string, bool>? ConfirmCollationChangeHandler { get; set; }
 
         private bool DefaultConfirmCollationChange(string databaseName, string targetCollation)
