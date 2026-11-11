@@ -592,6 +592,48 @@ namespace CollationModifier.Tests
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_ClearsDetailedErrorAndStatusToolTip_OnSuccess", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DB1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                // Seed prior error state and tooltip
+                vm.SetStatus("Prior error message", "Prior error tooltip", "Prior detailed error diagnostics");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true before collation change");
+                Assert(vm.DetailedError == "Prior detailed error diagnostics", "Expected DetailedError to be populated before collation change");
+                Assert(vm.StatusToolTip == "Prior error tooltip", "Expected StatusToolTip to be populated before collation change");
+                Assert(vm.EffectiveStatusToolTip == "Prior error tooltip", "Expected EffectiveStatusToolTip to match StatusToolTip before collation change");
+
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null)
+                    {
+                        notifiedProperties.Add(e.PropertyName);
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected StatusMessage 'Collation changed successfully!', got '{vm.StatusMessage}'");
+                Assert(vm.DetailedError == null, $"Expected DetailedError to be null after successful collation change, got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false after successful collation change");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip to be null after successful collation change, got '{vm.StatusToolTip}'");
+                Assert(vm.EffectiveStatusToolTip == "Collation changed successfully!", $"Expected EffectiveStatusToolTip to fallback to StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged event for HasDetailedError");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "Expected PropertyChanged event for EffectiveStatusToolTip");
+            });
+
             RunSyncTest("MainViewModel_IsConnected_DefaultsToFalse_AndNotifiesPropertyChanged", () =>
             {
                 var vm = new MainViewModel(new MockDatabaseService());
