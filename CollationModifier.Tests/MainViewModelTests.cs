@@ -3421,6 +3421,81 @@ namespace CollationModifier.Tests
                     $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
             });
 
+            RunSyncTest("ErrorDetailsWindowXaml_ActionButtons_AutomationProperties_Configured", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+
+                // 1. btnCopy
+                var btnCopy = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnCopy"));
+                Assert(btnCopy != null, "ErrorDetailsWindow.xaml must declare btnCopy Button.");
+                var copyContent = btnCopy!.Attribute("Content")?.Value;
+                var copyAutomationName = btnCopy.Attributes().FirstOrDefault(a => (a.Name.LocalName == "Name" && a.Name.NamespaceName.Contains("AutomationProperties")) || a.Name.ToString().Contains("AutomationProperties.Name"))?.Value;
+                var copyHelpText = btnCopy.Attributes().FirstOrDefault(a => (a.Name.LocalName == "HelpText" && a.Name.NamespaceName.Contains("AutomationProperties")) || a.Name.ToString().Contains("AutomationProperties.HelpText"))?.Value;
+
+                Assert(copyContent == "Copy Details", $"btnCopy Content should be 'Copy Details', got '{copyContent}'");
+                Assert(copyAutomationName == "Copy Details", $"btnCopy AutomationProperties.Name must match visible Content 'Copy Details' per WCAG 2.2 SC 2.5.3 (G211), got '{copyAutomationName}'");
+                Assert(copyAutomationName == copyContent, "btnCopy AutomationProperties.Name must match its visible label exactly.");
+                Assert(!string.IsNullOrWhiteSpace(copyHelpText), "btnCopy must declare valid AutomationProperties.HelpText");
+                Assert(copyHelpText == "Copy error details to clipboard", $"btnCopy AutomationProperties.HelpText should be 'Copy error details to clipboard', got '{copyHelpText}'");
+
+                // 2. btnClose
+                var btnClose = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnClose"));
+                Assert(btnClose != null, "ErrorDetailsWindow.xaml must declare btnClose Button.");
+                var closeContent = btnClose!.Attribute("Content")?.Value;
+                var closeAutomationName = btnClose.Attributes().FirstOrDefault(a => (a.Name.LocalName == "Name" && a.Name.NamespaceName.Contains("AutomationProperties")) || a.Name.ToString().Contains("AutomationProperties.Name"))?.Value;
+                var closeHelpText = btnClose.Attributes().FirstOrDefault(a => (a.Name.LocalName == "HelpText" && a.Name.NamespaceName.Contains("AutomationProperties")) || a.Name.ToString().Contains("AutomationProperties.HelpText"))?.Value;
+
+                Assert(closeContent == "Close", $"btnClose Content should be 'Close', got '{closeContent}'");
+                Assert(closeAutomationName == "Close", $"btnClose AutomationProperties.Name must match visible Content 'Close' per WCAG 2.2 SC 2.5.3 (G211), got '{closeAutomationName}'");
+                Assert(closeAutomationName == closeContent, "btnClose AutomationProperties.Name must match its visible label exactly.");
+                Assert(!string.IsNullOrWhiteSpace(closeHelpText), "btnClose must declare valid AutomationProperties.HelpText");
+                Assert(closeHelpText == "Close error details dialog", $"btnClose AutomationProperties.HelpText should be 'Close error details dialog', got '{closeHelpText}'");
+            });
+
+            RunSyncTest("MainWindowXaml_ErrorDetailsButton_AutomationProperties_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+
+                var btnErrorDetails = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnErrorDetails"));
+                Assert(btnErrorDetails != null, "MainWindow.xaml must declare btnErrorDetails Button.");
+
+                var errorDetailsContent = btnErrorDetails!.Attribute("Content")?.Value;
+                var errorDetailsAutomationName = btnErrorDetails.Attributes().FirstOrDefault(a => (a.Name.LocalName == "Name" && a.Name.NamespaceName.Contains("AutomationProperties")) || a.Name.ToString().Contains("AutomationProperties.Name"))?.Value;
+                var errorDetailsHelpText = btnErrorDetails.Attributes().FirstOrDefault(a => (a.Name.LocalName == "HelpText" && a.Name.NamespaceName.Contains("AutomationProperties")) || a.Name.ToString().Contains("AutomationProperties.HelpText"))?.Value;
+
+                Assert(errorDetailsContent == "Details...", $"btnErrorDetails Content should be 'Details...', got '{errorDetailsContent}'");
+                Assert(errorDetailsAutomationName == "Details...", $"btnErrorDetails AutomationProperties.Name must match visible Content 'Details...' per WCAG 2.2 SC 2.5.3 (G211), got '{errorDetailsAutomationName}'");
+                Assert(errorDetailsAutomationName == errorDetailsContent, "btnErrorDetails AutomationProperties.Name must match its visible label exactly.");
+                Assert(!string.IsNullOrWhiteSpace(errorDetailsHelpText), "btnErrorDetails must declare valid AutomationProperties.HelpText");
+                Assert(errorDetailsHelpText == "View detailed error information", $"btnErrorDetails AutomationProperties.HelpText should be 'View detailed error information', got '{errorDetailsHelpText}'");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {

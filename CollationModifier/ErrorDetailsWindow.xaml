@@ -23,7 +23,9 @@
         <DockPanel Grid.Row="2">
             <Button x:Name="btnCopy" Content="Copy Details" Click="BtnCopy_Click" DockPanel.Dock="Left"
                     Width="110" Height="28" Padding="8,4"
-                    AutomationProperties.Name="Copy Error Details to Clipboard" ToolTip="Copy error details to clipboard" />
+                    AutomationProperties.Name="Copy Details"
+                    AutomationProperties.HelpText="Copy error details to clipboard"
+                    ToolTip="Copy error details to clipboard" />
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
                 <TextBlock x:Name="lblCopiedStatus" Text="Copied to clipboard!" Foreground="{StaticResource StatusSuccessBrush}"
                            FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,12,0" Visibility="Collapsed"
@@ -31,7 +33,8 @@
                            AutomationProperties.Name="Copied to clipboard!" />
                 <Button x:Name="btnClose" Content="Close" Click="BtnClose_Click" IsCancel="True" IsDefault="True"
                         Width="80" Height="28" Padding="8,4"
-                        AutomationProperties.Name="Close Error Details Dialog" />
+                        AutomationProperties.Name="Close"
+                        AutomationProperties.HelpText="Close error details dialog" />
             </StackPanel>
         </DockPanel>
     </Grid>

@@ -196,7 +196,9 @@
                         AutomationProperties.Name="Open Log File" ToolTip="Open execution log file or folder" />
                 <Button x:Name="btnErrorDetails" Content="Details..." Command="{Binding ShowErrorDetailsCommand}"
                         DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2" Margin="0,0,8,0"
-                        AutomationProperties.Name="Error Details" ToolTip="View detailed error information"
+                        AutomationProperties.Name="Details..."
+                        AutomationProperties.HelpText="View detailed error information"
+                        ToolTip="View detailed error information"
                         Visibility="{Binding HasDetailedError, Converter={StaticResource BooleanToVisibilityConverter}}" />
                 <Grid VerticalAlignment="Center">
                     <Grid.ColumnDefinitions>
