@@ -371,8 +371,6 @@ namespace CollationModifier.Services
             return CollationRegex.IsMatch(collation);
         }
 
-        public static bool IsValidCollationFormat(string? collation) => IsValidCollationName(collation);
-
         public static void ValidateCollationFormat(string? collation)
         {
             if (!IsValidCollationName(collation))
