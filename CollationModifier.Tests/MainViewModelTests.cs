@@ -2610,6 +2610,50 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("ScrollViewer.CanContentScroll=\"True\""), "TargetCollationInput should explicitly set ScrollViewer.CanContentScroll=\"True\"");
             });
 
+            RunSyncTest("MainWindowXaml_TargetCollationInput_AutomationPropertiesForwarding_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string xamlContent = System.IO.File.ReadAllText(mainWindowXamlPath);
+                Assert(xamlContent.Contains("x:Name=\"TargetCollationInput\""), "MainWindow.xaml should define TargetCollationInput ComboBox");
+                Assert(xamlContent.Contains("Loaded=\"TargetCollationInput_Loaded\""), "TargetCollationInput must declare Loaded=\"TargetCollationInput_Loaded\"");
+
+                var doc = System.Xml.Linq.XDocument.Parse(xamlContent);
+                var comboBox = doc.Descendants().FirstOrDefault(e =>
+                    e.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "TargetCollationInput" ||
+                    e.Attribute("Name")?.Value == "TargetCollationInput");
+                Assert(comboBox != null, "TargetCollationInput ComboBox element should exist in MainWindow.xaml");
+                Assert(comboBox!.Attribute("Loaded")?.Value == "TargetCollationInput_Loaded", "TargetCollationInput must declare Loaded='TargetCollationInput_Loaded'");
+
+                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+
+                string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
+                Assert(csContent.Contains("TargetCollationInput_Loaded"), "MainWindow.xaml.cs should implement TargetCollationInput_Loaded method");
+                Assert(csContent.Contains("PART_EditableTextBox"), "TargetCollationInput_Loaded should locate PART_EditableTextBox");
+                Assert(csContent.Contains("Template.FindName") || csContent.Contains("Template?.FindName"), "TargetCollationInput_Loaded should use Template.FindName");
+                Assert(csContent.Contains("AutomationProperties.SetName"), "TargetCollationInput_Loaded should forward AutomationProperties.Name");
+                Assert(csContent.Contains("AutomationProperties.SetLabeledBy"), "TargetCollationInput_Loaded should forward AutomationProperties.LabeledBy");
+                Assert(csContent.Contains("AutomationProperties.SetHelpText"), "TargetCollationInput_Loaded should forward AutomationProperties.HelpText");
+            });
+
             RunSyncTest("DatabaseService_IsValidCollationName_AcceptsValidCollations", () =>
             {
                 var validCollations = new[]
