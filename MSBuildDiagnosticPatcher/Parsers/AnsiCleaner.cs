@@ -18,10 +18,5 @@ namespace MSBuildDiagnosticPatcher.Parsers
 
             return AnsiRegex.Replace(input, string.Empty).Trim();
         }
-
-        public static string Sanitize(string? input)
-        {
-            return Clean(input);
-        }
     }
 }
