@@ -144,6 +144,7 @@
                                 <ComboBox x:Name="TargetCollationInput"
                                           ItemsSource="{Binding SupportedCollations}"
                                           Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
+                                          Loaded="TargetCollationInput_Loaded"
                                           IsEditable="True"
                                           IsTextSearchEnabled="True"
                                           VirtualizingPanel.IsVirtualizing="True"
