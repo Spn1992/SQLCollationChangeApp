@@ -104,6 +104,9 @@ namespace MSBuildDiagnosticPatcher
                 {
                     applicator.ApplyPatch(patch, requireConfirmation: !autoConfirm);
                 }
+
+                reporter.WriteReportFiles(report, outputDir);
+                Console.WriteLine("[INFO] Updated diagnostic reports and candidate statuses on disk after patch application.");
             }
 
             // Return non-zero if errors or failures were found

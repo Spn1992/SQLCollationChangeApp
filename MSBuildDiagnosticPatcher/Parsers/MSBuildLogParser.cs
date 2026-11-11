@@ -57,7 +57,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
             var msbMatch = MSBuildErrorRegex.Match(cleanLine);
             if (msbMatch.Success)
             {
-                return CreateFromMsbMatch(msbMatch, rawLine);
+                return CreateFromMatch(msbMatch, rawLine);
             }
 
             return null;
@@ -80,28 +80,6 @@ namespace MSBuildDiagnosticPatcher.Parsers
                 FilePath = match.Groups["file"].Value.Trim(),
                 LineNumber = line,
                 ColumnNumber = col,
-                Severity = severity,
-                Code = match.Groups["code"].Value.Trim().ToUpperInvariant(),
-                Message = match.Groups["message"].Value.Trim(),
-                ProjectPath = match.Groups["project"].Value.Trim(),
-                RawLine = rawLine
-            };
-        }
-
-        private static CompilerDiagnostic CreateFromMsbMatch(Match match, string rawLine)
-        {
-            string severityStr = match.Groups["severity"].Value;
-            DiagnosticSeverity severity = severityStr.Equals("warning", StringComparison.OrdinalIgnoreCase)
-                ? DiagnosticSeverity.Warning
-                : severityStr.Equals("info", StringComparison.OrdinalIgnoreCase)
-                    ? DiagnosticSeverity.Info
-                    : DiagnosticSeverity.Error;
-
-            return new CompilerDiagnostic
-            {
-                FilePath = match.Groups["file"].Value.Trim(),
-                LineNumber = 0,
-                ColumnNumber = 0,
                 Severity = severity,
                 Code = match.Groups["code"].Value.Trim().ToUpperInvariant(),
                 Message = match.Groups["message"].Value.Trim(),
