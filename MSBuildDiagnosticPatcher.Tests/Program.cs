@@ -27,6 +27,12 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_ExtractsRoslynWarning", Test_MSBuildLogParser_ParseLine_ExtractsRoslynWarning);
             RunTest("MSBuildLogParser_ParseLine_ExtractsMSBuildError", Test_MSBuildLogParser_ParseLine_ExtractsMSBuildError);
             RunTest("MSBuildLogParser_ParseLine_HandlesAnsiEscapes", Test_MSBuildLogParser_ParseLine_HandlesAnsiEscapes);
+            RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkErrorWithCoordinates", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkErrorWithCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_ExtractsSyslibWarningWithCoordinates", Test_MSBuildLogParser_ParseLine_ExtractsSyslibWarningWithCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_ExtractsNuGetRestoreErrorWithoutCoordinates", Test_MSBuildLogParser_ParseLine_ExtractsNuGetRestoreErrorWithoutCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError);
+            RunTest("MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity", Test_MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity);
+            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
 
             // 1.5 AnsiCleaner Tests
@@ -164,6 +170,97 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(diag != null, "Expected ANSI escaped line to be parsed.");
             Assert(diag!.Code == "CS0535", $"Expected code CS0535, got {diag.Code}");
             Assert(diag.FilePath == "Services/DatabaseService.cs", $"Expected clean path, got '{diag.FilePath}'");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ExtractsNetSdkErrorWithCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "targets(112,5): error NETSDK1005: Target framework 'net8.0' is missing [CollationModifier.csproj]";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected NETSDK error with coordinates to be parsed.");
+            Assert(diag!.Code == "NETSDK1005", $"Expected code NETSDK1005, got {diag.Code}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.LineNumber == 112, $"Expected line 112, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 5, $"Expected column 5, got {diag.ColumnNumber}");
+            Assert(diag.FilePath == "targets", $"Expected FilePath 'targets', got '{diag.FilePath}'");
+            Assert(diag.ProjectPath == "CollationModifier.csproj", $"Expected ProjectPath 'CollationModifier.csproj', got '{diag.ProjectPath}'");
+            Assert(diag.Message.Contains("Target framework 'net8.0' is missing"), "Expected message to contain diagnostic description");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ExtractsSyslibWarningWithCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "Security/Crypto.cs(42,13): warning SYSLIB0011: 'BinaryFormatter' is obsolete [CollationModifier.csproj]";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected SYSLIB warning with coordinates to be parsed.");
+            Assert(diag!.Code == "SYSLIB0011", $"Expected code SYSLIB0011, got {diag.Code}");
+            Assert(diag.Severity == DiagnosticSeverity.Warning, $"Expected severity Warning, got {diag.Severity}");
+            Assert(diag.LineNumber == 42, $"Expected line 42, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 13, $"Expected column 13, got {diag.ColumnNumber}");
+            Assert(diag.FilePath == "Security/Crypto.cs", $"Expected FilePath 'Security/Crypto.cs', got '{diag.FilePath}'");
+            Assert(diag.ProjectPath == "CollationModifier.csproj", $"Expected ProjectPath 'CollationModifier.csproj', got '{diag.ProjectPath}'");
+            Assert(diag.Message.Contains("'BinaryFormatter' is obsolete"), "Expected message to contain obsolete warning text");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ExtractsNuGetRestoreErrorWithoutCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "/app/CollationModifier/CollationModifier.csproj : error NU1605: Detected package downgrade: Microsoft.Data.SqlClient from 5.1.0 to 5.0.0 [/app/CollationModifier/CollationModifier.csproj]";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected NU1605 error without coordinates to be parsed.");
+            Assert(diag!.Code == "NU1605", $"Expected code NU1605, got {diag.Code}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.LineNumber == 0, $"Expected line 0 for coordinate-free diagnostic, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0 for coordinate-free diagnostic, got {diag.ColumnNumber}");
+            Assert(diag.FilePath == "/app/CollationModifier/CollationModifier.csproj", $"Expected FilePath '/app/CollationModifier/CollationModifier.csproj', got '{diag.FilePath}'");
+            Assert(diag.ProjectPath == "/app/CollationModifier/CollationModifier.csproj", $"Expected ProjectPath '/app/CollationModifier/CollationModifier.csproj', got '{diag.ProjectPath}'");
+            Assert(diag.Message.Contains("Detected package downgrade"), "Expected message to contain package downgrade text");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "/app/Project.csproj : error NETSDK1045: The current .NET SDK does not support targeting .NET 9.0.";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected NETSDK1045 coordinate-free error to be parsed.");
+            Assert(diag!.Code == "NETSDK1045", $"Expected code NETSDK1045, got {diag.Code}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.LineNumber == 0, $"Expected line 0 for coordinate-free diagnostic, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0 for coordinate-free diagnostic, got {diag.ColumnNumber}");
+            Assert(diag.FilePath == "/app/Project.csproj", $"Expected FilePath '/app/Project.csproj', got '{diag.FilePath}'");
+            Assert(diag.Message.Contains("The current .NET SDK does not support targeting .NET 9.0."), "Expected message to match");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "CollationModifier.csproj : info NU1503: Skipping restore for project 'CollationModifier.csproj'.";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected NU1503 info diagnostic to be parsed.");
+            Assert(diag!.Code == "NU1503", $"Expected code NU1503, got {diag.Code}");
+            Assert(diag.Severity == DiagnosticSeverity.Info, $"Expected severity Info, got {diag.Severity}");
+            Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
+            Assert(diag.FilePath == "CollationModifier.csproj", $"Expected FilePath 'CollationModifier.csproj', got '{diag.FilePath}'");
+            Assert(diag.Message.Contains("Skipping restore for project"), "Expected info message to match");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "MSBUILD : unexpected MSB1003: Unrecognized build failure.";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected diagnostic with unrecognized severity to be parsed.");
+            Assert(diag!.Code == "MSB1003", $"Expected code MSB1003, got {diag.Code}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected unrecognized severity to default to Error, got {diag.Severity}");
+            Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
         }
 
         static void Test_MSBuildLogParser_ParsePerformance_Under10Seconds()
