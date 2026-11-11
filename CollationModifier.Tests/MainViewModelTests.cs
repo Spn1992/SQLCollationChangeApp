@@ -3421,6 +3421,48 @@ namespace CollationModifier.Tests
                     $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
             });
 
+            RunSyncTest("MainWindowXaml_ProcessButton_WarningLabelAutomationProperties_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+                var processButton = buttons.FirstOrDefault(b =>
+                    b.Attribute("Content")?.Value == "Process Collation Change" ||
+                    b.Attribute("Command")?.Value == "{Binding ProcessCommand}");
+
+                Assert(processButton != null, "MainWindow.xaml must declare the Process Collation Change button.");
+
+                var describedBy = processButton!.Attributes().FirstOrDefault(a =>
+                    a.Name.LocalName == "DescribedBy" ||
+                    a.Name.ToString().Contains("AutomationProperties.DescribedBy"))?.Value;
+                Assert(describedBy == "{Binding ElementName=lblWarning}",
+                    $"Process Button must set AutomationProperties.DescribedBy to '{{Binding ElementName=lblWarning}}', got '{describedBy}'");
+
+                var helpText = processButton.Attributes().FirstOrDefault(a =>
+                    a.Name.LocalName == "HelpText" ||
+                    a.Name.ToString().Contains("AutomationProperties.HelpText"))?.Value;
+                Assert(helpText == "Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections",
+                    $"Process Button must set AutomationProperties.HelpText, got '{helpText}'");
+
+                var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var warningLabel = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "TextBlock" &&
+                    (e.Attribute(xNameAttr)?.Value == "lblWarning" || e.Attribute("Name")?.Value == "lblWarning"));
+                Assert(warningLabel != null, "MainWindow.xaml must declare the lblWarning TextBlock referenced by AutomationProperties.DescribedBy.");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
