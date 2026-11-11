@@ -5,6 +5,8 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:viewmodels="clr-namespace:CollationModifier.ViewModels"
         mc:Ignorable="d"
+        xml:lang="en"
+        Language="en-US"
         Title="Collation Modifier Utility" Height="650" Width="900"
         WindowStartupLocation="CenterScreen">
 
@@ -52,7 +54,7 @@
                                  PasswordChanged="PasswordBox_PasswordChanged" />
 
                     <StackPanel Orientation="Horizontal">
-                        <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" />
+                        <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" IsDefault="{Binding CanEditConnectionParameters}" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" />
                         <Button x:Name="btnCancelConnect" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
                                 Visibility="{Binding IsConnecting, Converter={StaticResource BooleanToVisibilityConverter}}"
                                 AutomationProperties.Name="Cancel Connection" />
@@ -142,6 +144,7 @@
                                 <ComboBox x:Name="TargetCollationInput"
                                           ItemsSource="{Binding SupportedCollations}"
                                           Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
+                                          Loaded="TargetCollationInput_Loaded"
                                           IsEditable="True"
                                           IsTextSearchEnabled="True"
                                           VirtualizingPanel.IsVirtualizing="True"
@@ -171,7 +174,9 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                            <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0" />
+                            <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0"
+                                    AutomationProperties.DescribedBy="{Binding ElementName=lblWarning}"
+                                    AutomationProperties.HelpText="Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections" />
                             <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
                                     AutomationProperties.Name="Cancel Operation" />

@@ -163,16 +163,6 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        private static DatabaseInfo MapDatabaseInfo(SqlDataReader reader)
-        {
-            if (reader == null)
-            {
-                throw new ArgumentNullException(nameof(reader));
-            }
-
-            return MapDatabaseInfo((IDataRecord)reader);
-        }
-
         public static DatabaseInfo MapDatabaseInfo(IDataRecord record)
         {
             if (record == null)
@@ -370,8 +360,6 @@ namespace CollationModifier.Services
 
             return CollationRegex.IsMatch(collation);
         }
-
-        public static bool IsValidCollationFormat(string? collation) => IsValidCollationName(collation);
 
         public static void ValidateCollationFormat(string? collation)
         {

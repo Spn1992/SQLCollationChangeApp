@@ -396,7 +396,7 @@ namespace CollationModifier.Tests
                     lastAction = e.Action;
                 };
 
-                await vm.LoadCollationsAsync();
+                await vm.ConnectAsync();
 
                 Assert(collectionChangedCount == 1, $"Expected collectionChangedCount 1, got {collectionChangedCount}");
                 Assert(lastAction == NotifyCollectionChangedAction.Reset, $"Expected Reset action, got {lastAction}");
@@ -590,6 +590,48 @@ namespace CollationModifier.Tests
                 Assert(mockService.GetDatabasesCount == getDatabasesCallCountAfterLoad, "GetDatabasesAsync was unexpectedly called during collation change!");
                 Assert(mockService.AlterCollationCount == 1, "AlterCollationCount expected to be 1");
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ClearsDetailedErrorAndStatusToolTip_OnSuccess", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DB1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                // Seed prior error state and tooltip
+                vm.SetStatus("Prior error message", "Prior error tooltip", "Prior detailed error diagnostics");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true before collation change");
+                Assert(vm.DetailedError == "Prior detailed error diagnostics", "Expected DetailedError to be populated before collation change");
+                Assert(vm.StatusToolTip == "Prior error tooltip", "Expected StatusToolTip to be populated before collation change");
+                Assert(vm.EffectiveStatusToolTip == "Prior error tooltip", "Expected EffectiveStatusToolTip to match StatusToolTip before collation change");
+
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null)
+                    {
+                        notifiedProperties.Add(e.PropertyName);
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected StatusMessage 'Collation changed successfully!', got '{vm.StatusMessage}'");
+                Assert(vm.DetailedError == null, $"Expected DetailedError to be null after successful collation change, got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false after successful collation change");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip to be null after successful collation change, got '{vm.StatusToolTip}'");
+                Assert(vm.EffectiveStatusToolTip == "Collation changed successfully!", $"Expected EffectiveStatusToolTip to fallback to StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged event for HasDetailedError");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "Expected PropertyChanged event for EffectiveStatusToolTip");
             });
 
             RunSyncTest("MainViewModel_IsConnected_DefaultsToFalse_AndNotifiesPropertyChanged", () =>
@@ -1061,7 +1103,7 @@ namespace CollationModifier.Tests
                 mockService.OnAlterCollation = async token =>
                 {
                     mockService.IsMultiUser = false; // Simulate database put in SINGLE_USER mode
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1091,7 +1133,7 @@ namespace CollationModifier.Tests
                 // Simulate cancellation before or during backup
                 mockService.OnBackupDatabase = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1119,7 +1161,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1153,7 +1195,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1186,7 +1228,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1293,21 +1335,7 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx.Message.Contains("Failed to restore database 'TestDB'"), $"AggregateException message should mention restore database failure, got: '{caughtAggEx.Message}'");
             });
 
-            await RunAsyncTest("LoadCollationsAsync_PopulatesSupportedCollations", async () =>
-            {
-                var mockService = new MockDatabaseService
-                {
-                    CollationsToReturn = new List<string> { "SQL_Latin1_General_CP1_CI_AS", "Latin1_General_100_CI_AS_SC" }
-                };
-                var vm = new MainViewModel(mockService);
-
-                await vm.LoadCollationsAsync();
-
-                Assert(vm.SupportedCollations.Count == 2, $"Expected 2 collations, got {vm.SupportedCollations.Count}");
-                Assert(vm.SupportedCollations[0] == "SQL_Latin1_General_CP1_CI_AS", $"Expected 'SQL_Latin1_General_CP1_CI_AS', got '{vm.SupportedCollations[0]}'");
-            });
-
-            await RunAsyncTest("ConnectAsync_InvokesLoadCollationsAsync_OnSuccessfulConnection", async () =>
+            await RunAsyncTest("ConnectAsync_PopulatesSupportedCollations_OnSuccessfulConnection", async () =>
             {
                 var mockService = new MockDatabaseService
                 {
@@ -1372,7 +1400,7 @@ namespace CollationModifier.Tests
                 var vm = new MainViewModel(mockService);
 
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                await vm.LoadCollationsAsync();
+                await vm.ConnectAsync();
                 sw.Stop();
 
                 Assert(vm.SupportedCollations.Count == 3885, $"Expected 3,885 collations loaded, got {vm.SupportedCollations.Count}");
@@ -1394,7 +1422,7 @@ namespace CollationModifier.Tests
                     CollationsToReturn = new List<string>()
                 };
                 var vm = new MainViewModel(mockService);
-                await vm.LoadCollationsAsync();
+                await vm.ConnectAsync();
 
                 Assert(vm.SupportedCollations.Count == 0, $"Expected 0 collations, got {vm.SupportedCollations.Count}");
 
@@ -1521,7 +1549,7 @@ namespace CollationModifier.Tests
                 DatabaseService.ValidateCollationFormat("Latin1_General_100_CI_AS");
                 DatabaseService.ValidateCollationFormat("Japanese_CI_AS");
                 DatabaseService.ValidateCollationFormat("Collation_123");
-                Assert(DatabaseService.IsValidCollationFormat("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationFormat should be true for valid format.");
+                Assert(DatabaseService.IsValidCollationName("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationName should be true for valid format.");
 
                 // Invalid collations with spaces, symbols, punctuation, or empty/null
                 string[] invalidInputs = new[]
@@ -1538,7 +1566,7 @@ namespace CollationModifier.Tests
 
                 foreach (var invalid in invalidInputs)
                 {
-                    Assert(!DatabaseService.IsValidCollationFormat(invalid), $"IsValidCollationFormat should be false for: '{invalid}'");
+                    Assert(!DatabaseService.IsValidCollationName(invalid), $"IsValidCollationName should be false for: '{invalid}'");
                     bool threw = false;
                     try
                     {
@@ -2610,6 +2638,50 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("ScrollViewer.CanContentScroll=\"True\""), "TargetCollationInput should explicitly set ScrollViewer.CanContentScroll=\"True\"");
             });
 
+            RunSyncTest("MainWindowXaml_TargetCollationInput_AutomationPropertiesForwarding_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string xamlContent = System.IO.File.ReadAllText(mainWindowXamlPath);
+                Assert(xamlContent.Contains("x:Name=\"TargetCollationInput\""), "MainWindow.xaml should define TargetCollationInput ComboBox");
+                Assert(xamlContent.Contains("Loaded=\"TargetCollationInput_Loaded\""), "TargetCollationInput must declare Loaded=\"TargetCollationInput_Loaded\"");
+
+                var doc = System.Xml.Linq.XDocument.Parse(xamlContent);
+                var comboBox = doc.Descendants().FirstOrDefault(e =>
+                    e.Attribute(System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))?.Value == "TargetCollationInput" ||
+                    e.Attribute("Name")?.Value == "TargetCollationInput");
+                Assert(comboBox != null, "TargetCollationInput ComboBox element should exist in MainWindow.xaml");
+                Assert(comboBox!.Attribute("Loaded")?.Value == "TargetCollationInput_Loaded", "TargetCollationInput must declare Loaded='TargetCollationInput_Loaded'");
+
+                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+
+                string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
+                Assert(csContent.Contains("TargetCollationInput_Loaded"), "MainWindow.xaml.cs should implement TargetCollationInput_Loaded method");
+                Assert(csContent.Contains("PART_EditableTextBox"), "TargetCollationInput_Loaded should locate PART_EditableTextBox");
+                Assert(csContent.Contains("Template.FindName") || csContent.Contains("Template?.FindName"), "TargetCollationInput_Loaded should use Template.FindName");
+                Assert(csContent.Contains("AutomationProperties.SetName"), "TargetCollationInput_Loaded should forward AutomationProperties.Name");
+                Assert(csContent.Contains("AutomationProperties.SetLabeledBy"), "TargetCollationInput_Loaded should forward AutomationProperties.LabeledBy");
+                Assert(csContent.Contains("AutomationProperties.SetHelpText"), "TargetCollationInput_Loaded should forward AutomationProperties.HelpText");
+            });
+
             RunSyncTest("DatabaseService_IsValidCollationName_AcceptsValidCollations", () =>
             {
                 var validCollations = new[]
@@ -3494,6 +3566,33 @@ namespace CollationModifier.Tests
                 Assert(errorDetailsAutomationName == errorDetailsContent, "btnErrorDetails AutomationProperties.Name must match its visible label exactly.");
                 Assert(!string.IsNullOrWhiteSpace(errorDetailsHelpText), "btnErrorDetails must declare valid AutomationProperties.HelpText");
                 Assert(errorDetailsHelpText == "View detailed error information", $"btnErrorDetails AutomationProperties.HelpText should be 'View detailed error information', got '{errorDetailsHelpText}'");
+            });
+
+            RunSyncTest("MainWindowXaml_ConnectionPanel_ConnectButton_DefaultConfigured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+                var btnConnect = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnConnect"));
+
+                Assert(btnConnect != null, "MainWindow.xaml must declare btnConnect button.");
+
+                var isDefaultAttr = btnConnect!.Attribute("IsDefault")?.Value;
+                Assert(isDefaultAttr != null, "btnConnect must declare IsDefault attribute.");
+                Assert(isDefaultAttr.Contains("CanEditConnectionParameters"),
+                    $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

@@ -1,8 +1,10 @@
 using System;
+using System.Data;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using CollationModifier.Models;
 using CollationModifier.Services;
 
 namespace CollationModifier.Tests
@@ -111,6 +113,40 @@ namespace CollationModifier.Tests
             catch (Exception ex)
             {
                 Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
+                failed++;
+            }
+
+            Console.WriteLine("\n=== Running DatabaseService MapDatabaseInfo Unit Tests ===");
+            try
+            {
+                TestMapDatabaseInfo_FieldExtraction();
+                Console.WriteLine("PASS: TestMapDatabaseInfo_FieldExtraction");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMapDatabaseInfo_FieldExtraction - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestMapDatabaseInfo_NullFieldFallbacks();
+                Console.WriteLine("PASS: TestMapDatabaseInfo_NullFieldFallbacks");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullFieldFallbacks - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestMapDatabaseInfo_NullArgumentValidation();
+                Console.WriteLine("PASS: TestMapDatabaseInfo_NullArgumentValidation");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullArgumentValidation - {ex}");
                 failed++;
             }
 
@@ -363,6 +399,85 @@ namespace CollationModifier.Tests
             {
                 throw new Exception($"Assertion Failed: {message}");
             }
+        }
+
+        static void TestMapDatabaseInfo_FieldExtraction()
+        {
+            var record = new MockDataRecord("TestDatabase", "Latin1_General_CI_AS", (byte)150, "dbo", 1024L);
+            var dbInfo = DatabaseService.MapDatabaseInfo(record);
+
+            Assert(dbInfo != null, "MapDatabaseInfo returned null.");
+            Assert(dbInfo.Name == "TestDatabase", $"Expected Name 'TestDatabase', got '{dbInfo.Name}'.");
+            Assert(dbInfo.Collation == "Latin1_General_CI_AS", $"Expected Collation 'Latin1_General_CI_AS', got '{dbInfo.Collation}'.");
+            Assert(dbInfo.CompatibilityLevel == "150", $"Expected CompatibilityLevel '150', got '{dbInfo.CompatibilityLevel}'.");
+            Assert(dbInfo.Owner == "dbo", $"Expected Owner 'dbo', got '{dbInfo.Owner}'.");
+            Assert(dbInfo.Size == "1024 MB", $"Expected Size '1024 MB', got '{dbInfo.Size}'.");
+        }
+
+        static void TestMapDatabaseInfo_NullFieldFallbacks()
+        {
+            var record = new MockDataRecord("TestDatabaseNulls", DBNull.Value, (byte)140, DBNull.Value, DBNull.Value);
+            var dbInfo = DatabaseService.MapDatabaseInfo(record);
+
+            Assert(dbInfo != null, "MapDatabaseInfo returned null.");
+            Assert(dbInfo.Name == "TestDatabaseNulls", $"Expected Name 'TestDatabaseNulls', got '{dbInfo.Name}'.");
+            Assert(dbInfo.Collation == "Unknown", $"Expected Collation 'Unknown', got '{dbInfo.Collation}'.");
+            Assert(dbInfo.CompatibilityLevel == "140", $"Expected CompatibilityLevel '140', got '{dbInfo.CompatibilityLevel}'.");
+            Assert(dbInfo.Owner == "Unknown", $"Expected Owner 'Unknown', got '{dbInfo.Owner}'.");
+            Assert(dbInfo.Size == "Unknown", $"Expected Size 'Unknown', got '{dbInfo.Size}'.");
+        }
+
+        static void TestMapDatabaseInfo_NullArgumentValidation()
+        {
+            bool threw = false;
+            try
+            {
+                DatabaseService.MapDatabaseInfo((IDataRecord)null!);
+            }
+            catch (ArgumentNullException ex)
+            {
+                threw = true;
+                Assert(ex.ParamName == "record", $"Expected ParamName 'record', got '{ex.ParamName}'.");
+            }
+
+            Assert(threw, "Expected ArgumentNullException when record is null.");
+        }
+
+        private sealed class MockDataRecord : IDataRecord
+        {
+            private readonly object?[] _values;
+
+            public MockDataRecord(params object?[] values)
+            {
+                _values = values;
+            }
+
+            public bool IsDBNull(int i) => _values[i] == null || _values[i] == DBNull.Value;
+            public string GetString(int i) => (string)_values[i]!;
+            public byte GetByte(int i) => (byte)_values[i]!;
+            public long GetInt64(int i) => (long)_values[i]!;
+
+            public int FieldCount => _values.Length;
+            public string GetName(int i) => throw new NotImplementedException();
+            public object this[int i] => _values[i]!;
+            public object this[string name] => throw new NotImplementedException();
+            public bool GetBoolean(int i) => throw new NotImplementedException();
+            public char GetChar(int i) => throw new NotImplementedException();
+            public Guid GetGuid(int i) => throw new NotImplementedException();
+            public short GetInt16(int i) => throw new NotImplementedException();
+            public int GetInt32(int i) => throw new NotImplementedException();
+            public float GetFloat(int i) => throw new NotImplementedException();
+            public double GetDouble(int i) => throw new NotImplementedException();
+            public decimal GetDecimal(int i) => throw new NotImplementedException();
+            public DateTime GetDateTime(int i) => throw new NotImplementedException();
+            public IDataReader GetData(int i) => throw new NotImplementedException();
+            public string GetDataTypeName(int i) => throw new NotImplementedException();
+            public Type GetFieldType(int i) => throw new NotImplementedException();
+            public object GetValue(int i) => _values[i]!;
+            public int GetValues(object[] values) => throw new NotImplementedException();
+            public int GetOrdinal(string name) => throw new NotImplementedException();
+            public long GetBytes(int i, long fieldOffset, byte[]? buffer, int bufferoffset, int length) => throw new NotImplementedException();
+            public long GetChars(int i, long fieldoffset, char[]? buffer, int bufferoffset, int length) => throw new NotImplementedException();
         }
     }
 }

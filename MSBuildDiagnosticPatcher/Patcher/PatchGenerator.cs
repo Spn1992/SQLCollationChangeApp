@@ -182,8 +182,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
                         }
                         else if (hasDefault)
                         {
-                            // If parameter has a default, pass null or default value
-                            callArgs.Add("null");
+                            // If parameter has a default, pass default value or fallback expression
+                            callArgs.Add(!string.IsNullOrWhiteSpace(defaultValue) ? defaultValue : "default");
                         }
                         else if (pType.EndsWith("?"))
                         {

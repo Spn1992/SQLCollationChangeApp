@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Controls;
 
 namespace CollationModifier
 {
@@ -15,6 +17,20 @@ namespace CollationModifier
             if (this.DataContext is ViewModels.MainViewModel viewModel)
             {
                 viewModel.Password = ((System.Windows.Controls.PasswordBox)sender).Password;
+            }
+        }
+
+        private void TargetCollationInput_Loaded(object sender, RoutedEventArgs e)
+        {
+            if (TargetCollationInput?.Template != null)
+            {
+                var textBox = TargetCollationInput.Template.FindName("PART_EditableTextBox", TargetCollationInput) as TextBox;
+                if (textBox != null)
+                {
+                    AutomationProperties.SetName(textBox, AutomationProperties.GetName(TargetCollationInput));
+                    AutomationProperties.SetLabeledBy(textBox, AutomationProperties.GetLabeledBy(TargetCollationInput));
+                    AutomationProperties.SetHelpText(textBox, AutomationProperties.GetHelpText(TargetCollationInput));
+                }
             }
         }
     }
