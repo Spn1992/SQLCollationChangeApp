@@ -329,8 +329,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-        public void CancelOperation() => Cancel();
-
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
         public void ShowErrorDetails()
