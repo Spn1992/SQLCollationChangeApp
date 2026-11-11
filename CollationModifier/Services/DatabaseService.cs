@@ -163,16 +163,6 @@ namespace CollationModifier.Services
             return databases;
         }
 
-        private static DatabaseInfo MapDatabaseInfo(SqlDataReader reader)
-        {
-            if (reader == null)
-            {
-                throw new ArgumentNullException(nameof(reader));
-            }
-
-            return MapDatabaseInfo((IDataRecord)reader);
-        }
-
         public static DatabaseInfo MapDatabaseInfo(IDataRecord record)
         {
             if (record == null)
