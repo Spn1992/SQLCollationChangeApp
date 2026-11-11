@@ -148,7 +148,7 @@ namespace CollationModifier.ViewModels
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
-        public ObservableRangeCollection<string> SupportedCollations { get; } = new ObservableRangeCollection<string>();
+        public ObservableRangeCollection<string> SupportedCollations { get; }
 
         private string _selectedAuthenticationType = string.Empty;
         public string SelectedAuthenticationType
@@ -328,8 +328,6 @@ namespace CollationModifier.ViewModels
                 }
             }
         }
-
-        public void CancelOperation() => Cancel();
 
         public Action<string>? ShowErrorDetailsHandler { get; set; }
 
@@ -626,7 +624,7 @@ namespace CollationModifier.ViewModels
                 IsIndeterminateProgress = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                StatusMessage = "Collation changed successfully!";
+                SetStatus("Collation changed successfully!");
                 _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()

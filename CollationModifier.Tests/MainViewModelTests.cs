@@ -592,6 +592,48 @@ namespace CollationModifier.Tests
                 Assert(ReferenceEquals(initialDb, vm.SelectedDatabase), "SelectedDatabase reference changed unexpectedly");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_ClearsDetailedErrorAndStatusToolTip_OnSuccess", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DB1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS_KS_WS";
+
+                // Seed prior error state and tooltip
+                vm.SetStatus("Prior error message", "Prior error tooltip", "Prior detailed error diagnostics");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true before collation change");
+                Assert(vm.DetailedError == "Prior detailed error diagnostics", "Expected DetailedError to be populated before collation change");
+                Assert(vm.StatusToolTip == "Prior error tooltip", "Expected StatusToolTip to be populated before collation change");
+                Assert(vm.EffectiveStatusToolTip == "Prior error tooltip", "Expected EffectiveStatusToolTip to match StatusToolTip before collation change");
+
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null)
+                    {
+                        notifiedProperties.Add(e.PropertyName);
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected StatusMessage 'Collation changed successfully!', got '{vm.StatusMessage}'");
+                Assert(vm.DetailedError == null, $"Expected DetailedError to be null after successful collation change, got '{vm.DetailedError}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false after successful collation change");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip to be null after successful collation change, got '{vm.StatusToolTip}'");
+                Assert(vm.EffectiveStatusToolTip == "Collation changed successfully!", $"Expected EffectiveStatusToolTip to fallback to StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged event for HasDetailedError");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.EffectiveStatusToolTip)), "Expected PropertyChanged event for EffectiveStatusToolTip");
+            });
+
             RunSyncTest("MainViewModel_IsConnected_DefaultsToFalse_AndNotifiesPropertyChanged", () =>
             {
                 var vm = new MainViewModel(new MockDatabaseService());
@@ -1061,7 +1103,7 @@ namespace CollationModifier.Tests
                 mockService.OnAlterCollation = async token =>
                 {
                     mockService.IsMultiUser = false; // Simulate database put in SINGLE_USER mode
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1091,7 +1133,7 @@ namespace CollationModifier.Tests
                 // Simulate cancellation before or during backup
                 mockService.OnBackupDatabase = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1119,7 +1161,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1153,7 +1195,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1186,7 +1228,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1521,7 +1563,7 @@ namespace CollationModifier.Tests
                 DatabaseService.ValidateCollationFormat("Latin1_General_100_CI_AS");
                 DatabaseService.ValidateCollationFormat("Japanese_CI_AS");
                 DatabaseService.ValidateCollationFormat("Collation_123");
-                Assert(DatabaseService.IsValidCollationFormat("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationFormat should be true for valid format.");
+                Assert(DatabaseService.IsValidCollationName("SQL_Latin1_General_CP1_CI_AS"), "IsValidCollationName should be true for valid format.");
 
                 // Invalid collations with spaces, symbols, punctuation, or empty/null
                 string[] invalidInputs = new[]
@@ -1538,7 +1580,7 @@ namespace CollationModifier.Tests
 
                 foreach (var invalid in invalidInputs)
                 {
-                    Assert(!DatabaseService.IsValidCollationFormat(invalid), $"IsValidCollationFormat should be false for: '{invalid}'");
+                    Assert(!DatabaseService.IsValidCollationName(invalid), $"IsValidCollationName should be false for: '{invalid}'");
                     bool threw = false;
                     try
                     {
@@ -3421,7 +3463,7 @@ namespace CollationModifier.Tests
                     $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
             });
 
-            RunSyncTest("MainWindowXaml_ProcessButton_WarningLabelAutomationProperties_Configured", () =>
+            RunSyncTest("MainWindowXaml_ConnectionPanel_ConnectButton_DefaultConfigured", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
                 if (!System.IO.File.Exists(mainWindowXamlPath))
@@ -3438,29 +3480,14 @@ namespace CollationModifier.Tests
                 var doc = System.Xml.Linq.XDocument.Parse(content);
 
                 var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
-                var processButton = buttons.FirstOrDefault(b =>
-                    b.Attribute("Content")?.Value == "Process Collation Change" ||
-                    b.Attribute("Command")?.Value == "{Binding ProcessCommand}");
+                var btnConnect = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnConnect"));
 
-                Assert(processButton != null, "MainWindow.xaml must declare the Process Collation Change button.");
+                Assert(btnConnect != null, "MainWindow.xaml must declare btnConnect button.");
 
-                var describedBy = processButton!.Attributes().FirstOrDefault(a =>
-                    a.Name.LocalName == "DescribedBy" ||
-                    a.Name.ToString().Contains("AutomationProperties.DescribedBy"))?.Value;
-                Assert(describedBy == "{Binding ElementName=lblWarning}",
-                    $"Process Button must set AutomationProperties.DescribedBy to '{{Binding ElementName=lblWarning}}', got '{describedBy}'");
-
-                var helpText = processButton.Attributes().FirstOrDefault(a =>
-                    a.Name.LocalName == "HelpText" ||
-                    a.Name.ToString().Contains("AutomationProperties.HelpText"))?.Value;
-                Assert(helpText == "Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections",
-                    $"Process Button must set AutomationProperties.HelpText, got '{helpText}'");
-
-                var xNameAttr = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
-                var warningLabel = doc.Descendants().FirstOrDefault(e =>
-                    e.Name.LocalName == "TextBlock" &&
-                    (e.Attribute(xNameAttr)?.Value == "lblWarning" || e.Attribute("Name")?.Value == "lblWarning"));
-                Assert(warningLabel != null, "MainWindow.xaml must declare the lblWarning TextBlock referenced by AutomationProperties.DescribedBy.");
+                var isDefaultAttr = btnConnect!.Attribute("IsDefault")?.Value;
+                Assert(isDefaultAttr != null, "btnConnect must declare IsDefault attribute.");
+                Assert(isDefaultAttr.Contains("CanEditConnectionParameters"),
+                    $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

@@ -52,7 +52,7 @@
                                  PasswordChanged="PasswordBox_PasswordChanged" />
 
                     <StackPanel Orientation="Horizontal">
-                        <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" />
+                        <Button x:Name="btnConnect" Content="{Binding ConnectButtonText}" Command="{Binding ConnectCommand}" IsDefault="{Binding CanEditConnectionParameters}" Style="{StaticResource SecondaryButton}" Margin="0,0,8,0" />
                         <Button x:Name="btnCancelConnect" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
                                 Visibility="{Binding IsConnecting, Converter={StaticResource BooleanToVisibilityConverter}}"
                                 AutomationProperties.Name="Cancel Connection" />
