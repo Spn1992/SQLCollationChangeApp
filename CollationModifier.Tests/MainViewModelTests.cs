@@ -1103,7 +1103,7 @@ namespace CollationModifier.Tests
                 mockService.OnAlterCollation = async token =>
                 {
                     mockService.IsMultiUser = false; // Simulate database put in SINGLE_USER mode
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1133,7 +1133,7 @@ namespace CollationModifier.Tests
                 // Simulate cancellation before or during backup
                 mockService.OnBackupDatabase = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1161,7 +1161,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1195,7 +1195,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
@@ -1228,7 +1228,7 @@ namespace CollationModifier.Tests
 
                 mockService.OnAlterCollation = async token =>
                 {
-                    vm.CancelOperation();
+                    vm.Cancel();
                     token.ThrowIfCancellationRequested();
                     await Task.CompletedTask;
                 };
