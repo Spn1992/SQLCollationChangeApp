@@ -3421,6 +3421,86 @@ namespace CollationModifier.Tests
                     $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
             });
 
+            RunSyncTest("MainWindowXaml_LanguageAttributes_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var root = doc.Root;
+                Assert(root != null, "MainWindow.xaml must have a root element.");
+                Assert(root.Name.LocalName == "Window", "MainWindow.xaml root element must be Window.");
+
+                var xmlLangAttr = root.Attribute(System.Xml.Linq.XNamespace.Xml + "lang")
+                    ?? root.Attributes().FirstOrDefault(a => a.Name.LocalName == "lang");
+                Assert(xmlLangAttr != null && xmlLangAttr.Value == "en",
+                    $"MainWindow.xaml root Window must declare xml:lang=\"en\", got '{xmlLangAttr?.Value}'");
+
+                var langAttr = root.Attribute("Language")
+                    ?? root.Attributes().FirstOrDefault(a => a.Name.LocalName == "Language");
+                Assert(langAttr != null && langAttr.Value == "en-US",
+                    $"MainWindow.xaml root Window must declare Language=\"en-US\", got '{langAttr?.Value}'");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_LanguageAttributes_Configured", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var root = doc.Root;
+                Assert(root != null, "ErrorDetailsWindow.xaml must have a root element.");
+                Assert(root.Name.LocalName == "Window", "ErrorDetailsWindow.xaml root element must be Window.");
+
+                var xmlLangAttr = root.Attribute(System.Xml.Linq.XNamespace.Xml + "lang")
+                    ?? root.Attributes().FirstOrDefault(a => a.Name.LocalName == "lang");
+                Assert(xmlLangAttr != null && xmlLangAttr.Value == "en",
+                    $"ErrorDetailsWindow.xaml root Window must declare xml:lang=\"en\", got '{xmlLangAttr?.Value}'");
+
+                var langAttr = root.Attribute("Language")
+                    ?? root.Attributes().FirstOrDefault(a => a.Name.LocalName == "Language");
+                Assert(langAttr != null && langAttr.Value == "en-US",
+                    $"ErrorDetailsWindow.xaml root Window must declare Language=\"en-US\", got '{langAttr?.Value}'");
+            });
+
+            RunSyncTest("AppXamlCs_DefaultLanguageMetadataOverride_Configured", () =>
+            {
+                string appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml.cs"));
+                if (!System.IO.File.Exists(appXamlCsPath))
+                {
+                    appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(appXamlCsPath))
+                {
+                    appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(appXamlCsPath), $"App.xaml.cs file should exist at path {appXamlCsPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlCsPath);
+                Assert(content.Contains("FrameworkElement.LanguageProperty.OverrideMetadata"),
+                    "App.xaml.cs must configure FrameworkElement.LanguageProperty.OverrideMetadata in OnStartup");
+                Assert(content.Contains("XmlLanguage.GetLanguage(\"en-US\")"),
+                    "App.xaml.cs must set default language metadata to XmlLanguage.GetLanguage(\"en-US\")");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {

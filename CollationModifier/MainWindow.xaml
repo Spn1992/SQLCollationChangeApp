@@ -5,6 +5,8 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:viewmodels="clr-namespace:CollationModifier.ViewModels"
         mc:Ignorable="d"
+        xml:lang="en"
+        Language="en-US"
         Title="Collation Modifier Utility" Height="650" Width="900"
         WindowStartupLocation="CenterScreen">
 
