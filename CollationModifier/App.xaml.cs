@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Markup;
 using System.Windows.Threading;
 using CollationModifier.Services;
 
@@ -30,6 +31,9 @@ namespace CollationModifier
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);
+            FrameworkElement.LanguageProperty.OverrideMetadata(
+                typeof(FrameworkElement),
+                new FrameworkPropertyMetadata(XmlLanguage.GetLanguage("en-US")));
             RegisterExceptionHandlers();
         }
 
