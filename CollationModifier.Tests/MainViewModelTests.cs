@@ -3463,6 +3463,33 @@ namespace CollationModifier.Tests
                     $"btnCancelConnect must set AutomationProperties.Name to 'Cancel Connection', got '{automationName}'");
             });
 
+            RunSyncTest("MainWindowXaml_ConnectionPanel_ConnectButton_DefaultConfigured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+                var btnConnect = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnConnect"));
+
+                Assert(btnConnect != null, "MainWindow.xaml must declare btnConnect button.");
+
+                var isDefaultAttr = btnConnect!.Attribute("IsDefault")?.Value;
+                Assert(isDefaultAttr != null, "btnConnect must declare IsDefault attribute.");
+                Assert(isDefaultAttr.Contains("CanEditConnectionParameters"),
+                    $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
