@@ -1257,8 +1257,18 @@ public class Greeter : IGreeter
             string content = File.ReadAllText(workflowPath);
 
             // Requirement 1: Redirect build and test output to /tmp/build-and-test.log
+            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee /tmp/build-and-test.log"), "Workflow must redirect patcher build output to /tmp/build-and-test.log");
+            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append CollationModifier build output to /tmp/build-and-test.log");
+            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj");
+            int collationModifierBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj");
+            Assert(patcherBuildIndex != -1 && collationModifierBuildIndex != -1 && patcherBuildIndex < collationModifierBuildIndex, "Workflow must build patcher before CollationModifier");
             Assert(content.Contains("tee /tmp/build-and-test.log"), "Workflow must redirect build output to /tmp/build-and-test.log using tee");
             Assert(content.Contains("tee -a /tmp/build-and-test.log"), "Workflow must append test output to /tmp/build-and-test.log using tee -a");
+
+            // Launcher requirement: Disable shared Roslyn compilation
+            string launcherPath = FindLauncherScriptPath();
+            string launcherContent = File.ReadAllText(launcherPath);
+            Assert(launcherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher must pass -p:UseSharedCompilation=false to dotnet run");
 
             // Requirement 2: Invoke bin/msbuild-patcher under if: failure()
             Assert(content.Contains("bin/msbuild-patcher /tmp/build-and-test.log"), "Workflow must invoke bin/msbuild-patcher /tmp/build-and-test.log");
@@ -1297,6 +1307,29 @@ public class Greeter : IGreeter
                 dir = parent.FullName;
             }
             throw new FileNotFoundException("post-merge-build-verification.yml could not be found.");
+        }
+
+        private static string FindLauncherScriptPath()
+        {
+            string? dir = Directory.GetCurrentDirectory();
+            while (!string.IsNullOrEmpty(dir))
+            {
+                string candidate = Path.Combine(dir, "bin", "msbuild-patcher");
+                if (File.Exists(candidate)) return candidate;
+                var parent = Directory.GetParent(dir);
+                if (parent == null) break;
+                dir = parent.FullName;
+            }
+            dir = AppDomain.CurrentDomain.BaseDirectory;
+            while (!string.IsNullOrEmpty(dir))
+            {
+                string candidate = Path.Combine(dir, "bin", "msbuild-patcher");
+                if (File.Exists(candidate)) return candidate;
+                var parent = Directory.GetParent(dir);
+                if (parent == null) break;
+                dir = parent.FullName;
+            }
+            throw new FileNotFoundException("bin/msbuild-patcher could not be found.");
         }
     }
 }
