@@ -197,9 +197,11 @@
         <Border Background="#E2E8F0" Height="30" VerticalAlignment="Bottom" Grid.ZIndex="10">
             <DockPanel Margin="10,0">
                 <Button x:Name="btnOpenLog" Content="Open Log File" Command="{Binding OpenLogCommand}"
+                        Style="{StaticResource SecondaryButtonSmall}"
                         DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2"
                         AutomationProperties.Name="Open Log File" ToolTip="Open execution log file or folder" />
                 <Button x:Name="btnErrorDetails" Content="Details..." Command="{Binding ShowErrorDetailsCommand}"
+                        Style="{StaticResource SecondaryButtonSmall}"
                         DockPanel.Dock="Right" VerticalAlignment="Center" Height="24" Padding="8,2" Margin="0,0,8,0"
                         AutomationProperties.Name="Details..."
                         AutomationProperties.HelpText="View detailed error information"

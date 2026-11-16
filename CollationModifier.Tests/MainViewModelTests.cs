@@ -3595,6 +3595,94 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
+            RunSyncTest("AppXaml_SecondaryButtonSmall_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var styles = doc.Descendants().Where(e => e.Name.LocalName == "Style").ToList();
+                var smallStyle = styles.FirstOrDefault(s => s.Attributes().Any(a => a.Name.LocalName == "Key" && a.Value == "SecondaryButtonSmall"));
+
+                Assert(smallStyle != null, "App.xaml must declare SecondaryButtonSmall style.");
+                var basedOn = smallStyle!.Attribute("BasedOn")?.Value;
+                Assert(basedOn == "{StaticResource SecondaryButton}", $"SecondaryButtonSmall must be BasedOn SecondaryButton, got '{basedOn}'");
+
+                var setters = smallStyle.Elements().Where(e => e.Name.LocalName == "Setter").ToList();
+                var paddingSetter = setters.FirstOrDefault(s => s.Attribute("Property")?.Value == "Padding");
+                Assert(paddingSetter != null, "SecondaryButtonSmall must declare a Setter for Padding.");
+                Assert(paddingSetter!.Attribute("Value")?.Value == "8,4", $"SecondaryButtonSmall Padding should be '8,4', got '{paddingSetter.Attribute("Value")?.Value}'");
+
+                var fontSizeSetter = setters.FirstOrDefault(s => s.Attribute("Property")?.Value == "FontSize");
+                Assert(fontSizeSetter != null, "SecondaryButtonSmall must declare a Setter for FontSize.");
+                Assert(fontSizeSetter!.Attribute("Value")?.Value == "12", $"SecondaryButtonSmall FontSize should be '12', got '{fontSizeSetter.Attribute("Value")?.Value}'");
+            });
+
+            RunSyncTest("MainWindowXaml_StatusBarButtons_UseSecondaryButtonSmall", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+
+                var btnOpenLog = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnOpenLog"));
+                Assert(btnOpenLog != null, "MainWindow.xaml must declare btnOpenLog button.");
+                Assert(btnOpenLog!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnOpenLog must use SecondaryButtonSmall style, got '{btnOpenLog.Attribute("Style")?.Value}'");
+
+                var btnErrorDetails = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnErrorDetails"));
+                Assert(btnErrorDetails != null, "MainWindow.xaml must declare btnErrorDetails button.");
+                Assert(btnErrorDetails!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnErrorDetails must use SecondaryButtonSmall style, got '{btnErrorDetails.Attribute("Style")?.Value}'");
+            });
+
+            RunSyncTest("ErrorDetailsWindowXaml_ActionButtons_UseSecondaryButtonSmall", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
+                {
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
+
+                var btnCopy = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnCopy"));
+                Assert(btnCopy != null, "ErrorDetailsWindow.xaml must declare btnCopy button.");
+                Assert(btnCopy!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnCopy must use SecondaryButtonSmall style, got '{btnCopy.Attribute("Style")?.Value}'");
+
+                var btnClose = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnClose"));
+                Assert(btnClose != null, "ErrorDetailsWindow.xaml must declare btnClose button.");
+                Assert(btnClose!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnClose must use SecondaryButtonSmall style, got '{btnClose.Attribute("Style")?.Value}'");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
