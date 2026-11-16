@@ -152,7 +152,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^)]*)\)");
 
             var matches = pattern.Matches(classSource);
-            var myParamNames = ExtractParameterNames(member.ParameterList);
+            var myParamNames = ParseParameters(member.ParameterList).Select(p => p.Name).ToList();
 
             foreach (Match match in matches)
             {
@@ -204,28 +204,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             return null;
-        }
-
-        private static List<string> ExtractParameterNames(string paramList)
-        {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(paramList)) return result;
-
-            var parts = paramList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                string clean = part.Trim();
-                if (clean.Contains('='))
-                {
-                    clean = clean.Substring(0, clean.IndexOf('=')).Trim();
-                }
-                var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (tokens.Length >= 2)
-                {
-                    result.Add(tokens[tokens.Length - 1]);
-                }
-            }
-            return result;
         }
 
         private static List<(string Type, string Name, bool HasDefault, string DefaultValue)> ParseParameters(string paramList)
