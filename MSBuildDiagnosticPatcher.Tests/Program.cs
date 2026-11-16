@@ -33,6 +33,12 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError);
             RunTest("MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity", Test_MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError);
+            RunTest("MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates", Test_MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber", Test_MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber);
+            RunTest("MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates", Test_MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS);
+            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError);
+            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon", Test_MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
 
             // 1.5 AnsiCleaner Tests
@@ -261,6 +267,124 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected unrecognized severity to default to Error, got {diag.Severity}");
             Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
             Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+            string line = @"C:\My Projects\Solution Directory\Services\Database Service.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [C:\My Projects\Solution Directory\App.csproj]";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected diagnostic with drive colon and spaced path to be parsed.");
+            Assert(diag!.FilePath == @"C:\My Projects\Solution Directory\Services\Database Service.cs", $"Expected spaced path with drive colon, got '{diag.FilePath}'");
+            Assert(diag.LineNumber == 11, $"Expected line 11, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 36, $"Expected col 36, got {diag.ColumnNumber}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.Code == "CS0535", $"Expected code CS0535, got {diag.Code}");
+            Assert(diag.ProjectPath == @"C:\My Projects\Solution Directory\App.csproj", $"Expected project path, got '{diag.ProjectPath}'");
+            Assert(diag.Message.Contains("does not implement interface member"), "Expected CS0535 message");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber()
+        {
+            var parser = new MSBuildLogParser();
+            string line = @"C:\Program Files\DotNet Project\Module.cs(42): error CS0103: The name 'myVar' does not exist in the current context";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected diagnostic without column number to be parsed.");
+            Assert(diag!.FilePath == @"C:\Program Files\DotNet Project\Module.cs", $"Expected file path, got '{diag.FilePath}'");
+            Assert(diag.LineNumber == 42, $"Expected line 42, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0 when omitted, got {diag.ColumnNumber}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.Code == "CS0103", $"Expected code CS0103, got {diag.Code}");
+            Assert(diag.Message.Contains("does not exist in the current context"), "Expected error message");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+            string line = @"D:\Build Workspace\App\Compiler.cs(100,5): fatal error CS0009: Metadata file 'System.Core.dll' could not be opened";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected fatal error diagnostic to be parsed.");
+            Assert(diag!.FilePath == @"D:\Build Workspace\App\Compiler.cs", $"Expected file path, got '{diag.FilePath}'");
+            Assert(diag.LineNumber == 100, $"Expected line 100, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 5, $"Expected column 5, got {diag.ColumnNumber}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error for fatal error, got {diag.Severity}");
+            Assert(diag.Code == "CS0009", $"Expected code CS0009, got {diag.Code}");
+            Assert(diag.Message.Contains("Metadata file"), "Expected fatal error message");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS()
+        {
+            var parser = new MSBuildLogParser();
+
+            // CS Roslyn error without coordinates
+            string lineCs = "CSC : error CS5001: Program does not contain a static 'Main' method suitable for an entry point";
+            var diagCs = parser.ParseLine(lineCs);
+            Assert(diagCs != null, "Expected CS5001 coordinate-free error to be parsed.");
+            Assert(diagCs!.FilePath == "CSC", $"Expected FilePath 'CSC', got '{diagCs.FilePath}'");
+            Assert(diagCs.LineNumber == 0, $"Expected line 0, got {diagCs.LineNumber}");
+            Assert(diagCs.ColumnNumber == 0, $"Expected column 0, got {diagCs.ColumnNumber}");
+            Assert(diagCs.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diagCs.Severity}");
+            Assert(diagCs.Code == "CS5001", $"Expected code CS5001, got {diagCs.Code}");
+
+            // BC Visual Basic error without coordinates
+            string lineBc = "vbc : error BC2001: file 'Main.vb' could not be found";
+            var diagBc = parser.ParseLine(lineBc);
+            Assert(diagBc != null, "Expected BC2001 coordinate-free error to be parsed.");
+            Assert(diagBc!.FilePath == "vbc", $"Expected FilePath 'vbc', got '{diagBc.FilePath}'");
+            Assert(diagBc.LineNumber == 0, $"Expected line 0, got {diagBc.LineNumber}");
+            Assert(diagBc.ColumnNumber == 0, $"Expected column 0, got {diagBc.ColumnNumber}");
+            Assert(diagBc.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diagBc.Severity}");
+            Assert(diagBc.Code == "BC2001", $"Expected code BC2001, got {diagBc.Code}");
+
+            // FS F# error without coordinates
+            string lineFs = "fsc : error FS0074: The type referenced through 'Module' is defined at an inaccessible location";
+            var diagFs = parser.ParseLine(lineFs);
+            Assert(diagFs != null, "Expected FS0074 coordinate-free error to be parsed.");
+            Assert(diagFs!.FilePath == "fsc", $"Expected FilePath 'fsc', got '{diagFs.FilePath}'");
+            Assert(diagFs.LineNumber == 0, $"Expected line 0, got {diagFs.LineNumber}");
+            Assert(diagFs.ColumnNumber == 0, $"Expected column 0, got {diagFs.ColumnNumber}");
+            Assert(diagFs.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diagFs.Severity}");
+            Assert(diagFs.Code == "FS0074", $"Expected code FS0074, got {diagFs.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError()
+        {
+            var parser = new MSBuildLogParser();
+            string line = "CSC : fatal error CS0009: Metadata file 'System.Runtime.dll' could not be opened";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected coordinate-free fatal error diagnostic to be parsed.");
+            Assert(diag!.FilePath == "CSC", $"Expected FilePath 'CSC', got '{diag.FilePath}'");
+            Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.Code == "CS0009", $"Expected code CS0009, got {diag.Code}");
+            Assert(diag.Message.Contains("Metadata file 'System.Runtime.dll' could not be opened"), "Expected message to match");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon()
+        {
+            var parser = new MSBuildLogParser();
+            string line = @"C:\My Projects\Solution Directory\App.csproj : error CS5001: Program does not contain a static 'Main' method [C:\My Projects\Solution Directory\App.csproj]";
+
+            var diag = parser.ParseLine(line);
+            Assert(diag != null, "Expected coordinate-free diagnostic with drive colon and spaced path to be parsed.");
+            Assert(diag!.FilePath == @"C:\My Projects\Solution Directory\App.csproj", $"Expected file path 'C:\\My Projects\\Solution Directory\\App.csproj', got '{diag.FilePath}'");
+            Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
+            Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
+            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected severity Error, got {diag.Severity}");
+            Assert(diag.Code == "CS5001", $"Expected code CS5001, got {diag.Code}");
+            Assert(diag.ProjectPath == @"C:\My Projects\Solution Directory\App.csproj", $"Expected project path, got '{diag.ProjectPath}'");
+
+            // Also verify non-greedy path matching does not consume trailing delimiters with extra colons in message
+            string colonLine = @"C:\Source Code\Project\File.cs : error CS0100: Multiple colons in message: part 1: part 2";
+            var colonDiag = parser.ParseLine(colonLine);
+            Assert(colonDiag != null, "Expected diagnostic with colons in message to parse.");
+            Assert(colonDiag!.FilePath == @"C:\Source Code\Project\File.cs", $"Expected file path without trailing delimiters, got '{colonDiag.FilePath}'");
+            Assert(colonDiag.Message == "Multiple colons in message: part 1: part 2", $"Expected full message preserved, got '{colonDiag.Message}'");
         }
 
         static void Test_MSBuildLogParser_ParsePerformance_Under10Seconds()
