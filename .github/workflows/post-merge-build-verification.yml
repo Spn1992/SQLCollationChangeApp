@@ -36,7 +36,7 @@ jobs:
         run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Build MSBuildDiagnosticPatcher
-        run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee /tmp/build-and-test.log
+        run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Build CollationModifier
         run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
