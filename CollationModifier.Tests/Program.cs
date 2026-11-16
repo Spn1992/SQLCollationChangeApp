@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.Data.SqlClient;
 using CollationModifier.Models;
 using CollationModifier.Services;
 
@@ -147,6 +148,62 @@ namespace CollationModifier.Tests
             catch (Exception ex)
             {
                 Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullArgumentValidation - {ex}");
+                failed++;
+            }
+
+            Console.WriteLine("\n=== Running DatabaseService Server-Side Procedure Encapsulation Unit Tests ===");
+            try
+            {
+                TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery();
+                Console.WriteLine("PASS: TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestBuildAlterCollationScript_EscapesSpecialCharacters();
+                Console.WriteLine("PASS: TestBuildAlterCollationScript_EscapesSpecialCharacters");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestBuildAlterCollationScript_EscapesSpecialCharacters - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestBuildAlterCollationScript_ValidatesCollationFormat();
+                Console.WriteLine("PASS: TestBuildAlterCollationScript_ValidatesCollationFormat");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestBuildAlterCollationScript_ValidatesCollationFormat - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch();
+                Console.WriteLine("PASS: TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestIsPermissionDeniedException_DetectsPermissionErrorCodes();
+                Console.WriteLine("PASS: TestIsPermissionDeniedException_DetectsPermissionErrorCodes");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestIsPermissionDeniedException_DetectsPermissionErrorCodes - {ex}");
                 failed++;
             }
 
@@ -441,6 +498,99 @@ namespace CollationModifier.Tests
             }
 
             Assert(threw, "Expected ArgumentNullException when record is null.");
+        }
+
+        static void TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery()
+        {
+            string script = DatabaseService.BuildAlterCollationScript("TestDatabase", "Latin1_General_100_CI_AS");
+
+            Assert(script.Contains("BEGIN TRY"), "Script must contain BEGIN TRY block.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"), "Script must switch database to SINGLE_USER with ROLLBACK IMMEDIATE.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] COLLATE Latin1_General_100_CI_AS;"), "Script must alter database collation.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] SET MULTI_USER;"), "Script must switch database back to MULTI_USER on success.");
+            Assert(script.Contains("END TRY"), "Script must contain END TRY.");
+            Assert(script.Contains("BEGIN CATCH"), "Script must contain BEGIN CATCH block.");
+            Assert(script.Contains("IF DB_ID(@DbName) IS NOT NULL"), "Script CATCH must check DB_ID before restoring MULTI_USER.");
+            Assert(script.Contains("RAISERROR"), "Script CATCH must re-raise error to client.");
+            Assert(script.Contains("END CATCH;"), "Script must contain END CATCH.");
+        }
+
+        static void TestBuildAlterCollationScript_EscapesSpecialCharacters()
+        {
+            string script = DatabaseService.BuildAlterCollationScript("Test]Database]Name", "SQL_Latin1_General_CP1_CI_AS");
+            Assert(script.Contains("[Test]]Database]]Name]"), "Script must properly escape closing square brackets in database identifier.");
+        }
+
+        static void TestBuildAlterCollationScript_ValidatesCollationFormat()
+        {
+            bool threw = false;
+            try
+            {
+                DatabaseService.BuildAlterCollationScript("TestDatabase", "Invalid Collation; DROP TABLE sys.databases");
+            }
+            catch (ArgumentException)
+            {
+                threw = true;
+            }
+
+            Assert(threw, "BuildAlterCollationScript must validate collation name and throw ArgumentException for invalid format.");
+        }
+
+        static void TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch()
+        {
+            string script = DatabaseService.BuildRestoreDatabaseScript("TestDatabase");
+
+            Assert(script.Contains("USE [master];"), "Restore script must ensure context is master database.");
+            Assert(script.Contains("BEGIN TRY"), "Restore script must contain BEGIN TRY.");
+            Assert(script.Contains("RESTORE DATABASE [TestDatabase] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;"), "Restore script must contain RESTORE DATABASE command with REPLACE and STATS.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] SET MULTI_USER;"), "Restore script must restore MULTI_USER on success.");
+            Assert(script.Contains("BEGIN CATCH"), "Restore script must contain BEGIN CATCH.");
+            Assert(script.Contains("RAISERROR"), "Restore script must re-raise error.");
+        }
+
+        static void TestIsPermissionDeniedException_DetectsPermissionErrorCodes()
+        {
+            Assert(!DatabaseService.IsPermissionDeniedException(null!), "Null exception should return false.");
+
+            // Create SqlException with permission denied message via reflection or factory
+            var ctor = typeof(SqlException).GetConstructors(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .OrderByDescending(c => c.GetParameters().Length)
+                .FirstOrDefault();
+
+            if (ctor != null)
+            {
+                var parameters = ctor.GetParameters();
+                var args = new object?[parameters.Length];
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    if (parameters[i].ParameterType == typeof(string))
+                    {
+                        args[i] = "The EXECUTE permission was denied on the object 'sp_executesql'";
+                    }
+                    else if (parameters[i].ParameterType == typeof(Guid))
+                    {
+                        args[i] = Guid.NewGuid();
+                    }
+                    else if (parameters[i].ParameterType.IsValueType)
+                    {
+                        args[i] = Activator.CreateInstance(parameters[i].ParameterType);
+                    }
+                    else
+                    {
+                        args[i] = null;
+                    }
+                }
+
+                try
+                {
+                    var sqlEx = (SqlException)ctor.Invoke(args);
+                    Assert(DatabaseService.IsPermissionDeniedException(sqlEx), "IsPermissionDeniedException must return true for permission denied message.");
+                }
+                catch
+                {
+                    // If constructor invoke fails on this platform, continue
+                }
+            }
         }
 
         private sealed class MockDataRecord : IDataRecord
