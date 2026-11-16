@@ -2390,6 +2390,54 @@ namespace CollationModifier.Tests
                 Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
             });
 
+            await RunAsyncTest("ProcessCollationChangeAsync_ReportsRestoreProgressPercentagesOnCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelProgressRestoreDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreProgressSimulator = progress =>
+                    {
+                        progress?.Report(75);
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.Cancel();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                int restoreReportedPercent = -1;
+                string? restoreReportedStatus = null;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent) && vm.ProgressPercent == 75)
+                    {
+                        restoreReportedPercent = vm.ProgressPercent;
+                    }
+                    if (args.PropertyName == nameof(MainViewModel.StatusMessage) && vm.StatusMessage == "Restoring database... 75%")
+                    {
+                        restoreReportedStatus = vm.StatusMessage;
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(restoreReportedPercent == 75, $"Expected restore progress percent to report 75, got {restoreReportedPercent}");
+                Assert(restoreReportedStatus == "Restoring database... 75%", $"Expected restore status message 'Restoring database... 75%', got '{restoreReportedStatus}'");
+                Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after cancellation rollback completes");
+                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after cancellation rollback completes");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected final StatusMessage 'Operation cancelled by user.', got '{vm.StatusMessage}'");
+            });
+
             await RunAsyncTest("ProcessCollationChangeAsync_ResetsProgressAndEnablesIndeterminate_DuringAlterCollation", async () =>
             {
                 var initialDb = new DatabaseInfo { Name = "AlterProgressDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
