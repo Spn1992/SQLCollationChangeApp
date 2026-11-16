@@ -1367,6 +1367,10 @@ public class Greeter : IGreeter
             string launcherContent = File.ReadAllText(launcherPath);
             Assert(launcherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher must pass -p:UseSharedCompilation=false to dotnet run");
 
+            string cmdLauncherPath = FindLauncherCmdPath();
+            string cmdLauncherContent = File.ReadAllText(cmdLauncherPath);
+            Assert(cmdLauncherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher.cmd must pass -p:UseSharedCompilation=false to dotnet run");
+
             // Requirement 2: Invoke bin/msbuild-patcher under if: failure()
             Assert(content.Contains("bin/msbuild-patcher /tmp/build-and-test.log"), "Workflow must invoke bin/msbuild-patcher /tmp/build-and-test.log");
             Assert(content.Contains("if: failure()"), "Diagnostic reporting steps must run under if: failure()");
@@ -1406,12 +1410,12 @@ public class Greeter : IGreeter
             throw new FileNotFoundException("post-merge-build-verification.yml could not be found.");
         }
 
-        private static string FindLauncherScriptPath()
+        private static string FindLauncherScriptPath(string scriptName = "msbuild-patcher")
         {
             string? dir = Directory.GetCurrentDirectory();
             while (!string.IsNullOrEmpty(dir))
             {
-                string candidate = Path.Combine(dir, "bin", "msbuild-patcher");
+                string candidate = Path.Combine(dir, "bin", scriptName);
                 if (File.Exists(candidate)) return candidate;
                 var parent = Directory.GetParent(dir);
                 if (parent == null) break;
@@ -1420,13 +1424,15 @@ public class Greeter : IGreeter
             dir = AppDomain.CurrentDomain.BaseDirectory;
             while (!string.IsNullOrEmpty(dir))
             {
-                string candidate = Path.Combine(dir, "bin", "msbuild-patcher");
+                string candidate = Path.Combine(dir, "bin", scriptName);
                 if (File.Exists(candidate)) return candidate;
                 var parent = Directory.GetParent(dir);
                 if (parent == null) break;
                 dir = parent.FullName;
             }
-            throw new FileNotFoundException("bin/msbuild-patcher could not be found.");
+            throw new FileNotFoundException($"bin/{scriptName} could not be found.");
         }
+
+        private static string FindLauncherCmdPath() => FindLauncherScriptPath("msbuild-patcher.cmd");
     }
 }
