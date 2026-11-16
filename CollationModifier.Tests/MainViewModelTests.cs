@@ -3062,6 +3062,53 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("AutomationProperties.Name=\"Database Operations\""), "Operations container should configure AutomationProperties.Name=\"Database Operations\"");
             });
 
+            RunSyncTest("MainWindowXaml_DashboardOperationsPanel_WrappedInScrollViewer", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                // 1. Find operations StackPanel
+                var stackPanels = doc.Descendants().Where(e => e.Name.LocalName == "StackPanel").ToList();
+                var operationsPanel = stackPanels.FirstOrDefault(sp =>
+                    sp.Attribute("AutomationProperties.Name")?.Value == "Database Operations");
+                Assert(operationsPanel != null, "MainWindow.xaml should contain operations StackPanel with AutomationProperties.Name='Database Operations'");
+
+                // 2. Parent of operations StackPanel must be a ScrollViewer
+                var parentScrollViewer = operationsPanel!.Parent;
+                Assert(parentScrollViewer != null, "Operations StackPanel should have a parent");
+                Assert(parentScrollViewer!.Name.LocalName == "ScrollViewer",
+                    $"Operations StackPanel should be directly enclosed in a ScrollViewer, but found {parentScrollViewer.Name.LocalName}");
+
+                // 3. ScrollViewer should configure vertical auto and horizontal disabled scrolling
+                Assert(parentScrollViewer.Attribute("VerticalScrollBarVisibility")?.Value == "Auto",
+                    "Dashboard ScrollViewer should specify VerticalScrollBarVisibility='Auto'");
+                Assert(parentScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value == "Disabled",
+                    "Dashboard ScrollViewer should specify HorizontalScrollBarVisibility='Disabled'");
+
+                // 4. ScrollViewer parent should be the dashboard Grid
+                var dashboardGrid = parentScrollViewer.Parent;
+                Assert(dashboardGrid != null, "Dashboard ScrollViewer should have a parent Grid");
+                Assert(dashboardGrid!.Name.LocalName == "Grid",
+                    $"Dashboard ScrollViewer parent should be Grid, but found {dashboardGrid.Name.LocalName}");
+
+                // 5. The disconnected overlay Border should be a sibling element within the same Grid
+                var overlayBorder = dashboardGrid.Elements()
+                    .FirstOrDefault(e => e.Name.LocalName == "Border" &&
+                                         e.Descendants().Any(d => d.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "lblDisconnectedOverlay")));
+                Assert(overlayBorder != null, "Disconnected overlay Border should be a sibling inside the dashboard Grid");
+            });
+
             RunSyncTest("MainViewModel_IsConnected_TransitionsAnnounceOperationsPanelState", () =>
             {
                 var vm = new MainViewModel();
