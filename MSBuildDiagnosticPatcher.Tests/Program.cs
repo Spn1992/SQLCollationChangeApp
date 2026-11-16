@@ -1478,7 +1478,7 @@ public class Greeter : IGreeter
             string content = File.ReadAllText(workflowPath);
 
             // Requirement 1: Redirect build and test output to /tmp/build-and-test.log
-            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee /tmp/build-and-test.log"), "Workflow must redirect patcher build output to /tmp/build-and-test.log");
+            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must redirect patcher build output to /tmp/build-and-test.log");
             Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append CollationModifier build output to /tmp/build-and-test.log");
             int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj");
             int collationModifierBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj");
