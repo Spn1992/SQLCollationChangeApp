@@ -61,6 +61,11 @@
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
                 </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource DisabledForegroundBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource DisabledBackgroundBrush}" />
+                </Trigger>
             </Style.Triggers>
         </Style>
 
@@ -79,6 +84,11 @@
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource DisabledForegroundBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource DisabledBackgroundBrush}" />
                 </Trigger>
             </Style.Triggers>
         </Style>
@@ -102,6 +112,11 @@
             <Style.Triggers>
                 <Trigger Property="IsKeyboardFocused" Value="True">
                     <Setter Property="BorderBrush" Value="{StaticResource FocusBorderBrush}" />
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Background" Value="{StaticResource DisabledBackgroundBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource DisabledForegroundBrush}" />
+                    <Setter Property="BorderBrush" Value="{StaticResource DisabledBackgroundBrush}" />
                 </Trigger>
             </Style.Triggers>
         </Style>
