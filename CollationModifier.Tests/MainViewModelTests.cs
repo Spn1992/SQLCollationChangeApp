@@ -3595,6 +3595,86 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
+            RunSyncTest("SelectedAuthenticationType_RaisesPropertyChanged_ForCanEditSqlCredentials_WhenSwitched", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(!vm.IsConnected, "IsConnected should default to false.");
+                Assert(!vm.IsBusy, "IsBusy should default to false.");
+                Assert(vm.SelectedAuthenticationType == "Windows Authentication", "Default authentication should be Windows Authentication.");
+                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false initially under Windows Authentication.");
+
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        notifiedProperties.Add(args.PropertyName);
+                    }
+                };
+
+                // Switch to SQL Server Authentication
+                vm.SelectedAuthenticationType = "SQL Server Authentication";
+
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    $"Expected PropertyChanged for CanEditSqlCredentials when switching to SQL Server Auth, got: {string.Join(", ", notifiedProperties)}");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsSqlServerAuth)),
+                    "Expected PropertyChanged for IsSqlServerAuth.");
+                Assert(vm.CanEditSqlCredentials, "CanEditSqlCredentials should be true when SQL Server Authentication is selected and disconnected.");
+                Assert(vm.StatusMessage == "SQL Server Authentication selected. Username and Password fields enabled.",
+                    $"Expected status message announcing enabled credentials, got '{vm.StatusMessage}'");
+
+                // Switch back to Windows Authentication
+                notifiedProperties.Clear();
+                vm.SelectedAuthenticationType = "Windows Authentication";
+
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    $"Expected PropertyChanged for CanEditSqlCredentials when switching to Windows Auth, got: {string.Join(", ", notifiedProperties)}");
+                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false when Windows Authentication is selected.");
+                Assert(vm.StatusMessage == "Windows Authentication selected. Username and Password fields disabled.",
+                    $"Expected status message announcing disabled credentials, got '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("SelectedAuthenticationType_CanEditSqlCredentials_RemainsFalse_WhenConnectedOrBusy", () =>
+            {
+                // Edge case 1: When IsConnected is true
+                var vmConnected = new MainViewModel(new MockDatabaseService());
+                vmConnected.IsConnected = true;
+
+                var notifiedPropertiesConnected = new List<string>();
+                vmConnected.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        notifiedPropertiesConnected.Add(args.PropertyName);
+                    }
+                };
+
+                vmConnected.SelectedAuthenticationType = "SQL Server Authentication";
+                Assert(notifiedPropertiesConnected.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    "Expected PropertyChanged for CanEditSqlCredentials even when IsConnected is true.");
+                Assert(!vmConnected.CanEditSqlCredentials,
+                    "CanEditSqlCredentials must evaluate to false when IsConnected is true even if SQL Server Auth is selected.");
+
+                // Edge case 2: When IsBusy is true
+                var vmBusy = new MainViewModel(new MockDatabaseService());
+                vmBusy.IsBusy = true;
+
+                var notifiedPropertiesBusy = new List<string>();
+                vmBusy.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName != null)
+                    {
+                        notifiedPropertiesBusy.Add(args.PropertyName);
+                    }
+                };
+
+                vmBusy.SelectedAuthenticationType = "SQL Server Authentication";
+                Assert(notifiedPropertiesBusy.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    "Expected PropertyChanged for CanEditSqlCredentials even when IsBusy is true.");
+                Assert(!vmBusy.CanEditSqlCredentials,
+                    "CanEditSqlCredentials must evaluate to false when IsBusy is true even if SQL Server Auth is selected.");
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
