@@ -668,9 +668,9 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
+                    await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
                 }
                 _logger.LogInfo($"Successfully backed up {databaseName} to {backupFile}");
                 return backupFile;
@@ -695,12 +695,9 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await connection.OpenAsync(cancellationToken);
-                    await ExecuteNonQueryAsync(connection, "USE [master];");
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
-                    var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, new SqlParameter("@BackupFile", backupFile));
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
+                    await OpenConnectionAsync(connection, cancellationToken);
+                    var restoreBatchQuery = BuildRestoreDatabaseBatchSql(databaseName);
+                    await ExecuteNonQueryAsync(connection, restoreBatchQuery, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
             }
@@ -733,11 +730,9 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
-                    var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
-                    await ExecuteNonQueryAsync(connection, query, 3600);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
+                    await OpenConnectionAsync(connection, cancellationToken);
+                    var collationBatchQuery = BuildAlterCollationBatchSql(databaseName, newCollation);
+                    await ExecuteNonQueryAsync(connection, collationBatchQuery, 3600, cancellationToken);
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
             }
@@ -766,7 +761,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(CancellationToken.None);
+                    await OpenConnectionAsync(connection, CancellationToken.None);
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
                 }
             }
@@ -777,15 +772,38 @@ namespace CollationModifier.Services
             }
         }
 
+        internal static string BuildRestoreDatabaseBatchSql(string databaseName)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            return $"USE [master];\n" +
+                   $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\n" +
+                   $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;\n" +
+                   $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
+        }
+
+        internal static string BuildAlterCollationBatchSql(string databaseName, string newCollation)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            return $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\n" +
+                   $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};\n" +
+                   $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
+        }
+
+        protected internal virtual Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        {
+            return connection.OpenAsync(cancellationToken);
+        }
+
         private static string EscapeIdentifier(string identifier)
         {
             return identifier.Replace("]", "]]");
         }
 
-        private static async Task<int> ExecuteNonQueryAsync(
+        protected internal virtual async Task<int> ExecuteNonQueryAsync(
             SqlConnection connection,
             string commandText,
-            int timeoutSeconds = 3600,
+            int timeoutSeconds,
+            CancellationToken cancellationToken,
             params SqlParameter[] parameters)
         {
             using (var command = new SqlCommand(commandText, connection))
@@ -795,9 +813,16 @@ namespace CollationModifier.Services
                 {
                     command.Parameters.AddRange(parameters);
                 }
-                return await command.ExecuteNonQueryAsync();
+                return await command.ExecuteNonQueryAsync(cancellationToken);
             }
         }
+
+        protected internal virtual Task<int> ExecuteNonQueryAsync(
+            SqlConnection connection,
+            string commandText,
+            int timeoutSeconds = 3600,
+            params SqlParameter[] parameters)
+            => ExecuteNonQueryAsync(connection, commandText, timeoutSeconds, CancellationToken.None, parameters);
 
         private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode)
         {
