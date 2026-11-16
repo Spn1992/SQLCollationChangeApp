@@ -1806,6 +1806,58 @@ namespace CollationModifier.Tests
                 Assert(contrastAgainstWhite >= 3.0, $"Contrast ratio {contrastAgainstWhite} against white background must exceed 3:1 under WCAG 2.2 1.4.11");
             });
 
+            RunSyncTest("AppXaml_DisabledInputStyleTriggers_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var styles = doc.Descendants().Where(e => e.Name.LocalName == "Style").ToList();
+
+                string[] inputTargetTypes = new[] { "TextBox", "PasswordBox", "ComboBox" };
+                foreach (string targetType in inputTargetTypes)
+                {
+                    var style = styles.FirstOrDefault(s => s.Attribute("TargetType")?.Value == targetType);
+                    Assert(style != null, $"App.xaml should define style for TargetType='{targetType}'");
+
+                    var triggersContainer = style!.Elements().FirstOrDefault(e => e.Name.LocalName == "Style.Triggers");
+                    Assert(triggersContainer != null, $"Style for '{targetType}' should contain <Style.Triggers>");
+
+                    var disabledTrigger = triggersContainer!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Trigger" &&
+                        e.Attribute("Property")?.Value == "IsEnabled" &&
+                        e.Attribute("Value")?.Value == "False");
+                    Assert(disabledTrigger != null, $"Style for '{targetType}' must configure <Trigger Property=\"IsEnabled\" Value=\"False\">");
+
+                    var bgSetter = disabledTrigger!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Setter" &&
+                        e.Attribute("Property")?.Value == "Background" &&
+                        e.Attribute("Value")?.Value == "{StaticResource DisabledBackgroundBrush}");
+                    Assert(bgSetter != null, $"Style for '{targetType}' disabled trigger must set Background to {{StaticResource DisabledBackgroundBrush}}");
+
+                    var fgSetter = disabledTrigger!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Setter" &&
+                        e.Attribute("Property")?.Value == "Foreground" &&
+                        e.Attribute("Value")?.Value == "{StaticResource DisabledForegroundBrush}");
+                    Assert(fgSetter != null, $"Style for '{targetType}' disabled trigger must set Foreground to {{StaticResource DisabledForegroundBrush}}");
+
+                    var borderSetter = disabledTrigger!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Setter" &&
+                        e.Attribute("Property")?.Value == "BorderBrush" &&
+                        e.Attribute("Value")?.Value == "{StaticResource DisabledBackgroundBrush}");
+                    Assert(borderSetter != null, $"Style for '{targetType}' disabled trigger must set BorderBrush to {{StaticResource DisabledBackgroundBrush}}");
+                }
+            });
+
             RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
