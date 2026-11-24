@@ -25,117 +25,150 @@ namespace MSBuildDiagnosticPatcher.Parsers
 
         public List<TestFailure> ParseText(string logContent)
         {
-            var results = new List<TestFailure>();
             if (string.IsNullOrWhiteSpace(logContent))
             {
-                return results;
+                return new List<TestFailure>();
             }
 
-            var lines = logContent.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-            for (int i = 0; i < lines.Length; i++)
+            using var reader = new StringReader(logContent);
+            return ParseStream(reader);
+        }
+
+        public List<TestFailure> ParseStream(TextReader reader)
+        {
+            if (reader == null)
             {
-                string rawLine = lines[i];
-                string cleanLine = AnsiCleaner.Clean(rawLine);
+                throw new ArgumentNullException(nameof(reader));
+            }
 
-                // 1. Try Custom Runner pattern: "FAIL: MainViewModelTestsRunner - System.Exception: Assertion Failed: ..."
-                var customMatch = CustomRunnerFailRegex.Match(cleanLine);
-                if (customMatch.Success)
+            return LogStreamParser.Parse(reader, msbuildParser: null, this).TestFailures;
+        }
+
+        internal void ParseFromReader(ref PeekableLineReader lineReader, List<TestFailure> results)
+        {
+            while (lineReader.TryRead(out string rawLine, out string cleanLine))
+            {
+                if (cleanLine.Length < 5)
                 {
-                    string fullName = customMatch.Groups["test"].Value.Trim();
-                    string details = customMatch.Groups["details"].Success ? customMatch.Groups["details"].Value.Trim() : string.Empty;
+                    continue;
+                }
 
-                    var (className, methodName) = SplitTestName(fullName);
-                    var failure = new TestFailure
+                bool isBracketFail = cleanLine.StartsWith("[FAIL]", StringComparison.OrdinalIgnoreCase);
+                bool isColonFail = !isBracketFail && cleanLine.StartsWith("FAIL:", StringComparison.OrdinalIgnoreCase);
+
+                if (isBracketFail || isColonFail)
+                {
+                    // 1. Try Custom Runner pattern: "FAIL: MainViewModelTestsRunner - System.Exception: Assertion Failed: ..."
+                    var customMatch = CustomRunnerFailRegex.Match(cleanLine);
+                    if (customMatch.Success)
                     {
-                        TestClass = className,
-                        TestMethod = methodName,
-                        AssertionFailureMessage = ExtractAssertionMessage(details),
-                        RawLine = rawLine
-                    };
+                        string fullName = customMatch.Groups["test"].Value.Trim();
+                        string details = customMatch.Groups["details"].Success ? customMatch.Groups["details"].Value.Trim() : string.Empty;
 
-                    // Collect subsequent stack trace lines if available
-                    failure.StackTrace = CollectStackTrace(lines, ref i);
-                    results.Add(failure);
+                        var (className, methodName) = SplitTestName(fullName);
+                        var failure = new TestFailure
+                        {
+                            TestClass = className,
+                            TestMethod = methodName,
+                            AssertionFailureMessage = ExtractAssertionMessage(details),
+                            RawLine = rawLine,
+                            StackTrace = CollectStackTrace(ref lineReader)
+                        };
+
+                        results.Add(failure);
+                        continue;
+                    }
+
+                    // 3. Try [FAIL] TestClass.TestMethod: Message
+                    if (isBracketFail)
+                    {
+                        var bracketMatch = BracketFailRegex.Match(cleanLine);
+                        if (bracketMatch.Success)
+                        {
+                            string fullName = bracketMatch.Groups["test"].Value.Trim();
+                            string details = bracketMatch.Groups["details"].Success ? bracketMatch.Groups["details"].Value.Trim() : string.Empty;
+                            var (className, methodName) = SplitTestName(fullName);
+
+                            results.Add(new TestFailure
+                            {
+                                TestClass = className,
+                                TestMethod = methodName,
+                                AssertionFailureMessage = ExtractAssertionMessage(details),
+                                RawLine = rawLine
+                            });
+                        }
+                    }
+
                     continue;
                 }
 
                 // 2. Try Dotnet test: "Failed TestClass.TestMethod [12 ms]"
-                var dotnetMatch = DotnetTestFailedRegex.Match(cleanLine);
-                if (dotnetMatch.Success)
+                if (cleanLine.StartsWith("Failed", StringComparison.OrdinalIgnoreCase))
                 {
-                    string fullName = dotnetMatch.Groups["test"].Value.Trim();
-                    var (className, methodName) = SplitTestName(fullName);
-
-                    string errorMessage = "";
-                    string stackTrace = "";
-
-                    // Look ahead for "Error Message:" and "Stack Trace:"
-                    int j = i + 1;
-                    while (j < lines.Length)
+                    var dotnetMatch = DotnetTestFailedRegex.Match(cleanLine);
+                    if (dotnetMatch.Success)
                     {
-                        string lookAhead = AnsiCleaner.Clean(lines[j]);
-                        if (lookAhead.StartsWith("Failed ") || lookAhead.StartsWith("Passed ") || lookAhead.StartsWith("Total tests:"))
-                        {
-                            break;
-                        }
+                        string fullName = dotnetMatch.Groups["test"].Value.Trim();
+                        var (className, methodName) = SplitTestName(fullName);
 
-                        if (lookAhead.StartsWith("Error Message:", StringComparison.OrdinalIgnoreCase))
+                        string errorMessage = string.Empty;
+                        string stackTrace = string.Empty;
+
+                        // Look ahead for "Error Message:" and "Stack Trace:" using 1-line peek
+                        while (lineReader.TryPeek(out _, out string lookAhead))
                         {
-                            j++;
-                            if (j < lines.Length)
+                            if (lookAhead.StartsWith("Failed ", StringComparison.OrdinalIgnoreCase) ||
+                                lookAhead.StartsWith("Passed ", StringComparison.OrdinalIgnoreCase) ||
+                                lookAhead.StartsWith("Total tests:", StringComparison.OrdinalIgnoreCase) ||
+                                lookAhead.StartsWith("[FAIL]", StringComparison.OrdinalIgnoreCase) ||
+                                lookAhead.StartsWith("FAIL:", StringComparison.OrdinalIgnoreCase))
                             {
-                                errorMessage = AnsiCleaner.Clean(lines[j]);
+                                break;
                             }
-                        }
-                        else if (lookAhead.StartsWith("Stack Trace:", StringComparison.OrdinalIgnoreCase))
-                        {
-                            j++;
-                            var stList = new List<string>();
-                            while (j < lines.Length && (lines[j].Trim().StartsWith("at ") || string.IsNullOrWhiteSpace(lines[j])))
+
+                            if (lookAhead.StartsWith("Error Message:", StringComparison.OrdinalIgnoreCase))
                             {
-                                if (!string.IsNullOrWhiteSpace(lines[j]))
+                                lineReader.ConsumePeeked();
+                                if (lineReader.TryRead(out _, out string messageLine))
                                 {
-                                    stList.Add(AnsiCleaner.Clean(lines[j]));
+                                    errorMessage = messageLine;
                                 }
-                                j++;
+                                continue;
                             }
-                            stackTrace = string.Join("\n", stList);
-                            break;
+
+                            if (lookAhead.StartsWith("Stack Trace:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                lineReader.ConsumePeeked();
+                                List<string>? stList = null;
+                                while (lineReader.TryPeek(out _, out string stClean) &&
+                                       (stClean.StartsWith("at ", StringComparison.Ordinal) || stClean.Length == 0))
+                                {
+                                    lineReader.ConsumePeeked();
+                                    if (stClean.Length > 0)
+                                    {
+                                        stList ??= new List<string>();
+                                        stList.Add(stClean);
+                                    }
+                                }
+
+                                stackTrace = stList != null ? string.Join("\n", stList) : string.Empty;
+                                break;
+                            }
+
+                            lineReader.ConsumePeeked();
                         }
-                        j++;
+
+                        results.Add(new TestFailure
+                        {
+                            TestClass = className,
+                            TestMethod = methodName,
+                            AssertionFailureMessage = string.IsNullOrWhiteSpace(errorMessage) ? "Test execution failed." : errorMessage,
+                            StackTrace = stackTrace,
+                            RawLine = rawLine
+                        });
                     }
-
-                    results.Add(new TestFailure
-                    {
-                        TestClass = className,
-                        TestMethod = methodName,
-                        AssertionFailureMessage = string.IsNullOrWhiteSpace(errorMessage) ? "Test execution failed." : errorMessage,
-                        StackTrace = stackTrace,
-                        RawLine = rawLine
-                    });
-                    i = j - 1;
-                    continue;
-                }
-
-                // 3. Try [FAIL] TestClass.TestMethod: Message
-                var bracketMatch = BracketFailRegex.Match(cleanLine);
-                if (bracketMatch.Success)
-                {
-                    string fullName = bracketMatch.Groups["test"].Value.Trim();
-                    string details = bracketMatch.Groups["details"].Success ? bracketMatch.Groups["details"].Value.Trim() : string.Empty;
-                    var (className, methodName) = SplitTestName(fullName);
-
-                    results.Add(new TestFailure
-                    {
-                        TestClass = className,
-                        TestMethod = methodName,
-                        AssertionFailureMessage = ExtractAssertionMessage(details),
-                        RawLine = rawLine
-                    });
                 }
             }
-
-            return results;
         }
 
         private static (string ClassName, string MethodName) SplitTestName(string fullName)
@@ -172,25 +205,25 @@ namespace MSBuildDiagnosticPatcher.Parsers
             return rawDetails.Trim();
         }
 
-        private static string CollectStackTrace(string[] lines, ref int currentIndex)
+        private static string CollectStackTrace(ref PeekableLineReader lineReader)
         {
-            var stackLines = new List<string>();
-            int next = currentIndex + 1;
-            while (next < lines.Length)
+            List<string>? stackLines = null;
+            while (lineReader.TryPeek(out _, out string line))
             {
-                string line = AnsiCleaner.Clean(lines[next]);
-                if (line.StartsWith("at ") || line.StartsWith("--- End of inner exception stack trace ---"))
+                if (line.StartsWith("at ", StringComparison.Ordinal) ||
+                    line.StartsWith("--- End of inner exception stack trace ---", StringComparison.Ordinal))
                 {
+                    lineReader.ConsumePeeked();
+                    stackLines ??= new List<string>();
                     stackLines.Add(line);
-                    currentIndex = next;
-                    next++;
                 }
                 else
                 {
                     break;
                 }
             }
-            return string.Join("\n", stackLines);
+
+            return stackLines != null ? string.Join("\n", stackLines) : string.Empty;
         }
     }
 }
