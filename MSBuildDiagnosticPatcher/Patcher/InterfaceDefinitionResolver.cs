@@ -85,6 +85,285 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
         }
 
+        public List<InterfaceMemberInfo> ResolveRequiredInterfaceMembers(
+            string interfaceName,
+            string contextFilePath,
+            string? projectRoot = null)
+        {
+            string? interfaceFile = FindInterfaceFile(interfaceName, contextFilePath, projectRoot);
+            if (interfaceFile == null)
+            {
+                return new List<InterfaceMemberInfo>();
+            }
+
+            string? content = GetOrReadFileContent(interfaceFile);
+            if (content == null)
+            {
+                return new List<InterfaceMemberInfo>();
+            }
+
+            var members = ExtractRequiredMembersFromInterfaceSource(content, interfaceName);
+            foreach (var m in members)
+            {
+                m.InterfaceFilePath = interfaceFile;
+            }
+            return members;
+        }
+
+        public List<InterfaceMemberInfo> ExtractRequiredMembersFromInterfaceSource(
+            string sourceCode,
+            string interfaceName)
+        {
+            var members = new List<InterfaceMemberInfo>();
+            if (string.IsNullOrWhiteSpace(sourceCode) || string.IsNullOrWhiteSpace(interfaceName))
+            {
+                return members;
+            }
+
+            string sanitized = CSharpSourceSanitizer.SanitizePreserveLength(sourceCode);
+            var ifaceMatch = Regex.Match(sanitized, $@"\binterface\s+{Regex.Escape(interfaceName)}\b");
+            if (!ifaceMatch.Success)
+            {
+                return members;
+            }
+
+            int openBrace = sanitized.IndexOf('{', ifaceMatch.Index);
+            if (openBrace < 0)
+            {
+                return members;
+            }
+
+            int closeBrace = CSharpSourceSanitizer.FindMatchingBrace(sanitized, openBrace);
+            if (closeBrace < 0)
+            {
+                closeBrace = sanitized.Length;
+            }
+
+            var spans = CSharpSourceSanitizer.SplitTopLevelMemberSpans(sanitized, openBrace + 1, closeBrace);
+            foreach (var (spanStart, spanEnd) in spans)
+            {
+                int declStart = CSharpSourceSanitizer.StripLeadingAttributes(sanitized, spanStart, spanEnd + 1);
+                if (declStart > spanEnd)
+                {
+                    continue;
+                }
+
+                string sanDecl = sanitized.Substring(declStart, spanEnd - declStart + 1).Trim();
+                string origDecl = sourceCode.Substring(declStart, spanEnd - declStart + 1).Trim();
+                if (string.IsNullOrWhiteSpace(sanDecl))
+                {
+                    continue;
+                }
+
+                if (sanDecl.EndsWith(";", StringComparison.Ordinal))
+                {
+                    // Skip expression-bodied default interface members (e.g. void Foo() => Bar();)
+                    if (HasTopLevelFatArrow(sanDecl))
+                    {
+                        continue;
+                    }
+
+                    int openParen = FindTopLevelChar(sanDecl, '(');
+                    if (openParen < 0)
+                    {
+                        continue;
+                    }
+
+                    int closeParen = CSharpSourceSanitizer.FindMatchingParen(sanDecl, openParen);
+                    if (closeParen < 0)
+                    {
+                        continue;
+                    }
+
+                    // Ensure only whitespace separates ')' and trailing ';'
+                    string trailing = sanDecl.Substring(closeParen + 1, sanDecl.Length - closeParen - 2);
+                    if (!string.IsNullOrWhiteSpace(trailing))
+                    {
+                        continue;
+                    }
+
+                    string headerSan = sanDecl.Substring(0, openParen).Trim();
+                    string headerOrig = origDecl.Substring(0, openParen).Trim();
+
+                    if (Regex.IsMatch(headerSan, @"\b(?:static|event|const|delegate|operator)\b"))
+                    {
+                        continue;
+                    }
+
+                    if (!TrySplitReturnTypeAndMemberName(headerOrig, out string returnType, out string mName))
+                    {
+                        continue;
+                    }
+
+                    string paramList = origDecl.Substring(openParen + 1, closeParen - openParen - 1).Trim();
+                    members.Add(new InterfaceMemberInfo
+                    {
+                        InterfaceName = interfaceName,
+                        MemberName = mName,
+                        ReturnType = returnType,
+                        ParameterList = paramList,
+                        IsProperty = false,
+                        FullSignature = $"{returnType} {mName}({paramList})"
+                    });
+                }
+                else if (sanDecl.EndsWith("}", StringComparison.Ordinal))
+                {
+                    int openAccBrace = FindTopLevelChar(sanDecl, '{');
+                    if (openAccBrace < 0)
+                    {
+                        continue;
+                    }
+
+                    // If '(' appears before '{' at top level, this is a block-bodied default interface method
+                    int openParen = FindTopLevelChar(sanDecl.Substring(0, openAccBrace), '(');
+                    if (openParen >= 0)
+                    {
+                        continue;
+                    }
+
+                    string headerSan = sanDecl.Substring(0, openAccBrace).Trim();
+                    string headerOrig = origDecl.Substring(0, openAccBrace).Trim();
+
+                    // Skip static members, events, indexers, and nested types
+                    if (Regex.IsMatch(headerSan, @"\b(?:static|event|class|struct|interface|enum|record)\b") ||
+                        Regex.IsMatch(headerSan, @"\bthis\s*\["))
+                    {
+                        continue;
+                    }
+
+                    string sanAccessors = sanDecl.Substring(openAccBrace + 1, sanDecl.Length - openAccBrace - 2);
+                    // Skip default property implementations (accessor bodies with '{' or '=>')
+                    if (sanAccessors.Contains('{') || sanAccessors.Contains("=>", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    bool hasGetter = Regex.IsMatch(sanAccessors, @"\bget\s*;");
+                    bool hasSetter = Regex.IsMatch(sanAccessors, @"\b(?:set|init)\s*;");
+                    if (!hasGetter && !hasSetter)
+                    {
+                        continue;
+                    }
+
+                    if (!TrySplitReturnTypeAndMemberName(headerOrig, out string returnType, out string pName))
+                    {
+                        continue;
+                    }
+
+                    string origAccessors = Regex.Replace(
+                        origDecl.Substring(openAccBrace + 1, origDecl.Length - openAccBrace - 2).Trim(),
+                        @"\s+",
+                        " ");
+
+                    members.Add(new InterfaceMemberInfo
+                    {
+                        InterfaceName = interfaceName,
+                        MemberName = pName,
+                        ReturnType = returnType,
+                        IsProperty = true,
+                        HasGetter = hasGetter,
+                        HasSetter = hasSetter,
+                        FullSignature = $"{returnType} {pName} {{ {origAccessors} }}"
+                    });
+                }
+            }
+
+            return members;
+        }
+
+        private static bool HasTopLevelFatArrow(string sanitizedDecl)
+        {
+            int parenDepth = 0;
+            int braceDepth = 0;
+            int bracketDepth = 0;
+
+            for (int i = 0; i < sanitizedDecl.Length - 1; i++)
+            {
+                char c = sanitizedDecl[i];
+                if (c == '(') parenDepth++;
+                else if (c == ')' && parenDepth > 0) parenDepth--;
+                else if (c == '{') braceDepth++;
+                else if (c == '}' && braceDepth > 0) braceDepth--;
+                else if (c == '[') bracketDepth++;
+                else if (c == ']' && bracketDepth > 0) bracketDepth--;
+                else if (c == '=' && sanitizedDecl[i + 1] == '>' &&
+                         parenDepth == 0 && braceDepth == 0 && bracketDepth == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static int FindTopLevelChar(string sanitizedDecl, char target)
+        {
+            int parenDepth = 0;
+            int braceDepth = 0;
+            int bracketDepth = 0;
+
+            for (int i = 0; i < sanitizedDecl.Length; i++)
+            {
+                char c = sanitizedDecl[i];
+                if (c == target && parenDepth == 0 && braceDepth == 0 && bracketDepth == 0)
+                {
+                    return i;
+                }
+                if (c == '(') parenDepth++;
+                else if (c == ')' && parenDepth > 0) parenDepth--;
+                else if (c == '{') braceDepth++;
+                else if (c == '}' && braceDepth > 0) braceDepth--;
+                else if (c == '[') bracketDepth++;
+                else if (c == ']' && bracketDepth > 0) bracketDepth--;
+            }
+
+            return -1;
+        }
+
+        private static bool TrySplitReturnTypeAndMemberName(
+            string headerOrig,
+            out string returnType,
+            out string memberName)
+        {
+            returnType = string.Empty;
+            memberName = string.Empty;
+
+            // Strip interface member modifiers
+            string cleaned = Regex.Replace(
+                headerOrig.Trim(),
+                @"^(?:(?:public|internal|protected|private|new|abstract|virtual|unsafe|partial)\s+)+",
+                "");
+
+            // Strip generic method type parameter list if present (e.g. QueryAsync<T>)
+            if (cleaned.EndsWith(">", StringComparison.Ordinal))
+            {
+                int depth = 0;
+                for (int i = cleaned.Length - 1; i >= 0; i--)
+                {
+                    if (cleaned[i] == '>') depth++;
+                    else if (cleaned[i] == '<')
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            cleaned = cleaned.Substring(0, i).TrimEnd();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            var nameMatch = Regex.Match(cleaned, @"(?<=[\s>\?\)\]])(?<name>@?[A-Za-z_][A-Za-z0-9_]*)\s*$");
+            if (!nameMatch.Success)
+            {
+                return false;
+            }
+
+            memberName = nameMatch.Groups["name"].Value.Trim();
+            returnType = cleaned.Substring(0, nameMatch.Index).Trim();
+            return !string.IsNullOrWhiteSpace(returnType) && !string.IsNullOrWhiteSpace(memberName);
+        }
+
         private string? GetOrReadFileContent(string filePath)
         {
             lock (_cacheLock)

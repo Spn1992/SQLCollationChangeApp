@@ -23,6 +23,7 @@ namespace MSBuildDiagnosticPatcher
             string projectRoot = Directory.GetCurrentDirectory();
             bool applyPatches = false;
             bool autoConfirm = false;
+            bool reportOnly = false;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -42,6 +43,10 @@ namespace MSBuildDiagnosticPatcher
                 else if (arg == "-y" || arg == "--yes")
                 {
                     autoConfirm = true;
+                }
+                else if (arg == "--report-only")
+                {
+                    reportOnly = true;
                 }
                 else if (!arg.StartsWith("-") && string.IsNullOrEmpty(logFilePath))
                 {
@@ -96,7 +101,7 @@ namespace MSBuildDiagnosticPatcher
             reporter.WriteReportFiles(report, outputDir);
             Console.WriteLine($"[INFO] Diagnostic reports and patches written to: {Path.GetFullPath(outputDir)}");
 
-            if (applyPatches && patchCandidates.Count > 0)
+            if (!reportOnly && applyPatches && patchCandidates.Count > 0)
             {
                 Console.WriteLine("\n[INFO] Applying candidate remediation patches...");
                 var applicator = new PatchApplicator();
@@ -107,6 +112,11 @@ namespace MSBuildDiagnosticPatcher
 
                 reporter.WriteReportFiles(report, outputDir);
                 Console.WriteLine("[INFO] Updated diagnostic reports and candidate statuses on disk after patch application.");
+            }
+
+            if (reportOnly)
+            {
+                return 0;
             }
 
             // Return non-zero if errors or failures were found
@@ -128,6 +138,7 @@ Options:
   -p, --project-root <directory> Project root directory for resolving interface files (default: current directory)
   -a, --apply                    Apply candidate patches to source files
   -y, --yes                      Automatically confirm patch application without prompting
+  --report-only                  Write diagnostic reports and candidate patches and exit with code 0
   -h, --help                     Show command line help
 ");
         }
