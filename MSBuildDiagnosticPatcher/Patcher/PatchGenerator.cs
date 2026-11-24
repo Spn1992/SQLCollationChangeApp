@@ -208,24 +208,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         private static List<string> ExtractParameterNames(string paramList)
         {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(paramList)) return result;
-
-            var parts = paramList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (var part in parts)
-            {
-                string clean = part.Trim();
-                if (clean.Contains('='))
-                {
-                    clean = clean.Substring(0, clean.IndexOf('=')).Trim();
-                }
-                var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (tokens.Length >= 2)
-                {
-                    result.Add(tokens[tokens.Length - 1]);
-                }
-            }
-            return result;
+            return ParseParameters(paramList)
+                .Select(p => p.Name)
+                .ToList();
         }
 
         private static List<(string Type, string Name, bool HasDefault, string DefaultValue)> ParseParameters(string paramList)
@@ -247,7 +232,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     clean = clean.Substring(0, eqIdx).Trim();
                 }
 
-                var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                var tokens = clean.Split(Array.Empty<char>(), StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length >= 2)
                 {
                     string name = tokens[tokens.Length - 1];

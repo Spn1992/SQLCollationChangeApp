@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading.Tasks;
 using MSBuildDiagnosticPatcher.Models;
 using MSBuildDiagnosticPatcher.Parsers;
@@ -65,6 +66,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesToExistingOverload", Test_PatchGenerator_GenerateMemberStub_Delegates);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters", Test_PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters);
+            RunTest("PatchGenerator_ExtractParameterNames_HandlesDefaultsNullablesAndWhitespace", Test_PatchGenerator_ExtractParameterNames_HandlesDefaultsNullablesAndWhitespace);
+            RunTest("PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently", Test_PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
@@ -912,6 +915,116 @@ public class CacheService : ICacheService
             string stub3 = generator.GenerateMemberStub(member3, classSource3);
             Assert(stub3.Contains("CacheItem(key, null, default);"),
                 $"Expected delegation call with null for nullable reference and default for whitespace defaultValue, got:\n{stub3}");
+        }
+
+        static void Test_PatchGenerator_ExtractParameterNames_HandlesDefaultsNullablesAndWhitespace()
+        {
+            var extractMethod = typeof(PatchGenerator).GetMethod("ExtractParameterNames", BindingFlags.NonPublic | BindingFlags.Static);
+            var parseMethod = typeof(PatchGenerator).GetMethod("ParseParameters", BindingFlags.NonPublic | BindingFlags.Static);
+            Assert(extractMethod != null, "Expected ExtractParameterNames method on PatchGenerator.");
+            Assert(parseMethod != null, "Expected ParseParameters method on PatchGenerator.");
+
+            List<string> InvokeExtract(string? paramList) =>
+                (List<string>)extractMethod!.Invoke(null, new object?[] { paramList })!;
+
+            List<(string Type, string Name, bool HasDefault, string DefaultValue)> InvokeParse(string? paramList) =>
+                (List<(string Type, string Name, bool HasDefault, string DefaultValue)>)parseMethod!.Invoke(null, new object?[] { paramList })!;
+
+            // 1. Empty, whitespace, and null inputs should return empty lists without throwing
+            Assert(InvokeExtract("").Count == 0, "Expected empty parameter list for empty string.");
+            Assert(InvokeExtract("    ").Count == 0, "Expected empty parameter list for spaces.");
+            Assert(InvokeExtract("\t \r\n ").Count == 0, "Expected empty parameter list for tabs and newlines.");
+            Assert(InvokeExtract(null).Count == 0, "Expected empty parameter list for null input.");
+            Assert(InvokeExtract(" ,  , ").Count == 0, "Expected empty parameter list for empty comma-separated segments.");
+
+            // 2. Default values, nullable types, and irregular spaces/tabs/newlines
+            string complexSignature =
+                "  string   databaseName , " +
+                "string?   backupDirectory =  null , " +
+                "IProgress<int>?  progress = null , " +
+                "int?   maxRetries = 3 , " +
+                "string ?   label = \"full backup\" , " +
+                "CancellationToken\tcancellationToken  =  default(CancellationToken)  ";
+
+            var parsed = InvokeParse(complexSignature);
+            var extractedNames = InvokeExtract(complexSignature);
+
+            var expectedNames = new[] { "databaseName", "backupDirectory", "progress", "maxRetries", "label", "cancellationToken" };
+            Assert(extractedNames.SequenceEqual(expectedNames),
+                $"Expected parameter names [{string.Join(", ", expectedNames)}], got [{string.Join(", ", extractedNames)}]");
+            Assert(extractedNames.SequenceEqual(parsed.Select(p => p.Name)),
+                "ExtractParameterNames output must match projected names from ParseParameters.");
+
+            // Verify ParseParameters preserves nullable type annotations and default value expressions
+            Assert(parsed[0] == ("string", "databaseName", false, ""), $"Unexpected parsed[0]: {parsed[0]}");
+            Assert(parsed[1] == ("string?", "backupDirectory", true, "null"), $"Unexpected parsed[1]: {parsed[1]}");
+            Assert(parsed[2] == ("IProgress<int>?", "progress", true, "null"), $"Unexpected parsed[2]: {parsed[2]}");
+            Assert(parsed[3] == ("int?", "maxRetries", true, "3"), $"Unexpected parsed[3]: {parsed[3]}");
+            Assert(parsed[4] == ("string ?", "label", true, "\"full backup\""), $"Unexpected parsed[4]: {parsed[4]}");
+            Assert(parsed[5] == ("CancellationToken", "cancellationToken", true, "default(CancellationToken)"), $"Unexpected parsed[5]: {parsed[5]}");
+        }
+
+        static void Test_PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently()
+        {
+            var generator = new PatchGenerator();
+
+            // Candidate overload has irregular spacing, nullable types, and default expressions;
+            // missing member also has extra whitespace, nullable type, and default parameter.
+            string classSource = @"
+public class BackupCoordinator : IBackupCoordinator
+{
+    public virtual Task<bool> RunBackupAsync(string databaseName)
+    {
+        return Task.FromResult(false);
+    }
+
+    public virtual async Task<bool> RunBackupAsync(
+        string   dbDatabase ,
+        string?   targetDirectory ,
+        IProgress<int>?   progress = null ,
+        string   archiveLabel = ""nightly backup"" ,
+        int?   compressionLevel = 1 ,
+        CancellationToken   ctToken  =  default )
+    {
+        return true;
+    }
+}";
+
+            var member = new InterfaceMemberInfo
+            {
+                InterfaceName = "IBackupCoordinator",
+                MemberName = "RunBackupAsync",
+                ReturnType = "Task<bool>",
+                ParameterList = "  string   sourceDatabase ,  string?   backupDirectory ,  CancellationToken   cancellationToken = default  "
+            };
+
+            string stub = generator.GenerateMemberStub(member, classSource);
+            Assert(
+                stub.Contains("return RunBackupAsync(sourceDatabase, backupDirectory, null, \"nightly backup\", 1, cancellationToken);"),
+                $"Expected delegation call matching candidate overload parameters, got:\n{stub}");
+
+            // Also verify empty parameter list on missing member delegates cleanly when all candidate parameters have defaults or are nullable
+            var parameterlessMember = new InterfaceMemberInfo
+            {
+                InterfaceName = "IBackupCoordinator",
+                MemberName = "PingAsync",
+                ReturnType = "Task",
+                ParameterList = "   "
+            };
+
+            string pingClassSource = @"
+public class BackupCoordinator : IBackupCoordinator
+{
+    public virtual Task PingAsync(string? endpoint = null, int timeoutMs = 5000, CancellationToken cancellationToken = default)
+    {
+        return Task.CompletedTask;
+    }
+}";
+
+            string pingStub = generator.GenerateMemberStub(parameterlessMember, pingClassSource);
+            Assert(
+                pingStub.Contains("return PingAsync(null, 5000, default);"),
+                $"Expected parameterless stub to delegate using defaults and nulls, got:\n{pingStub}");
         }
 
         static void Test_PatchGenerator_GenerateMemberStub_NotImplemented()
