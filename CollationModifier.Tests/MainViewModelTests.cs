@@ -36,6 +36,7 @@ namespace CollationModifier.Tests
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
+        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
@@ -126,8 +127,12 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
+        public async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
+            if (OnPreflightCheck != null)
+            {
+                await OnPreflightCheck(cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
             if (!string.IsNullOrEmpty(targetCollation))
@@ -151,7 +156,7 @@ namespace CollationModifier.Tests
                     DatabaseService.EvaluateCollation(databaseName, currentCollation, targetCollation, PreflightReportToReturn);
                 }
             }
-            return Task.FromResult(PreflightReportToReturn);
+            return PreflightReportToReturn;
         }
 
         public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -1141,6 +1146,67 @@ namespace CollationModifier.Tests
                 await vm.ProcessCollationChangeAsync();
 
                 Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked if cancelled before backup completes.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync should NOT be invoked if cancelled before alteration starts.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SkipsMultiUserReset_WhenCancelledDuringPreflight", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelDuringPreflightDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnPreflightCheck = async token =>
+                {
+                    vm.Cancel();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "BackupDatabaseAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(!vm.HasDetailedError, "HasDetailedError should be false when pre-alter cancellation skips TrySetMultiUserAsync.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SkipsMultiUserReset_WhenCancelledAfterBackupBeforeAlter", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelAfterBackupBeforeAlterDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // Cancel after BackupDatabaseAsync passes its token check so backup completes,
+                // triggering cancellation right before AlterCollationAsync starts.
+                mockService.BackupProgressSimulator = _ => vm.Cancel();
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "BackupDatabaseAsync should have completed before post-backup cancellation check.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should still be invoked when backup completed before cancellation.");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync should NOT have started.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync should NOT be invoked when cancelled before AlterCollationAsync starts.");
+                Assert(mockService.IsMultiUser, "Database must remain in MULTI_USER mode after restore.");
+                Assert(!vm.HasDetailedError, "HasDetailedError should be false when restore succeeds and unnecessary TrySetMultiUserAsync is skipped.");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
             });
 
@@ -2545,6 +2611,7 @@ namespace CollationModifier.Tests
 
                 Assert(!vm.IsBusy, "MainViewModel IsBusy should reset to false after cancellation.");
                 Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync must be called during cancellation recovery.");
+                Assert(mockService.TrySetMultiUserCount == 1, $"Expected TrySetMultiUserCount to be 1 during alteration cancellation, got {mockService.TrySetMultiUserCount}.");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.' status, got: '{vm.StatusMessage}'");
                 Assert(vm.ProgressPercent == 0, "ProgressPercent should reset to 0 after cancellation.");
             });
