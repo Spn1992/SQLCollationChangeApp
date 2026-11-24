@@ -511,13 +511,51 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        public async Task InspectSelectedDatabaseScopeAsync(CancellationToken cancellationToken = default)
+        {
+            if (SelectedDatabase == null) return;
+
+            var (userColumnCount, retainedCount) = await _databaseService.GetColumnCollationScopeAsync(
+                SelectedDatabase.Name,
+                TargetCollation,
+                cancellationToken);
+
+            SelectedDatabase.UserCharacterColumnCount = userColumnCount;
+            SelectedDatabase.RetainedColumnCount = retainedCount;
+        }
+
         public Func<string, string, bool>? ConfirmCollationChangeHandler { get; set; }
+        public Func<string, string, int, string, bool>? ConfirmCollationChangeWithScopeHandler { get; set; }
+        public string? LastConfirmationMessage { get; private set; }
+
+        public static string BuildConfirmationMessage(string databaseName, string targetCollation, int retainedColumnCount)
+        {
+            int normalizedCount = Math.Max(0, retainedColumnCount);
+            string columnLabel = normalizedCount == 1 ? "column" : "columns";
+            string verb = normalizedCount == 1 ? "differs" : "differ";
+
+            return $"Are you sure you want to change the database default collation of '{databaseName}' to '{targetCollation}'?\n\n" +
+                   $"Scope: This operation changes only the database default collation and leaves existing user columns unchanged. " +
+                   $"{normalizedCount} existing character {columnLabel} in user tables {verb} from '{targetCollation}' and will retain prior collations.\n\n" +
+                   $"WARNING: This process will close all active database connections and force the database into SINGLE_USER mode.";
+        }
+
+        public static string BuildCompletionStatusMessage(string targetCollation, int retainedColumnCount)
+        {
+            int normalizedCount = Math.Max(0, retainedColumnCount);
+            string columnLabel = normalizedCount == 1 ? "column" : "columns";
+            return $"Database default collation updated to '{targetCollation}'. {normalizedCount} existing user {columnLabel} kept prior collations.";
+        }
 
         private bool DefaultConfirmCollationChange(string databaseName, string targetCollation)
+            => DefaultConfirmCollationChange(databaseName, targetCollation, SelectedDatabase?.RetainedColumnCount ?? 0);
+
+        internal bool DefaultConfirmCollationChange(string databaseName, string targetCollation, int retainedColumnCount)
         {
+            string message = BuildConfirmationMessage(databaseName, targetCollation, retainedColumnCount);
+            LastConfirmationMessage = message;
 #if NETFRAMEWORK
-            string message = $"Are you sure you want to change the collation of database '{databaseName}' to '{targetCollation}'?\n\nWARNING: This process will close all active database connections and force the database into SINGLE_USER mode.";
-            string title = "Confirm Collation Change";
+            string title = "Confirm Database Default Collation Change";
 
             try
             {
@@ -547,17 +585,6 @@ namespace CollationModifier.ViewModels
         {
             if (SelectedDatabase == null) return;
 
-            bool confirmed = ConfirmCollationChangeHandler != null
-                ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
-                : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
-
-            if (!confirmed)
-            {
-                _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
-                StatusMessage = "Collation change operation cancelled.";
-                return;
-            }
-
             IsBusy = true;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
@@ -572,14 +599,44 @@ namespace CollationModifier.ViewModels
             {
                 token.ThrowIfCancellationRequested();
 
-                // 1. Pre-flight (validates collation against server catalog & user permissions)
+                // 1. Pre-flight (validates collation against server catalog, user permissions & column scope)
                 StatusMessage = "Running pre-flight checks...";
                 var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
+                if (!preflightReport.HasValidationErrors)
+                {
+                    SelectedDatabase.UserCharacterColumnCount = preflightReport.UserCharacterColumnCount;
+                    SelectedDatabase.RetainedColumnCount = preflightReport.RetainedColumnCount;
+                }
+
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();
                     _logger.LogWarning($"Pre-flight validation failed for {SelectedDatabase.Name}:\n{summary}");
                     throw new PreflightValidationException(preflightReport);
+                }
+
+                int retainedColumns = preflightReport.RetainedColumnCount;
+                _logger.LogInfo(
+                    $"Pre-flight check passed for '{SelectedDatabase.Name}': {preflightReport.UserCharacterColumnCount} character column(s) in user tables; " +
+                    $"{retainedColumns} user column(s) differ from target collation '{TargetCollation}' and will retain prior collations.\n" +
+                    preflightReport.GetDiagnosticSummary());
+
+                token.ThrowIfCancellationRequested();
+
+                string confirmationMessage = BuildConfirmationMessage(SelectedDatabase.Name, TargetCollation, retainedColumns);
+                LastConfirmationMessage = confirmationMessage;
+
+                bool confirmed = ConfirmCollationChangeWithScopeHandler != null
+                    ? ConfirmCollationChangeWithScopeHandler(SelectedDatabase.Name, TargetCollation, retainedColumns, confirmationMessage)
+                    : (ConfirmCollationChangeHandler != null
+                        ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
+                        : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation, retainedColumns));
+
+                if (!confirmed)
+                {
+                    _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name} ({retainedColumns} user column(s) would retain prior collations).");
+                    SetStatus("Collation change operation cancelled.");
+                    return;
                 }
 
                 token.ThrowIfCancellationRequested();
@@ -602,8 +659,11 @@ namespace CollationModifier.ViewModels
                 IsIndeterminateProgress = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
-                SetStatus("Collation changed successfully!");
-                _logger.LogInfo($"Collation change process completed successfully for {SelectedDatabase.Name}");
+                string completionStatus = BuildCompletionStatusMessage(TargetCollation, retainedColumns);
+                SetStatus(completionStatus);
+                _logger.LogInfo(
+                    $"Collation change process completed successfully for {SelectedDatabase.Name}: database default collation updated to '{TargetCollation}'; " +
+                    $"{retainedColumns} existing user column(s) kept prior collations.");
 
                 // Update in-memory model directly without calling LoadDatabasesAsync()
                 SelectedDatabase.Collation = TargetCollation;

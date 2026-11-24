@@ -150,6 +150,17 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            try
+            {
+                TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks();
+                Console.WriteLine("PASS: TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks - {ex}");
+                failed++;
+            }
+
             if (failed == 0)
             {
                 Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
@@ -441,6 +452,24 @@ namespace CollationModifier.Tests
             }
 
             Assert(threw, "Expected ArgumentNullException when record is null.");
+        }
+
+        static void TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks()
+        {
+            var recordWithCount = new MockDataRecord("SalesDb", "SQL_Latin1_General_CP1_CI_AS", (byte)160, "sa", 2048L, 37);
+            var dbWithCount = DatabaseService.MapDatabaseInfo(recordWithCount);
+            Assert(dbWithCount.UserCharacterColumnCount == 37, $"Expected UserCharacterColumnCount 37, got {dbWithCount.UserCharacterColumnCount}.");
+            Assert(dbWithCount.UserCharacterColumns == "37", $"Expected UserCharacterColumns '37', got '{dbWithCount.UserCharacterColumns}'.");
+
+            var recordWithZeroCount = new MockDataRecord("EmptySchemaDb", "SQL_Latin1_General_CP1_CI_AS", (byte)160, "sa", 64L, 0);
+            var dbWithZeroCount = DatabaseService.MapDatabaseInfo(recordWithZeroCount);
+            Assert(dbWithZeroCount.UserCharacterColumnCount == 0, $"Expected UserCharacterColumnCount 0, got {dbWithZeroCount.UserCharacterColumnCount}.");
+            Assert(dbWithZeroCount.UserCharacterColumns == "0", $"Expected UserCharacterColumns '0', got '{dbWithZeroCount.UserCharacterColumns}'.");
+
+            var recordWithNullCount = new MockDataRecord("OfflineDb", "SQL_Latin1_General_CP1_CI_AS", (byte)150, "sa", DBNull.Value, DBNull.Value);
+            var dbWithNullCount = DatabaseService.MapDatabaseInfo(recordWithNullCount);
+            Assert(dbWithNullCount.UserCharacterColumnCount == 0, $"Expected UserCharacterColumnCount 0 for DBNull, got {dbWithNullCount.UserCharacterColumnCount}.");
+            Assert(dbWithNullCount.UserCharacterColumns == "Unknown", $"Expected UserCharacterColumns 'Unknown' for DBNull, got '{dbWithNullCount.UserCharacterColumns}'.");
         }
 
         private sealed class MockDataRecord : IDataRecord

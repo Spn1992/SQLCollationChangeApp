@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         xml:lang="en"
         Language="en-US"
-        Title="Collation Modifier Utility" Height="650" Width="900"
+        Title="Collation Modifier Utility" Height="700" Width="900"
         WindowStartupLocation="CenterScreen">
 
     <Window.DataContext>
@@ -111,25 +111,30 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
 
                                 <!-- Labels -->
-                                <TextBlock x:Name="CurrentCollationLabel" Grid.Row="0" Grid.Column="0" Text="Current Collation:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                <TextBlock x:Name="CompatibilityLevelLabel" Grid.Row="1" Grid.Column="0" Text="Compatibility Level:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                <TextBlock x:Name="OwnerLabel" Grid.Row="2" Grid.Column="0" Text="Owner:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                <TextBlock x:Name="SizeLabel" Grid.Row="3" Grid.Column="0" Text="Size:" FontWeight="SemiBold" />
+                                <TextBlock x:Name="DatabaseDefaultCollationLabel" Grid.Row="0" Grid.Column="0" Text="Database Default Collation:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="UserCharacterColumnsLabel" Grid.Row="1" Grid.Column="0" Text="User Character Columns:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="CompatibilityLevelLabel" Grid.Row="2" Grid.Column="0" Text="Compatibility Level:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="OwnerLabel" Grid.Row="3" Grid.Column="0" Text="Owner:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="SizeLabel" Grid.Row="4" Grid.Column="0" Text="Size:" FontWeight="SemiBold" />
 
                                 <!-- Values -->
                                 <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}"
-                                           AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Current Collation: {0}', FallbackValue='Current Collation: -', TargetNullValue='Current Collation: -'}" />
-                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=DatabaseDefaultCollationLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Database Default Collation: {0}', FallbackValue='Database Default Collation: -', TargetNullValue='Database Default Collation: -'}" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.UserCharacterColumns, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=UserCharacterColumnsLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.UserCharacterColumns, StringFormat='User Character Columns: {0}', FallbackValue='User Character Columns: -', TargetNullValue='User Character Columns: -'}" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
                                            AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
                                            AutomationProperties.Name="{Binding SelectedDatabase.CompatibilityLevel, StringFormat='Compatibility Level: {0}', FallbackValue='Compatibility Level: -', TargetNullValue='Compatibility Level: -'}" />
-                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
                                            AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
                                            AutomationProperties.Name="{Binding SelectedDatabase.Owner, StringFormat='Owner: {0}', FallbackValue='Owner: -', TargetNullValue='Owner: -'}" />
-                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
+                                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
                                            AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
                                            AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
                             </Grid>
@@ -176,18 +181,18 @@
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0"
                                     AutomationProperties.DescribedBy="{Binding ElementName=lblWarning}"
-                                    AutomationProperties.HelpText="Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections" />
+                                    AutomationProperties.HelpText="Changes only the database default collation while leaving existing user columns unchanged, and sets the database to SINGLE_USER mode briefly which may drop active connections" />
                             <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
                                     AutomationProperties.Name="Cancel Operation" />
                         </StackPanel>
 
                         <TextBlock x:Name="lblWarning"
-                                   Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
-                                   AutomationProperties.Name="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
-                                   AutomationProperties.HelpText="Database single user mode operation warning message."
+                                   Text="Warning: This operation changes only the database default collation; existing columns in user tables keep their original collations and remain unchanged. Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.Name="Warning: This operation changes only the database default collation; existing columns in user tables keep their original collations and remain unchanged. Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.HelpText="Database default collation scope and single user mode warning message."
                                    AutomationProperties.LiveSetting="Assertive"
-                                   Foreground="#DC2626" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
+                                   Foreground="#B91C1C" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
                     </StackPanel>
                 </Grid>
             </Border>

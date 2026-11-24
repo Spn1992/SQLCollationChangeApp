@@ -13,12 +13,35 @@ namespace CollationModifier.Services
     public class DatabaseService : IDatabaseService
     {
         private const string DatabaseCatalogQuery = @"
+                        IF OBJECT_ID('tempdb..#CollationModifierColCounts') IS NOT NULL
+                            DROP TABLE #CollationModifierColCounts;
+
+                        CREATE TABLE #CollationModifierColCounts (
+                            database_id INT PRIMARY KEY,
+                            user_character_column_count INT NOT NULL
+                        );
+
+                        DECLARE @colCountSql NVARCHAR(MAX) = N'';
+                        SELECT @colCountSql = @colCountSql +
+                            N'BEGIN TRY INSERT INTO #CollationModifierColCounts (database_id, user_character_column_count) ' +
+                            N'SELECT ' + CAST(d.database_id AS NVARCHAR(20)) + N', COUNT(*) ' +
+                            N'FROM [' + REPLACE(d.name, N']', N']]') + N'].sys.columns c ' +
+                            N'JOIN [' + REPLACE(d.name, N']', N']]') + N'].sys.tables t ON c.object_id = t.object_id ' +
+                            N'WHERE t.is_ms_shipped = 0 AND c.is_computed = 0 AND c.collation_name IS NOT NULL; ' +
+                            N'END TRY BEGIN CATCH END CATCH; '
+                        FROM sys.databases d
+                        WHERE d.database_id > 4 AND d.state = 0 AND HAS_DBACCESS(d.name) = 1;
+
+                        IF @colCountSql <> N''
+                            EXEC sp_executesql @colCountSql;
+
                         SELECT
                             d.name,
                             d.collation_name,
                             d.compatibility_level,
                             SUSER_SNAME(d.owner_sid) as owner,
-                            mf.size_mb
+                            mf.size_mb,
+                            cc.user_character_column_count
                         FROM sys.databases d
                         LEFT JOIN (
                             SELECT
@@ -27,7 +50,10 @@ namespace CollationModifier.Services
                             FROM sys.master_files
                             GROUP BY database_id
                         ) mf ON d.database_id = mf.database_id
-                        WHERE d.database_id > 4";
+                        LEFT JOIN #CollationModifierColCounts cc ON d.database_id = cc.database_id
+                        WHERE d.database_id > 4;
+
+                        DROP TABLE #CollationModifierColCounts";
 
         private static readonly Regex CollationRegex = new Regex(@"^[a-zA-Z0-9_]+$", RegexOptions.Compiled);
         private const string DefaultBackupDirectoryQuery = @"
@@ -170,14 +196,32 @@ namespace CollationModifier.Services
                 throw new ArgumentNullException(nameof(record));
             }
 
-            return new DatabaseInfo
+            int userCharacterColumnCount = 0;
+            string userCharacterColumns = "0";
+            if (record.FieldCount > 5)
+            {
+                if (record.IsDBNull(5))
+                {
+                    userCharacterColumns = "Unknown";
+                }
+                else
+                {
+                    userCharacterColumnCount = Convert.ToInt32(record.GetValue(5));
+                    userCharacterColumns = userCharacterColumnCount.ToString();
+                }
+            }
+
+            var dbInfo = new DatabaseInfo
             {
                 Name = record.GetString(0),
                 Collation = record.IsDBNull(1) ? "Unknown" : record.GetString(1),
                 CompatibilityLevel = record.GetByte(2).ToString(),
                 Owner = record.IsDBNull(3) ? "Unknown" : record.GetString(3),
-                Size = record.IsDBNull(4) ? "Unknown" : $"{record.GetInt64(4)} MB"
+                Size = record.IsDBNull(4) ? "Unknown" : $"{record.GetInt64(4)} MB",
+                UserCharacterColumnCount = userCharacterColumnCount
             };
+            dbInfo.UserCharacterColumns = userCharacterColumns;
+            return dbInfo;
         }
 
         public virtual async Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
@@ -399,11 +443,114 @@ namespace CollationModifier.Services
             }
         }
 
+        public static void EvaluateColumnCollationCounts(int userCharacterColumnCount, int retainedColumnCount, string? targetCollation, PreflightReport report)
+        {
+            if (report == null)
+            {
+                throw new ArgumentNullException(nameof(report));
+            }
+
+            int normalizedTotal = Math.Max(0, userCharacterColumnCount);
+            int normalizedRetained = string.IsNullOrWhiteSpace(targetCollation)
+                ? 0
+                : Math.Min(normalizedTotal, Math.Max(0, retainedColumnCount));
+
+            report.TargetCollation = targetCollation?.Trim() ?? string.Empty;
+            report.UserCharacterColumnCount = normalizedTotal;
+            report.RetainedColumnCount = normalizedRetained;
+        }
+
+        public static void EvaluateColumnCollations(IEnumerable<string?> userColumnCollations, string? targetCollation, PreflightReport report)
+        {
+            if (report == null)
+            {
+                throw new ArgumentNullException(nameof(report));
+            }
+
+            string normalizedTarget = targetCollation?.Trim() ?? string.Empty;
+            int totalCharacterColumns = 0;
+            int retainedColumns = 0;
+
+            if (userColumnCollations != null)
+            {
+                foreach (var colCollation in userColumnCollations)
+                {
+                    if (string.IsNullOrWhiteSpace(colCollation))
+                    {
+                        continue;
+                    }
+
+                    totalCharacterColumns++;
+                    if (!string.IsNullOrEmpty(normalizedTarget) &&
+                        !string.Equals(colCollation.Trim(), normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                    {
+                        retainedColumns++;
+                    }
+                }
+            }
+
+            EvaluateColumnCollationCounts(totalCharacterColumns, retainedColumns, normalizedTarget, report);
+        }
+
+        public virtual async Task<(int UserCharacterColumnCount, int RetainedColumnCount)> GetColumnCollationScopeAsync(
+            string databaseName,
+            string targetCollation = "",
+            CancellationToken cancellationToken = default)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            string normalizedTarget = targetCollation?.Trim() ?? string.Empty;
+
+            try
+            {
+                using (var connection = new SqlConnection(_connectionString))
+                {
+                    await connection.OpenAsync(cancellationToken);
+
+                    var query = $@"
+                        USE [{safeDbName}];
+                        SELECT
+                            COUNT(*) AS user_character_column_count,
+                            ISNULL(SUM(CASE WHEN @TargetCollation <> N'' AND c.collation_name COLLATE Latin1_General_CI_AS <> @TargetCollation COLLATE Latin1_General_CI_AS THEN 1 ELSE 0 END), 0) AS retained_column_count
+                        FROM sys.columns c
+                        JOIN sys.tables t ON c.object_id = t.object_id
+                        WHERE t.is_ms_shipped = 0
+                          AND c.is_computed = 0
+                          AND c.collation_name IS NOT NULL;";
+
+                    using (var command = new SqlCommand(query, connection))
+                    {
+                        command.Parameters.AddWithValue("@TargetCollation", normalizedTarget);
+                        using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+                        {
+                            if (await reader.ReadAsync(cancellationToken))
+                            {
+                                int totalCount = !reader.IsDBNull(0) ? Convert.ToInt32(reader.GetValue(0)) : 0;
+                                int retainedCount = !reader.IsDBNull(1) ? Convert.ToInt32(reader.GetValue(1)) : 0;
+                                return (Math.Max(0, totalCount), Math.Max(0, retainedCount));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to inspect column collation scope for {databaseName}.", ex);
+                throw;
+            }
+
+            return (0, 0);
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             var report = new PreflightReport
             {
-                DatabaseName = databaseName
+                DatabaseName = databaseName,
+                TargetCollation = targetCollation?.Trim() ?? string.Empty
             };
 
             if (!string.IsNullOrWhiteSpace(backupDirectory))
@@ -538,11 +685,22 @@ namespace CollationModifier.Services
                         JOIN sys.schemas s ON chk.schema_id = s.schema_id;
 
                         -- 4. Target database collation
-                        SELECT ISNULL(CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(@DbName, 'Collation')), ISNULL((SELECT collation_name FROM sys.databases WHERE name = @DbName), ''));";
+                        SELECT ISNULL(CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(@DbName, 'Collation')), ISNULL((SELECT collation_name FROM sys.databases WHERE name = @DbName), ''));
+
+                        -- 5. User table character column collation audit
+                        SELECT
+                            COUNT(*) AS user_character_column_count,
+                            ISNULL(SUM(CASE WHEN @TargetCollation <> N'' AND c.collation_name COLLATE Latin1_General_CI_AS <> @TargetCollation COLLATE Latin1_General_CI_AS THEN 1 ELSE 0 END), 0) AS retained_column_count
+                        FROM sys.columns c
+                        JOIN sys.tables t ON c.object_id = t.object_id
+                        WHERE t.is_ms_shipped = 0
+                          AND c.is_computed = 0
+                          AND c.collation_name IS NOT NULL;";
 
                     using (var command = new SqlCommand(batchedQuery, connection))
                     {
                         command.Parameters.AddWithValue("@DbName", databaseName);
+                        command.Parameters.AddWithValue("@TargetCollation", targetCollation?.Trim() ?? string.Empty);
                         using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
                             // 1. Database Permissions
@@ -636,6 +794,17 @@ namespace CollationModifier.Services
                                 {
                                     string currentCollation = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty;
                                     EvaluateCollation(databaseName, currentCollation, targetCollation, report);
+                                }
+                            }
+
+                            // 5. User table character column collation audit
+                            if (await reader.NextResultAsync(cancellationToken))
+                            {
+                                if (await reader.ReadAsync(cancellationToken))
+                                {
+                                    int userColumnCount = !reader.IsDBNull(0) ? Convert.ToInt32(reader.GetValue(0)) : 0;
+                                    int retainedColumnCount = !reader.IsDBNull(1) ? Convert.ToInt32(reader.GetValue(1)) : 0;
+                                    EvaluateColumnCollationCounts(userColumnCount, retainedColumnCount, targetCollation, report);
                                 }
                             }
                         }
