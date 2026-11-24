@@ -40,6 +40,9 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon", Test_MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
+            RunTest("MSBuildLogParser_ParseText_DeduplicatesSummaryBlockErrorsAndWarnings", Test_MSBuildLogParser_ParseText_DeduplicatesSummaryBlockErrorsAndWarnings);
+            RunTest("MSBuildLogParser_ParseText_DeduplicatesAnsiFormattingAndPathSlashes", Test_MSBuildLogParser_ParseText_DeduplicatesAnsiFormattingAndPathSlashes);
+            RunTest("MSBuildLogParser_ParseText_PreservesSameLineDistinctErrorsAndMultiProjectDiagnostics", Test_MSBuildLogParser_ParseText_PreservesSameLineDistinctErrorsAndMultiProjectDiagnostics);
 
             // 1.5 AnsiCleaner Tests
             RunTest("AnsiCleaner_Clean_HandlesNullAndEmpty", Test_AnsiCleaner_Clean_HandlesNullAndEmpty);
@@ -418,6 +421,108 @@ namespace MSBuildDiagnosticPatcher.Tests
             Console.WriteLine($"    Parsed 20,000 lines in {sw.ElapsedMilliseconds} ms (Extracted {parsed.Count} diagnostics).");
             Assert(sw.Elapsed.TotalSeconds < 10.0, $"Expected parse duration under 10 seconds, got {sw.Elapsed.TotalSeconds:F2} seconds.");
             Assert(parsed.Count == 1200, $"Expected 1200 diagnostics, got {parsed.Count}.");
+        }
+
+        static void Test_MSBuildLogParser_ParseText_DeduplicatesSummaryBlockErrorsAndWarnings()
+        {
+            var parser = new MSBuildLogParser();
+            string firstWarningLine = "  ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [/app/CollationModifier/CollationModifier.csproj]";
+            string firstErrorLine = "  Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [/app/CollationModifier/CollationModifier.csproj]";
+            string firstNugetLine = "  /app/CollationModifier/CollationModifier.csproj : error NU1605: Detected package downgrade: Microsoft.Data.SqlClient from 5.1.0 to 5.0.0 [/app/CollationModifier/CollationModifier.csproj]";
+
+            string log = $@"Microsoft (R) Build Engine version 17.8.3+195e7f5a3 for .NET
+  Determining projects to restore...
+{firstNugetLine}
+{firstWarningLine}
+{firstErrorLine}
+
+Build FAILED.
+
+    ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [/app/CollationModifier/CollationModifier.csproj]
+    /app/CollationModifier/CollationModifier.csproj : error NU1605: Detected package downgrade: Microsoft.Data.SqlClient from 5.1.0 to 5.0.0 [/app/CollationModifier/CollationModifier.csproj]
+    Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [/app/CollationModifier/CollationModifier.csproj]
+    1 Warning(s)
+    2 Error(s)
+
+Time Elapsed 00:00:02.15
+";
+
+            var parsed = parser.ParseText(log);
+            Assert(parsed.Count == 3, $"Expected 3 unique diagnostics after collapsing summary duplicates, got {parsed.Count}.");
+            Assert(parsed[0].Code == "NU1605" && parsed[0].RawLine == firstNugetLine, "Expected first diagnostic to preserve log order and first RawLine for NU1605.");
+            Assert(parsed[1].Code == "CS0168" && parsed[1].Severity == DiagnosticSeverity.Warning && parsed[1].RawLine == firstWarningLine, "Expected second diagnostic to preserve first warning occurrence.");
+            Assert(parsed[2].Code == "CS0535" && parsed[2].Severity == DiagnosticSeverity.Error && parsed[2].RawLine == firstErrorLine, "Expected third diagnostic to preserve first CS0535 occurrence.");
+
+            var report = new DiagnosticReport { SourceLogPath = "/tmp/build.log", Diagnostics = parsed };
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2, got {report.ErrorCount}.");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1, got {report.WarningCount}.");
+
+            var reporter = new ReportGenerator();
+            string markdown = reporter.GenerateMarkdownReport(report);
+            Assert(markdown.Contains("- **Roslyn Errors**: `2`"), "Expected Markdown summary to report 2 errors.");
+            Assert(markdown.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown summary to report 1 warning.");
+            int cs0535Rows = markdown.Split(new[] { "| `CS0535` |" }, StringSplitOptions.None).Length - 1;
+            Assert(cs0535Rows == 1, $"Expected exactly 1 CS0535 row in Markdown table, found {cs0535Rows}.");
+        }
+
+        static void Test_MSBuildLogParser_ParseText_DeduplicatesAnsiFormattingAndPathSlashes()
+        {
+            var parser = new MSBuildLogParser();
+            string inlineAnsiError = "  Services\\DatabaseService.cs(11,36): \u001b[31;1merror CS0535\u001b[0m: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [C:\\Repo\\CollationModifier\\CollationModifier.csproj]";
+            string summaryAnsiError = "    \u001b[31;1mServices/DatabaseService.cs(11,36): error cs0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [C:/Repo/CollationModifier/CollationModifier.csproj]\u001b[0m";
+            string plainWarning = "ViewModels/MainViewModel.cs(45,9): warning CS0219: The variable 'flag' is assigned but its value is never used [C:/Repo/CollationModifier/CollationModifier.csproj]";
+            string summaryAnsiWarning = "  \u001b[33mViewModels\\MainViewModel.cs(45,9): warning CS0219: The variable 'flag' is assigned but its value is never used [C:\\Repo\\CollationModifier\\CollationModifier.csproj]\u001b[0m";
+
+            string log = string.Join("\n", new[]
+            {
+                inlineAnsiError,
+                plainWarning,
+                "Build FAILED.",
+                summaryAnsiWarning,
+                summaryAnsiError
+            });
+
+            var parsed = parser.ParseText(log);
+            Assert(parsed.Count == 2, $"Expected 2 unique diagnostics across ANSI and slash variants, got {parsed.Count}.");
+            Assert(parsed[0].Code == "CS0535" && parsed[0].RawLine == inlineAnsiError, "Expected first error RawLine preserved.");
+            Assert(parsed[1].Code == "CS0219" && parsed[1].RawLine == plainWarning, "Expected first warning RawLine preserved.");
+
+            // Ensure ParseLine itself remains stateless for direct callers
+            var single1 = parser.ParseLine(inlineAnsiError);
+            var single2 = parser.ParseLine(inlineAnsiError);
+            Assert(single1 != null && single2 != null, "Expected ParseLine to remain stateless across repeated calls.");
+        }
+
+        static void Test_MSBuildLogParser_ParseText_PreservesSameLineDistinctErrorsAndMultiProjectDiagnostics()
+        {
+            var parser = new MSBuildLogParser();
+            string member1Error = "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [CollationModifier/CollationModifier.csproj]";
+            string member2Error = "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.RestoreDatabaseAsync(string, string, CancellationToken)' [CollationModifier/CollationModifier.csproj]";
+            string sameCoordOtherCode = "Services/DatabaseService.cs(11,36): warning CS1591: Missing XML comment for publicly visible type or member 'DatabaseService' [CollationModifier/CollationModifier.csproj]";
+            string sharedFileProjA = "Shared/SqlHelper.cs(22,13): warning CS0168: The variable 'err' is declared but never used [CollationModifier/CollationModifier.csproj]";
+            string sharedFileProjB = "Shared/SqlHelper.cs(22,13): warning CS0168: The variable 'err' is declared but never used [CollationModifier.Tests/CollationModifier.Tests.csproj]";
+
+            string log = $@"
+  {member1Error}
+  {member2Error}
+  {sameCoordOtherCode}
+  {sharedFileProjA}
+Build FAILED.
+    {sameCoordOtherCode}
+    {member1Error}
+    {member2Error}
+    {sharedFileProjA}
+
+  {sharedFileProjB}
+Build succeeded.
+    {sharedFileProjB}
+";
+
+            var parsed = parser.ParseText(log);
+            Assert(parsed.Count == 5, $"Expected 5 distinct diagnostics (3 same-line distinct + 2 per-project), got {parsed.Count}.");
+            Assert(parsed.Count(d => d.Code == "CS0535") == 2, "Expected both same-line CS0535 missing members to be kept.");
+            Assert(parsed.Count(d => d.Code == "CS1591") == 1, "Expected same-line warning with distinct code/severity to be kept.");
+            Assert(parsed.Count(d => d.Code == "CS0168") == 2, "Expected shared-file diagnostics from distinct ProjectPath entries to be kept per project.");
         }
 
         // 1.5 AnsiCleaner Tests
@@ -1439,12 +1544,26 @@ public class Greeter : IGreeter
 }
 ");
                 string logFile = Path.Combine(tempDir, "build.log");
-                File.WriteAllText(logFile, $@"{classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)'
+                string projectFile = Path.Combine(tempDir, "Greeter.csproj");
+                File.WriteAllText(logFile, $@"Microsoft (R) Build Engine version 17.8.3 for .NET
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  {classFile}(1,1): warning CS0168: The variable 'unused' is declared but never used [{projectFile}]
+  {classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)' [{projectFile}]
+
+Build FAILED.
+
+    {classFile}(1,1): warning CS0168: The variable 'unused' is declared but never used [{projectFile}]
+    {"\u001b[31;1m"}{classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)' [{projectFile}]{"\u001b[0m"}
+    1 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:01.42
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
                 int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
-                Assert(exitCode == 0, $"Expected exit code 0 when patches remediate all diagnostics, got {exitCode}");
+                Assert(exitCode == 0, $"Expected exit code 0 when patches remediate all diagnostics in multi-section MSBuild log, got {exitCode}");
 
                 string patchedContent = File.ReadAllText(classFile);
                 Assert(patchedContent.Contains("public virtual string Greet(string name)"), "Expected class to be patched with Greet method");
@@ -1453,10 +1572,17 @@ public class Greeter : IGreeter
                 Assert(File.Exists(jsonReportPath), "Expected diagnostic-report.json to exist");
                 string jsonContent = File.ReadAllText(jsonReportPath);
                 Assert(jsonContent.Contains("\"IsApplied\": true"), "Expected persisted report to record IsApplied: true");
+                Assert(jsonContent.Contains("\"ErrorCount\": 1"), "Expected persisted report to record deduplicated ErrorCount: 1");
+                Assert(jsonContent.Contains("\"WarningCount\": 1"), "Expected persisted report to record deduplicated WarningCount: 1");
                 Assert(jsonContent.Contains("\"UnresolvedErrorCount\": 0"), "Expected persisted report to record UnresolvedErrorCount: 0");
 
                 string mdReportPath = Path.Combine(outputDir, "diagnostic-report.md");
                 Assert(File.Exists(mdReportPath), "Expected diagnostic-report.md to exist");
+                string mdContent = File.ReadAllText(mdReportPath);
+                Assert(mdContent.Contains("- **Roslyn Errors**: `1`"), "Expected Markdown report to record 1 Roslyn error");
+                Assert(mdContent.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown report to record 1 Roslyn warning");
+                int greetRows = mdContent.Split(new[] { "IGreeter.Greet(string)" }, StringSplitOptions.None).Length - 1;
+                Assert(greetRows == 1, $"Expected 1 diagnostic row for IGreeter.Greet(string) in Markdown report, got {greetRows}");
             }
             finally
             {
