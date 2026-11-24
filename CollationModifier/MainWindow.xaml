@@ -89,11 +89,28 @@
 
                         <!-- Database Selector -->
                         <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
-                        <ComboBox x:Name="SelectDatabaseInput" ItemsSource="{Binding Databases}"
-                                  SelectedItem="{Binding SelectedDatabase}" DisplayMemberPath="Name"
-                                  AutomationProperties.LabeledBy="{Binding ElementName=SelectDatabaseLabel}"
-                                  AutomationProperties.Name="Select Database"
-                                  Margin="0,0,0,24" IsEnabled="{Binding IsNotBusy}" />
+                        <Grid Margin="0,0,0,24">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="SelectDatabaseInput" Grid.Column="0"
+                                      ItemsSource="{Binding Databases}"
+                                      SelectedItem="{Binding SelectedDatabase}" DisplayMemberPath="Name"
+                                      AutomationProperties.LabeledBy="{Binding ElementName=SelectDatabaseLabel}"
+                                      AutomationProperties.Name="Select Database"
+                                      IsEnabled="{Binding IsNotBusy}" />
+                            <Button x:Name="btnRefreshDatabases" Grid.Column="1"
+                                    Content="Refresh"
+                                    Command="{Binding RefreshDatabasesCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    MinHeight="24"
+                                    Padding="12,6"
+                                    Margin="8,0,0,0"
+                                    AutomationProperties.Name="Refresh"
+                                    AutomationProperties.HelpText="Reload database catalog from SQL Server"
+                                    ToolTip="Reload database catalog from SQL Server" />
+                        </Grid>
 
                         <!-- Metadata Panel -->
                         <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
