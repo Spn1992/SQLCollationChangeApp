@@ -16,6 +16,11 @@ namespace MSBuildDiagnosticPatcher.Parsers
                 return string.Empty;
             }
 
+            if (input.IndexOf('\x1B') < 0)
+            {
+                return input.Trim();
+            }
+
             return AnsiRegex.Replace(input, string.Empty).Trim();
         }
     }
