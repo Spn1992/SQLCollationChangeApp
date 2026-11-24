@@ -60,6 +60,10 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("InterfaceDefinitionResolver_Caching_ReadsFileOnce", Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce);
             RunTest("InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches", Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches);
             RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache);
+            RunTest("InterfaceDefinitionResolver_ExtractsMembersWithLineXmlAndBlockComments", Test_InterfaceDefinitionResolver_ExtractsMembersWithLineXmlAndBlockComments);
+            RunTest("InterfaceDefinitionResolver_ExtractsArrayAndGenericArrayReturnAndParamTypes", Test_InterfaceDefinitionResolver_ExtractsArrayAndGenericArrayReturnAndParamTypes);
+            RunTest("InterfaceDefinitionResolver_ExtractsTupleReturnTypesPropertiesAndOverloads", Test_InterfaceDefinitionResolver_ExtractsTupleReturnTypesPropertiesAndOverloads);
+            RunTest("InterfaceDefinitionResolver_ResolvesInterfaceDeclaredInSameContextFile", Test_InterfaceDefinitionResolver_ResolvesInterfaceDeclaredInSameContextFile);
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
@@ -68,6 +72,9 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
+            RunTest("PatchGenerator_OmitsVirtualForSealedClassesAndStructs_KeepsVirtualForUnsealed", Test_PatchGenerator_OmitsVirtualForSealedClassesAndStructs_KeepsVirtualForUnsealed);
+            RunTest("PatchGenerator_FindClassInsertionPoint_WalksNestedScopesAndIgnoresLiteralBraces", Test_PatchGenerator_FindClassInsertionPoint_WalksNestedScopesAndIgnoresLiteralBraces);
+            RunTest("PatchGenerator_MultiClassFile_GroupsByTypeWithUniquePatchNamesAndAppliesCleanly", Test_PatchGenerator_MultiClassFile_GroupsByTypeWithUniquePatchNamesAndAppliesCleanly);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -92,6 +99,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent", Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent);
             RunTest("Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics", Test_Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics);
             RunTest("Program_Main_ReturnsOne_WhenInputFileNotFound", Test_Program_Main_ReturnsOne_WhenInputFileNotFound);
+            RunTest("Program_Main_ApplyWithEnclosingCsproj_VerifiesBuildAndSucceedsForValidComplexPatches", Test_Program_Main_ApplyWithEnclosingCsproj_VerifiesBuildAndSucceedsForValidComplexPatches);
+            RunTest("Program_Main_ApplyWithEnclosingCsproj_RollsBackUncompilableFallbackPatchAndReturnsOne", Test_Program_Main_ApplyWithEnclosingCsproj_RollsBackUncompilableFallbackPatchAndReturnsOne);
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
@@ -1558,5 +1567,546 @@ public class Greeter : IGreeter
         }
 
         private static string FindLauncherCmdPath() => FindLauncherScriptPath("msbuild-patcher.cmd");
+
+        // 10. Lexical C# Scanning, Complex Types, Multi-Type & Build Verification Regression Tests
+        static void Test_InterfaceDefinitionResolver_ExtractsMembersWithLineXmlAndBlockComments()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string interfaceSource = @"
+namespace Sample
+{
+    public interface ICommentedBlobStore
+    {
+        /// <summary>
+        /// Downloads raw payload when length > 0 for <see cref=""Task{TResult}""/>.
+        /// </summary>
+        // Single-line comment with fake signature: int FakeMethod() and > token
+        /* Multi-line comment with { braces } and ; semicolons */
+        Task<byte[]> /* inline return comment */ DownloadAsync(
+            string /* param comment */ blobPath,
+            string endpoint = ""https://example.com//not-a-comment/*still-string*/"",
+            char separator = ';');
+
+        /// <summary>Read-only status text > empty</summary>
+        string StatusText { get; /* not set */ }
+    }
+}";
+
+            var method = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "ICommentedBlobStore",
+                "DownloadAsync",
+                "string, string, char");
+
+            Assert(method != null, "Expected DownloadAsync to be extracted.");
+            Assert(method!.ReturnType == "Task<byte[]>", $"Expected exact ReturnType 'Task<byte[]>', got '{method.ReturnType}'");
+            Assert(!method.ReturnType.Contains("summary") && !method.ReturnType.Contains("/"),
+                $"Comments leaked into ReturnType: '{method.ReturnType}'");
+            Assert(method.ParameterList.Contains("\"https://example.com//not-a-comment/*still-string*/\""),
+                $"Expected URL literal in default value to be preserved, got: '{method.ParameterList}'");
+            Assert(method.ParameterList.Contains("char separator = ';'"),
+                $"Expected char literal ';' in default value to be preserved, got: '{method.ParameterList}'");
+
+            var prop = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "ICommentedBlobStore",
+                "StatusText",
+                "");
+
+            Assert(prop != null && prop.IsProperty, "Expected StatusText property to be extracted.");
+            Assert(prop!.ReturnType == "string", $"Expected ReturnType 'string', got '{prop.ReturnType}'");
+            Assert(prop.HasGetter && !prop.HasSetter, "Block comment '/* not set */' must not set HasSetter = true.");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ExtractsArrayAndGenericArrayReturnAndParamTypes()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string interfaceSource = @"
+public interface IBufferRepository<T>
+{
+    /// <summary>Fetches all items as T[].</summary>
+    T[] GetAllItems(string partitionKey);
+
+    Task<byte[]> ReadChunkAsync(byte[] header, int[][] matrix);
+}";
+
+            var genericArr = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IBufferRepository<T>",
+                "GetAllItems",
+                "string");
+
+            Assert(genericArr != null, "Expected GetAllItems to be resolved.");
+            Assert(genericArr!.ReturnType == "T[]", $"Expected ReturnType 'T[]', got '{genericArr.ReturnType}'");
+
+            var closedGenericArr = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IBufferRepository<string>",
+                "GetAllItems",
+                "string");
+
+            Assert(closedGenericArr != null, "Expected closed generic GetAllItems to be resolved.");
+            Assert(closedGenericArr!.ReturnType == "string[]", $"Expected ReturnType 'string[]', got '{closedGenericArr.ReturnType}'");
+
+            var byteChunk = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IBufferRepository<T>",
+                "ReadChunkAsync",
+                "byte[], int[][]");
+
+            Assert(byteChunk != null, "Expected ReadChunkAsync to be resolved.");
+            Assert(byteChunk!.ReturnType == "Task<byte[]>", $"Expected ReturnType 'Task<byte[]>', got '{byteChunk.ReturnType}'");
+            Assert(byteChunk.ParameterList == "byte[] header, int[][] matrix",
+                $"Expected array parameters preserved, got '{byteChunk.ParameterList}'");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ExtractsTupleReturnTypesPropertiesAndOverloads()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string interfaceSource = @"
+public interface IPagedQueryService
+{
+    (string[] Items, int TotalCount) ExecutePage(string query);
+    Task<(byte[] Payload, (int Min, int Max) Range)> ExecutePage(string query, (int Offset, int Limit) page);
+    (int Width, int Height) Dimensions { get; set; }
+}";
+
+            // Match first overload (1 param)
+            var singleParam = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IPagedQueryService",
+                "ExecutePage",
+                "string");
+
+            Assert(singleParam != null, "Expected 1-param ExecutePage overload.");
+            Assert(singleParam!.ReturnType == "(string[] Items, int TotalCount)",
+                $"Expected tuple return type '(string[] Items, int TotalCount)', got '{singleParam.ReturnType}'");
+
+            // Match second overload where CS0535 formats tuple parameter without element names: (int, int)
+            var tupleParamOverload = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IPagedQueryService",
+                "ExecutePage",
+                "string, (int, int)");
+
+            Assert(tupleParamOverload != null, "Expected 2-param ExecutePage tuple overload.");
+            Assert(tupleParamOverload!.ReturnType == "Task<(byte[] Payload, (int Min, int Max) Range)>",
+                $"Expected nested tuple Task return type, got '{tupleParamOverload.ReturnType}'");
+            Assert(tupleParamOverload.ParameterList == "string query, (int Offset, int Limit) page",
+                $"Expected tuple parameter list preserved, got '{tupleParamOverload.ParameterList}'");
+
+            var tupleProp = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IPagedQueryService",
+                "Dimensions",
+                "");
+
+            Assert(tupleProp != null && tupleProp.IsProperty, "Expected Dimensions tuple property.");
+            Assert(tupleProp!.ReturnType == "(int Width, int Height)",
+                $"Expected '(int Width, int Height)', got '{tupleProp.ReturnType}'");
+            Assert(tupleProp.HasGetter && tupleProp.HasSetter, "Expected getter and setter on Dimensions.");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ResolvesInterfaceDeclaredInSameContextFile()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"same_file_iface_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string combinedFile = Path.Combine(tempDir, "CombinedModule.cs");
+                File.WriteAllText(combinedFile, @"
+namespace DemoModule
+{
+    public interface IInlineCodec
+    {
+        /// <summary>Encodes payload.</summary>
+        (byte[] Data, int Checksum) Encode(string text);
+    }
+
+    public sealed class InlineCodec : IInlineCodec
+    {
+    }
+}");
+
+                var resolver = new InterfaceDefinitionResolver();
+                var member = resolver.ResolveInterfaceMember(
+                    "DemoModule.IInlineCodec",
+                    "Encode",
+                    "string",
+                    combinedFile,
+                    tempDir);
+
+                Assert(member != null, "Expected interface in same context file to be resolved.");
+                Assert(member!.ReturnType == "(byte[] Data, int Checksum)",
+                    $"Expected tuple return type from same-file interface, got '{member.ReturnType}'");
+                Assert(Path.GetFullPath(member.InterfaceFilePath) == Path.GetFullPath(combinedFile),
+                    "Expected InterfaceFilePath to point to contextFilePath.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_PatchGenerator_OmitsVirtualForSealedClassesAndStructs_KeepsVirtualForUnsealed()
+        {
+            var generator = new PatchGenerator();
+            var methodMember = new InterfaceMemberInfo
+            {
+                InterfaceName = "IWorker",
+                MemberName = "Run",
+                ReturnType = "int",
+                ParameterList = "string task"
+            };
+            var propMember = new InterfaceMemberInfo
+            {
+                InterfaceName = "IWorker",
+                MemberName = "Name",
+                ReturnType = "string",
+                IsProperty = true,
+                HasGetter = true,
+                HasSetter = true
+            };
+
+            string multiScopeSource = @"
+public sealed class SealedService : IWorker
+{
+}
+
+public struct ValueWorker : IWorker
+{
+}
+
+public readonly record struct RecordStructWorker(int Id) : IWorker
+{
+}
+
+public class OpenService : IWorker
+{
+}
+
+public sealed class OuterContainer
+{
+    public class OpenInner : IWorker
+    {
+    }
+
+    private sealed class SealedInner : IWorker
+    {
+    }
+}";
+
+            string sealedMethodStub = generator.GenerateMemberStub(methodMember, multiScopeSource, "SealedService");
+            Assert(sealedMethodStub.Contains("public int Run(string task)") && !sealedMethodStub.Contains("virtual"),
+                $"Sealed class method must omit virtual, got:\n{sealedMethodStub}");
+
+            string sealedPropStub = generator.GenerateMemberStub(propMember, multiScopeSource, "SealedService");
+            Assert(sealedPropStub.Contains("public string Name") && !sealedPropStub.Contains("virtual"),
+                $"Sealed class property must omit virtual, got:\n{sealedPropStub}");
+
+            string structStub = generator.GenerateMemberStub(methodMember, multiScopeSource, "ValueWorker");
+            Assert(structStub.Contains("public int Run(string task)") && !structStub.Contains("virtual"),
+                $"Struct stub must omit virtual, got:\n{structStub}");
+
+            string recordStructStub = generator.GenerateMemberStub(methodMember, multiScopeSource, "RecordStructWorker");
+            Assert(recordStructStub.Contains("public int Run(string task)") && !recordStructStub.Contains("virtual"),
+                $"Record struct stub must omit virtual, got:\n{recordStructStub}");
+
+            string openStub = generator.GenerateMemberStub(methodMember, multiScopeSource, "OpenService");
+            Assert(openStub.Contains("public virtual int Run(string task)"),
+                $"Unsealed class stub must retain public virtual, got:\n{openStub}");
+
+            string openInnerStub = generator.GenerateMemberStub(methodMember, multiScopeSource, "OuterContainer.OpenInner");
+            Assert(openInnerStub.Contains("public virtual int Run(string task)"),
+                $"Unsealed inner class inside sealed outer class must retain public virtual, got:\n{openInnerStub}");
+
+            string sealedInnerStub = generator.GenerateMemberStub(methodMember, multiScopeSource, "OuterContainer.SealedInner");
+            Assert(sealedInnerStub.Contains("public int Run(string task)") && !sealedInnerStub.Contains("virtual"),
+                $"Sealed inner class must omit virtual, got:\n{sealedInnerStub}");
+        }
+
+        static void Test_PatchGenerator_FindClassInsertionPoint_WalksNestedScopesAndIgnoresLiteralBraces()
+        {
+            string trickySource = @"
+namespace ComplexScopes
+{
+    public class UnrelatedFirst
+    {
+        public class TargetInner
+        {
+            // Wrong TargetInner inside UnrelatedFirst
+        }
+    }
+
+    public partial class OuterHost
+    {
+        // Unbalanced comment braces: } } }
+        /* Block comment with } } { } */
+        private readonly char _closeChar = '}';
+        private readonly string _regular = ""unbalanced } } \"" } braces"";
+        private readonly string _verbatim = @""quote """" and } } } braces"";
+        private readonly string _interp = $""escaped {{ and }} plus {GetTag(""}"")} and }"";
+        private readonly string _raw = """"""
+            {
+                ""unbalanced_closing"": ""} } } }""
+            }
+            """""";
+
+        private static string GetTag(string s) => s;
+
+        public sealed record TargetInner : ITargetService
+        {
+            public string Template => """"""
+                closing braces inside target: } } }
+                """""";
+            // MarkerInsideOuterHostTargetInner
+        }
+
+        public void TrailingOuterMethod()
+        {
+        }
+    }
+}";
+
+            int insertPos = PatchGenerator.FindClassInsertionPoint(trickySource, "ComplexScopes.OuterHost.TargetInner");
+            Assert(insertPos > 0, "Expected valid insertion point for nested ComplexScopes.OuterHost.TargetInner.");
+
+            string updated = trickySource.Insert(insertPos, "\n            public void InjectedStub() { }\n");
+            int markerIdx = updated.IndexOf("// MarkerInsideOuterHostTargetInner", StringComparison.Ordinal);
+            int stubIdx = updated.IndexOf("public void InjectedStub()", StringComparison.Ordinal);
+            int trailingMethodIdx = updated.IndexOf("public void TrailingOuterMethod()", StringComparison.Ordinal);
+
+            Assert(markerIdx > 0 && stubIdx > markerIdx && stubIdx < trailingMethodIdx,
+                $"Stub must be inserted after TargetInner's body content and before TrailingOuterMethod (marker={markerIdx}, stub={stubIdx}, trailing={trailingMethodIdx}).");
+        }
+
+        static void Test_PatchGenerator_MultiClassFile_GroupsByTypeWithUniquePatchNamesAndAppliesCleanly()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"multi_class_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string multiFile = Path.Combine(tempDir, "MultiHandlers.cs");
+                File.WriteAllText(multiFile, @"
+public interface ISharedHandler
+{
+    string Handle(string input);
+}
+
+public class FirstHandler : ISharedHandler
+{
+}
+
+public sealed class SecondHandler : ISharedHandler
+{
+}
+");
+
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = multiFile,
+                        LineNumber = 7,
+                        ColumnNumber = 14,
+                        Message = "'FirstHandler' does not implement interface member 'ISharedHandler.Handle(string)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = multiFile,
+                        LineNumber = 11,
+                        ColumnNumber = 21,
+                        Message = "'SecondHandler' does not implement interface member 'ISharedHandler.Handle(string)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+
+                Assert(patches.Count == 2, $"Expected 2 patches (one per class), got {patches.Count}");
+                Assert(patches[0].PatchFileName != patches[1].PatchFileName,
+                    $"Expected unique PatchFileName per class, got '{patches[0].PatchFileName}' and '{patches[1].PatchFileName}'");
+
+                var firstPatch = patches.First(p => p.TargetTypeName == "FirstHandler");
+                var secondPatch = patches.First(p => p.TargetTypeName == "SecondHandler");
+
+                Assert(firstPatch.GeneratedCode.Contains("public virtual string Handle(string input)"),
+                    "FirstHandler (unsealed) should receive public virtual stub.");
+                Assert(secondPatch.GeneratedCode.Contains("public string Handle(string input)") &&
+                       !secondPatch.GeneratedCode.Contains("virtual"),
+                    "SecondHandler (sealed) should receive non-virtual public stub.");
+
+                var applicator = new PatchApplicator();
+                Assert(applicator.ApplyPatch(firstPatch, requireConfirmation: false), "Expected firstPatch to apply.");
+                Assert(applicator.ApplyPatch(secondPatch, requireConfirmation: false), "Expected secondPatch to apply.");
+
+                string finalSource = File.ReadAllText(multiFile);
+                int occurrences = finalSource.Split(new[] { "Handle(string input)" }, StringSplitOptions.None).Length - 1;
+                Assert(occurrences == 3, $"Expected 3 occurrences of Handle(string input) (1 interface + 2 classes), found {occurrences}:\n{finalSource}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ApplyWithEnclosingCsproj_VerifiesBuildAndSucceedsForValidComplexPatches()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"verify_ok_proj_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string csprojPath = Path.Combine(tempDir, "SampleLib.csproj");
+                File.WriteAllText(csprojPath, @"<Project Sdk=""Microsoft.NET.Sdk"">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+");
+
+                string sourceFile = Path.Combine(tempDir, "ContractsAndImpls.cs");
+                File.WriteAllText(sourceFile, @"using System.Threading;
+using System.Threading.Tasks;
+
+namespace SampleLib;
+
+public interface IPayloadStore<T>
+{
+    /// <summary>Loads raw bytes when size > 0.</summary>
+    Task<byte[]> LoadRawAsync(string id, CancellationToken cancellationToken = default);
+
+    // Returns tuple with array and count
+    (T[] Items, int Total) Query((int Offset, int Limit) page);
+}
+
+public class HostContainer
+{
+    private readonly string _braces = """"""
+        { ""ignore"": ""} } }"" }
+        """""";
+
+    public sealed class MemoryPayloadStore : IPayloadStore<string>
+    {
+    }
+}
+");
+
+                // Capture genuine MSBuild CS0535 log output from dotnet build
+                var applicator = new PatchApplicator();
+                bool preBuildOk = applicator.VerifyProjectBuild(csprojPath, out string buildLog);
+                Assert(!preBuildOk, "Expected initial unpatched project build to fail with CS0535.");
+
+                string logFile = Path.Combine(tempDir, "msbuild.log");
+                File.WriteAllText(logFile, buildLog);
+                string outputDir = Path.Combine(tempDir, "diagnostics-out");
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(
+                    new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
+
+                Assert(exitCode == 0, $"Expected exit code 0 after verified compilation of valid stubs, got {exitCode}.\nLog:\n{buildLog}");
+
+                bool postBuildOk = applicator.VerifyProjectBuild(csprojPath, out string postBuildLog);
+                Assert(postBuildOk, $"Expected patched project to compile cleanly:\n{postBuildLog}");
+
+                string jsonReport = File.ReadAllText(Path.Combine(outputDir, "diagnostic-report.json"));
+                Assert(jsonReport.Contains("\"IsApplied\": true"), "Expected IsApplied: true in diagnostic-report.json");
+                Assert(jsonReport.Contains("\"UnresolvedErrorCount\": 0"), "Expected UnresolvedErrorCount: 0 in diagnostic-report.json");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ApplyWithEnclosingCsproj_RollsBackUncompilableFallbackPatchAndReturnsOne()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"verify_rollback_proj_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string csprojPath = Path.Combine(tempDir, "RollbackLib.csproj");
+                File.WriteAllText(csprojPath, @"<Project Sdk=""Microsoft.NET.Sdk"">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+");
+
+                // Implements external BCL interface IDataRecord (no IDataRecord.cs on disk) with missing non-void GetInt32(int),
+                // so FallbackMemberInfo generates 'void GetInt32(int param1)' which fails CS0738 compilation.
+                string sourceFile = Path.Combine(tempDir, "MockRecordHolder.cs");
+                string originalSource = @"using System;
+using System.Data;
+
+namespace RollbackLib
+{
+    public class OuterTestRunner
+    {
+        private sealed class PartialDataRecord : IDataRecord
+        {
+            public int FieldCount => 0;
+            public object this[int i] => throw new NotImplementedException();
+            public object this[string name] => throw new NotImplementedException();
+            public bool GetBoolean(int i) => throw new NotImplementedException();
+            public byte GetByte(int i) => throw new NotImplementedException();
+            public long GetBytes(int i, long fieldOffset, byte[]? buffer, int bufferoffset, int length) => throw new NotImplementedException();
+            public char GetChar(int i) => throw new NotImplementedException();
+            public long GetChars(int i, long fieldoffset, char[]? buffer, int bufferoffset, int length) => throw new NotImplementedException();
+            public IDataReader GetData(int i) => throw new NotImplementedException();
+            public string GetDataTypeName(int i) => throw new NotImplementedException();
+            public DateTime GetDateTime(int i) => throw new NotImplementedException();
+            public decimal GetDecimal(int i) => throw new NotImplementedException();
+            public double GetDouble(int i) => throw new NotImplementedException();
+            public Type GetFieldType(int i) => throw new NotImplementedException();
+            public float GetFloat(int i) => throw new NotImplementedException();
+            public Guid GetGuid(int i) => throw new NotImplementedException();
+            public short GetInt16(int i) => throw new NotImplementedException();
+            public long GetInt64(int i) => throw new NotImplementedException();
+            public string GetName(int i) => throw new NotImplementedException();
+            public int GetOrdinal(string name) => throw new NotImplementedException();
+            public string GetString(int i) => throw new NotImplementedException();
+            public object GetValue(int i) => throw new NotImplementedException();
+            public int GetValues(object[] values) => throw new NotImplementedException();
+            public bool IsDBNull(int i) => throw new NotImplementedException();
+        }
+    }
+}
+";
+                File.WriteAllText(sourceFile, originalSource);
+
+                var applicator = new PatchApplicator();
+                bool preBuildOk = applicator.VerifyProjectBuild(csprojPath, out string buildLog);
+                Assert(!preBuildOk, "Expected initial build to fail with CS0535 for missing GetInt32(int).");
+
+                string logFile = Path.Combine(tempDir, "rollback_msbuild.log");
+                File.WriteAllText(logFile, buildLog);
+                string outputDir = Path.Combine(tempDir, "rollback-out");
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(
+                    new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
+
+                Assert(exitCode == 1, $"Expected Program.Main to return exit code 1 after failed compilation rollback, got {exitCode}");
+
+                string diskSourceAfterRollback = File.ReadAllText(sourceFile);
+                Assert(diskSourceAfterRollback == originalSource,
+                    "Expected target source file to be restored byte-for-byte to original contents on compilation failure.");
+
+                string jsonReport = File.ReadAllText(Path.Combine(outputDir, "diagnostic-report.json"));
+                Assert(jsonReport.Contains("\"IsApplied\": false"), "Expected IsApplied: false in diagnostic-report.json after rollback.");
+                Assert(!jsonReport.Contains("\"UnresolvedErrorCount\": 0"), "Expected non-zero UnresolvedErrorCount after rollback.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
     }
 }

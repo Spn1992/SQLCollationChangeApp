@@ -24,14 +24,47 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var candidates = new List<PatchCandidate>();
             string root = string.IsNullOrWhiteSpace(projectRoot) ? Directory.GetCurrentDirectory() : projectRoot;
 
-            // Group CS0535 diagnostics by target file
-            var cs0535Diags = diagnostics
-                .Where(d => d.Code.Equals("CS0535", StringComparison.OrdinalIgnoreCase))
-                .GroupBy(d => ResolveAbsoluteFilePath(d.FilePath, root));
+            // Parse and group CS0535 diagnostics by (targetFilePath, ClassName)
+            var parsedEntries = new List<(string TargetFilePath, string ClassName, string InterfaceName, string MemberName, string ExpectedParamTypes, DiagnosticSeverity Severity)>();
 
-            foreach (var group in cs0535Diags)
+            foreach (var diag in diagnostics)
             {
-                string targetFilePath = group.Key;
+                if (!diag.Code.Equals("CS0535", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var parsed = InterfaceDefinitionResolver.ParseCs0535Message(diag.Message);
+                if (parsed == null)
+                {
+                    continue;
+                }
+
+                string targetFilePath = ResolveAbsoluteFilePath(diag.FilePath, root);
+                parsedEntries.Add((
+                    targetFilePath,
+                    parsed.Value.ClassName,
+                    parsed.Value.InterfaceName,
+                    parsed.Value.MemberName,
+                    parsed.Value.ExpectedParamTypes,
+                    diag.Severity));
+            }
+
+            var groupedByFileAndType = parsedEntries
+                .GroupBy(e => (FileKey: e.TargetFilePath.ToUpperInvariant(), e.ClassName))
+                .ToList();
+
+            var typeCountPerFile = groupedByFileAndType
+                .GroupBy(g => g.Key.FileKey)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
+
+            var usedPatchFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var group in groupedByFileAndType)
+            {
+                string targetFilePath = group.First().TargetFilePath;
+                string targetClassName = group.Key.ClassName;
+
                 if (!File.Exists(targetFilePath))
                 {
                     continue;
@@ -40,57 +73,75 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 string originalContent = File.ReadAllText(targetFilePath);
                 var memberInfos = new List<InterfaceMemberInfo>();
                 var seenMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                string targetClassName = string.Empty;
-                string interfaceName = string.Empty;
+                var resolvedMemberKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var distinctInterfaces = new List<string>();
+                int resolvedDiagnosticCount = 0;
 
-                foreach (var diag in group)
+                foreach (var entry in group)
                 {
-                    var parsed = InterfaceDefinitionResolver.ParseCs0535Message(diag.Message);
-                    if (parsed == null) continue;
+                    string memberKey = $"{targetClassName}|{entry.InterfaceName}.{entry.MemberName}({entry.ExpectedParamTypes})";
+                    if (!seenMembers.Add(memberKey))
+                    {
+                        if (entry.Severity == DiagnosticSeverity.Error && resolvedMemberKeys.Contains(memberKey))
+                        {
+                            resolvedDiagnosticCount++;
+                        }
+                        continue;
+                    }
 
-                    string memberKey = $"{parsed.Value.InterfaceName}.{parsed.Value.MemberName}({parsed.Value.ExpectedParamTypes})";
-                    if (!seenMembers.Add(memberKey)) continue;
-
-                    targetClassName = parsed.Value.ClassName;
-                    interfaceName = parsed.Value.InterfaceName;
+                    if (!distinctInterfaces.Contains(entry.InterfaceName, StringComparer.Ordinal))
+                    {
+                        distinctInterfaces.Add(entry.InterfaceName);
+                    }
 
                     var member = _resolver.ResolveInterfaceMember(
-                        interfaceName,
-                        parsed.Value.MemberName,
-                        parsed.Value.ExpectedParamTypes,
+                        entry.InterfaceName,
+                        entry.MemberName,
+                        entry.ExpectedParamTypes,
                         targetFilePath,
                         root);
 
                     if (member != null)
                     {
                         memberInfos.Add(member);
+                        resolvedMemberKeys.Add(memberKey);
+                        if (entry.Severity == DiagnosticSeverity.Error)
+                        {
+                            resolvedDiagnosticCount++;
+                        }
                     }
                 }
 
-                if (memberInfos.Count == 0) continue;
+                if (memberInfos.Count == 0)
+                {
+                    continue;
+                }
 
-                // Generate stubs for the missing members
                 var stubsBuilder = new StringBuilder();
                 foreach (var member in memberInfos)
                 {
-                    string stub = GenerateMemberStub(member, originalContent);
+                    string stub = GenerateMemberStub(member, originalContent, targetClassName);
                     stubsBuilder.AppendLine(stub);
                 }
 
                 string stubsCode = stubsBuilder.ToString().TrimEnd();
+                string interfaceSummary = string.Join(", ", distinctInterfaces);
 
-                // Compute unified diff
+                bool hasMultipleTypesInFile = typeCountPerFile.TryGetValue(group.Key.FileKey, out int count) && count > 1;
+                string patchFileName = BuildUniquePatchFileName(targetFilePath, targetClassName, hasMultipleTypesInFile, usedPatchFileNames);
+
                 var patchCandidate = CreatePatchForFile(
                     targetFilePath,
                     originalContent,
                     stubsCode,
                     targetClassName,
-                    interfaceName,
-                    root);
+                    interfaceSummary,
+                    root,
+                    patchFileName);
 
                 if (patchCandidate != null)
                 {
-                    patchCandidate.ResolvedErrorCount = memberInfos.Count;
+                    patchCandidate.ResolvedErrorCount = resolvedDiagnosticCount;
                     candidates.Add(patchCandidate);
                 }
             }
@@ -98,13 +149,92 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return candidates;
         }
 
-        public string GenerateMemberStub(InterfaceMemberInfo member, string classSource)
+        private static string BuildUniquePatchFileName(
+            string targetFilePath,
+            string targetClassName,
+            bool hasMultipleTypesInFile,
+            HashSet<string> usedPatchFileNames)
+        {
+            string safeFileName = Path.GetFileNameWithoutExtension(targetFilePath);
+            string sanitizedType = SanitizeFileNameSegment(targetClassName);
+
+            string baseCandidate = (!hasMultipleTypesInFile || string.IsNullOrEmpty(sanitizedType))
+                ? $"{safeFileName}.patch"
+                : $"{safeFileName}.{sanitizedType}.patch";
+
+            if (usedPatchFileNames.Add(baseCandidate))
+            {
+                return baseCandidate;
+            }
+
+            if (!string.IsNullOrEmpty(sanitizedType))
+            {
+                string typedCandidate = $"{safeFileName}.{sanitizedType}.patch";
+                if (usedPatchFileNames.Add(typedCandidate))
+                {
+                    return typedCandidate;
+                }
+            }
+
+            int suffix = 2;
+            string stem = Path.GetFileNameWithoutExtension(baseCandidate);
+            while (true)
+            {
+                string numbered = $"{stem}.{suffix}.patch";
+                if (usedPatchFileNames.Add(numbered))
+                {
+                    return numbered;
+                }
+                suffix++;
+            }
+        }
+
+        private static string SanitizeFileNameSegment(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return string.Empty;
+            }
+
+            var sb = new StringBuilder(raw.Length);
+            foreach (char c in raw)
+            {
+                if (char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '-')
+                {
+                    sb.Append(c);
+                }
+                else
+                {
+                    sb.Append('_');
+                }
+            }
+
+            return sb.ToString().Trim('.', '_');
+        }
+
+        public string GenerateMemberStub(InterfaceMemberInfo member, string classSource, string? targetClassName = null)
         {
             var sb = new StringBuilder();
 
+            bool omitVirtual = false;
+            string searchScopeSource = CSharpLexer.StripComments(classSource);
+
+            if (CSharpLexer.TryFindTypeScope(classSource, targetClassName, out var scope))
+            {
+                omitVirtual = scope.IsSealed || scope.IsStruct;
+                if (!string.IsNullOrWhiteSpace(targetClassName) && scope.CloseBraceIndex > scope.OpenBraceIndex)
+                {
+                    searchScopeSource = searchScopeSource.Substring(
+                        scope.OpenBraceIndex + 1,
+                        scope.CloseBraceIndex - scope.OpenBraceIndex - 1);
+                }
+            }
+
+            string modifierPrefix = omitVirtual ? "public" : "public virtual";
+
             if (member.IsProperty)
             {
-                sb.AppendLine($"        public virtual {member.ReturnType} {member.MemberName}");
+                sb.AppendLine($"        {modifierPrefix} {member.ReturnType} {member.MemberName}");
                 sb.AppendLine("        {");
                 if (member.HasGetter)
                 {
@@ -118,10 +248,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return sb.ToString();
             }
 
-            // Check if class has an existing overload of the same method
-            string? delegationCall = FindDelegationCall(member, classSource);
+            // Check if target class has an existing overload of the same method
+            string? delegationCall = FindDelegationCall(member, searchScopeSource);
 
-            sb.AppendLine($"        public virtual {member.ReturnType} {member.MemberName}({member.ParameterList})");
+            sb.AppendLine($"        {modifierPrefix} {member.ReturnType} {member.MemberName}({member.ParameterList})");
             sb.AppendLine("        {");
 
             if (delegationCall != null)
@@ -144,14 +274,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return sb.ToString();
         }
 
-        private static string? FindDelegationCall(InterfaceMemberInfo member, string classSource)
+        private static string? FindDelegationCall(InterfaceMemberInfo member, string strippedClassSource)
         {
-            // Look for existing method in class with the same name:
-            // e.g. BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
             var pattern = new Regex(
-                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^)]*)\)");
+                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s\[\]\(\)]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^;{{}}]*?)\)\s*(?:\{{|=>)");
 
-            var matches = pattern.Matches(classSource);
+            var matches = pattern.Matches(strippedClassSource);
             var myParamNames = ExtractParameterNames(member.ParameterList);
 
             foreach (Match match in matches)
@@ -159,7 +287,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 string existingParamList = match.Groups["params"].Value.Trim();
                 var existingParams = ParseParameters(existingParamList);
 
-                // If existing method has strictly more parameters than the missing member
                 if (existingParams.Count > myParamNames.Count)
                 {
                     var callArgs = new List<string>();
@@ -169,7 +296,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     {
                         var (pType, pName, hasDefault, defaultValue) = existingParams[i];
 
-                        // Match by name or type with missing member's parameters
                         var matchMyParam = myParamNames.FirstOrDefault(p =>
                             p.Equals(pName, StringComparison.OrdinalIgnoreCase) ||
                             (p.EndsWith("token", StringComparison.OrdinalIgnoreCase) && pName.EndsWith("token", StringComparison.OrdinalIgnoreCase)) ||
@@ -182,10 +308,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
                         }
                         else if (hasDefault)
                         {
-                            // If parameter has a default, pass default value or fallback expression
                             callArgs.Add(!string.IsNullOrWhiteSpace(defaultValue) ? defaultValue : "default");
                         }
-                        else if (pType.EndsWith("?"))
+                        else if (pType.EndsWith("?", StringComparison.Ordinal))
                         {
                             callArgs.Add("null");
                         }
@@ -211,14 +336,21 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var result = new List<string>();
             if (string.IsNullOrWhiteSpace(paramList)) return result;
 
-            var parts = paramList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var parts = CSharpLexer.SplitTopLevelCommas(paramList);
             foreach (var part in parts)
             {
-                string clean = part.Trim();
-                if (clean.Contains('='))
+                string clean = StripTopLevelDefaultValue(part, out _, out _);
+                string typePart = InterfaceDefinitionResolver.ExtractParameterType(clean);
+                if (!string.IsNullOrEmpty(typePart) && clean.Length > typePart.Length)
                 {
-                    clean = clean.Substring(0, clean.IndexOf('=')).Trim();
+                    int idx = clean.LastIndexOf(' ');
+                    if (idx >= 0 && idx + 1 < clean.Length)
+                    {
+                        result.Add(clean.Substring(idx + 1).Trim());
+                        continue;
+                    }
                 }
+
                 var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length >= 2)
                 {
@@ -233,18 +365,20 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var result = new List<(string, string, bool, string)>();
             if (string.IsNullOrWhiteSpace(paramList)) return result;
 
-            var parts = paramList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var parts = CSharpLexer.SplitTopLevelCommas(paramList);
             foreach (var part in parts)
             {
-                string clean = part.Trim();
-                bool hasDefault = false;
-                string defVal = "";
-                if (clean.Contains('='))
+                string clean = StripTopLevelDefaultValue(part, out bool hasDefault, out string defVal);
+                string extractedType = InterfaceDefinitionResolver.ExtractParameterType(clean);
+                if (!string.IsNullOrEmpty(extractedType) && clean.Length > extractedType.Length)
                 {
-                    hasDefault = true;
-                    int eqIdx = clean.IndexOf('=');
-                    defVal = clean.Substring(eqIdx + 1).Trim();
-                    clean = clean.Substring(0, eqIdx).Trim();
+                    int lastSpace = clean.LastIndexOf(' ');
+                    if (lastSpace > 0 && lastSpace + 1 < clean.Length)
+                    {
+                        string name = clean.Substring(lastSpace + 1).Trim();
+                        result.Add((extractedType, name, hasDefault, defVal));
+                        continue;
+                    }
                 }
 
                 var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
@@ -258,15 +392,45 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return result;
         }
 
+        private static string StripTopLevelDefaultValue(string paramText, out bool hasDefault, out string defaultValue)
+        {
+            hasDefault = false;
+            defaultValue = string.Empty;
+
+            string masked = CSharpLexer.MaskCommentsAndLiterals(paramText);
+            int angle = 0;
+            int bracket = 0;
+            int paren = 0;
+
+            for (int i = 0; i < masked.Length; i++)
+            {
+                char c = masked[i];
+                if (c == '<') angle++;
+                else if (c == '>' && angle > 0) angle--;
+                else if (c == '[') bracket++;
+                else if (c == ']' && bracket > 0) bracket--;
+                else if (c == '(') paren++;
+                else if (c == ')' && paren > 0) paren--;
+                else if (c == '=' && angle == 0 && bracket == 0 && paren == 0)
+                {
+                    hasDefault = true;
+                    defaultValue = paramText.Substring(i + 1).Trim();
+                    return paramText.Substring(0, i).Trim();
+                }
+            }
+
+            return paramText.Trim();
+        }
+
         public PatchCandidate? CreatePatchForFile(
             string targetFilePath,
             string originalContent,
             string stubsCode,
             string className,
             string interfaceName,
-            string projectRoot)
+            string projectRoot,
+            string? patchFileNameOverride = null)
         {
-            // Find insertion point before class closing brace
             int insertPos = FindClassInsertionPoint(originalContent, className);
             if (insertPos < 0)
             {
@@ -286,7 +450,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 $"b/{relPath}");
 
             string safeFileName = Path.GetFileNameWithoutExtension(targetFilePath);
-            string patchFileName = $"{safeFileName}.patch";
+            string patchFileName = string.IsNullOrWhiteSpace(patchFileNameOverride)
+                ? $"{safeFileName}.patch"
+                : patchFileNameOverride!;
 
             return new PatchCandidate
             {
@@ -303,44 +469,46 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         public static int FindClassInsertionPoint(string source, string className)
         {
-            // Search for class declaration
-            var classMatch = Regex.Match(source, $@"\bclass\s+{Regex.Escape(className)}\b");
-            if (!classMatch.Success)
+            if (string.IsNullOrEmpty(source))
             {
-                // Fallback: search last closing brace
-                return source.LastIndexOf('}');
+                return -1;
             }
 
-            // Find class body braces: find opening brace after class keyword
-            int openBrace = source.IndexOf('{', classMatch.Index);
-            if (openBrace < 0) return source.LastIndexOf('}');
+            var scanned = CSharpLexer.Scan(source);
+            string masked = scanned.CommentsAndLiteralsMasked;
 
-            int depth = 1;
-            int lastInnerBrace = -1;
-
-            for (int i = openBrace + 1; i < source.Length; i++)
+            if (string.IsNullOrWhiteSpace(className))
             {
-                if (source[i] == '{') depth++;
-                else if (source[i] == '}')
+                return masked.LastIndexOf('}');
+            }
+
+            if (CSharpLexer.TryFindTypeScopeFromMasked(masked, className, out var scope))
+            {
+                int openBrace = scope.OpenBraceIndex;
+                int closeBrace = scope.CloseBraceIndex;
+
+                int lineStart = source.LastIndexOf('\n', closeBrace);
+                if (lineStart > openBrace && IsWhitespaceOnly(source, lineStart + 1, closeBrace))
                 {
-                    depth--;
-                    if (depth == 0)
-                    {
-                        // Found closing brace of class
-                        lastInnerBrace = i;
-                        break;
-                    }
+                    return lineStart;
+                }
+
+                return closeBrace;
+            }
+
+            return -1;
+        }
+
+        private static bool IsWhitespaceOnly(string text, int start, int endExclusive)
+        {
+            for (int i = start; i < endExclusive; i++)
+            {
+                if (!char.IsWhiteSpace(text[i]))
+                {
+                    return false;
                 }
             }
-
-            if (lastInnerBrace >= 0)
-            {
-                // Find start of line for the closing brace
-                int lineStart = source.LastIndexOf('\n', lastInnerBrace);
-                return lineStart >= 0 ? lineStart : lastInnerBrace;
-            }
-
-            return source.LastIndexOf('}');
+            return true;
         }
 
         public static string GenerateUnifiedDiff(
@@ -352,7 +520,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var oldLines = oldText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
             var newLines = newText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
 
-            // Simple Myers diff or prefix/suffix common line detection for clean unified patch
             int startCommon = 0;
             while (startCommon < oldLines.Length && startCommon < newLines.Length &&
                    oldLines[startCommon] == newLines[startCommon])
@@ -369,7 +536,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 endCommonNew--;
             }
 
-            // Context lines (3 lines before and after)
             int contextBefore = Math.Max(0, startCommon - 3);
             int contextAfterOld = Math.Min(oldLines.Length, endCommonOld + 4);
             int contextAfterNew = Math.Min(newLines.Length, endCommonNew + 4);
@@ -384,25 +550,21 @@ namespace MSBuildDiagnosticPatcher.Patcher
             sb.AppendLine($"+++ {newHeader}");
             sb.AppendLine($"@@ -{hunkOldStart},{hunkOldCount} +{hunkNewStart},{hunkNewCount} @@");
 
-            // Context lines before
             for (int i = contextBefore; i < startCommon; i++)
             {
                 sb.AppendLine($" {oldLines[i]}");
             }
 
-            // Removed lines
             for (int i = startCommon; i <= endCommonOld; i++)
             {
                 sb.AppendLine($"-{oldLines[i]}");
             }
 
-            // Added lines
             for (int i = startCommon; i <= endCommonNew; i++)
             {
                 sb.AppendLine($"+{newLines[i]}");
             }
 
-            // Context lines after
             int afterLinesCount = Math.Min(oldLines.Length - (endCommonOld + 1), 3);
             for (int i = 0; i < afterLinesCount; i++)
             {
