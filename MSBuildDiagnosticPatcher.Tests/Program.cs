@@ -76,6 +76,7 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 6. ReportGenerator Tests
             RunTest("ReportGenerator_GenerateMarkdownReport_ProducesFormattedMarkdown", Test_ReportGenerator_Markdown);
             RunTest("ReportGenerator_GenerateJsonReport_ProducesValidJson", Test_ReportGenerator_Json);
+            RunTest("ReportGenerator_PrintConsoleSummary_DisambiguatesFailuresAndAvoidsParserMatches", Test_ReportGenerator_PrintConsoleSummary_DisambiguatesFailuresAndAvoidsParserMatches);
 
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
@@ -92,6 +93,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent", Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent);
             RunTest("Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics", Test_Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics);
             RunTest("Program_Main_ReturnsOne_WhenInputFileNotFound", Test_Program_Main_ReturnsOne_WhenInputFileNotFound);
+            RunTest("InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams", Test_InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams);
+            RunTest("InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown", Test_InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown);
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
@@ -1156,6 +1159,79 @@ public class DemoService : IDemoService
             Assert(json.Contains("\"SourceLogPath\""), "Expected SourceLogPath in json");
         }
 
+        static void Test_ReportGenerator_PrintConsoleSummary_DisambiguatesFailuresAndAvoidsParserMatches()
+        {
+            var report = new DiagnosticReport
+            {
+                SourceLogPath = "/tmp/build-and-test.log",
+                ParseDuration = TimeSpan.FromMilliseconds(12.3),
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = "Services/DatabaseService.cs",
+                        LineNumber = 11,
+                        ColumnNumber = 36,
+                        Message = "'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync'"
+                    }
+                },
+                TestFailures = new List<TestFailure>
+                {
+                    new TestFailure
+                    {
+                        TestClass = "MainViewModelTestsRunner",
+                        TestMethod = string.Empty,
+                        AssertionFailureMessage = "Assertion Failed: Enqueue took too long"
+                    },
+                    new TestFailure
+                    {
+                        TestClass = "GreeterTests",
+                        TestMethod = "TestGreeting",
+                        AssertionFailureMessage = "Expected 'Hello' but was null"
+                    }
+                },
+                CandidatePatches = new List<PatchCandidate>
+                {
+                    new PatchCandidate
+                    {
+                        PatchFileName = "DatabaseService.patch",
+                        TargetFilePath = "Services/DatabaseService.cs"
+                    }
+                }
+            };
+
+            TextWriter originalOut = Console.Out;
+            TextWriter originalError = Console.Error;
+            using var summaryWriter = new StringWriter();
+            string summaryOutput;
+            try
+            {
+                Console.SetOut(summaryWriter);
+                var reporter = new ReportGenerator();
+                reporter.PrintConsoleSummary(report);
+                summaryOutput = summaryWriter.ToString();
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+                Console.SetError(originalError);
+            }
+
+            Assert(summaryOutput.Contains("  [TEST-FAILURE] MainViewModelTestsRunner: Assertion Failed: Enqueue took too long"), "Expected class-level failure with [TEST-FAILURE] prefix");
+            Assert(summaryOutput.Contains("  [TEST-FAILURE] GreeterTests.TestGreeting: Expected 'Hello' but was null"), "Expected method-level failure with [TEST-FAILURE] prefix");
+            Assert(!summaryOutput.Contains("[FAIL]"), "Expected PrintConsoleSummary output not to contain [FAIL]");
+
+            var testParser = new TestExecutionLogParser();
+            var parsedFailures = testParser.ParseText(summaryOutput);
+            Assert(parsedFailures.Count == 0, $"Expected 0 TestExecutionLogParser matches from PrintConsoleSummary output, got {parsedFailures.Count}");
+
+            var msbuildParser = new MSBuildLogParser();
+            var parsedDiagnostics = msbuildParser.ParseText(summaryOutput);
+            Assert(parsedDiagnostics.Count == 0, $"Expected 0 MSBuildLogParser matches from PrintConsoleSummary output, got {parsedDiagnostics.Count}");
+        }
+
         // 7. End-to-End Workflow Test
         static void Test_EndToEnd_Workflow()
         {
@@ -1234,6 +1310,30 @@ public class Greeter : IGreeter
             Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
         }
 
+        private static int InvokePatcherMain(string[] args, out string stdout, out string stderr)
+        {
+            TextWriter originalOut = Console.Out;
+            TextWriter originalError = Console.Error;
+            using var outWriter = new StringWriter();
+            using var errorWriter = new StringWriter();
+            try
+            {
+                Console.SetOut(outWriter);
+                Console.SetError(errorWriter);
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(args);
+                stdout = outWriter.ToString();
+                stderr = errorWriter.ToString();
+                return exitCode;
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+                Console.SetError(originalError);
+            }
+        }
+
+        private static int InvokePatcherMain(string[] args) => InvokePatcherMain(args, out _, out _);
+
         static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_clean_{Guid.NewGuid():N}");
@@ -1244,7 +1344,7 @@ public class Greeter : IGreeter
                 File.WriteAllText(logFile, "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.23\n");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
             }
             finally
@@ -1267,7 +1367,7 @@ Build succeeded.
     0 Error(s)
 Time Elapsed 00:00:01.23
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
             }
             finally
@@ -1290,7 +1390,7 @@ Build succeeded.
     1 Warning(s)
     0 Error(s)
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 0, $"Expected exit code 0 when only warnings are present, got {exitCode}");
             }
             finally
@@ -1316,7 +1416,7 @@ public class Greeter : IGreeter
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir, "-p", tempDir });
                 Assert(exitCode == 1, $"Expected exit code 1 when build errors remain unpatched, got {exitCode}");
             }
             finally
@@ -1338,7 +1438,7 @@ Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not imp
 Build FAILED.
     1 Error(s)
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 for compiler errors, got {exitCode}");
             }
             finally
@@ -1362,7 +1462,7 @@ Test Suite Summary: 1 Passed, 1 Failed
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 when test runner failures exist, got {exitCode}");
             }
             finally
@@ -1385,7 +1485,7 @@ Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [
    Assertion Failed: Expected status ready
 Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 for test failures, got {exitCode}");
             }
             finally
@@ -1408,7 +1508,7 @@ Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [
   Error Message:
    Assertion Failed: Expected status ready
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 for both compiler errors and test failures, got {exitCode}");
             }
             finally
@@ -1443,7 +1543,7 @@ public class Greeter : IGreeter
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
                 Assert(exitCode == 0, $"Expected exit code 0 when patches remediate all diagnostics, got {exitCode}");
 
                 string patchedContent = File.ReadAllText(classFile);
@@ -1467,8 +1567,92 @@ public class Greeter : IGreeter
         static void Test_Program_Main_ReturnsOne_WhenInputFileNotFound()
         {
             string missingPath = Path.Combine(Path.GetTempPath(), $"missing_log_{Guid.NewGuid():N}.log");
-            int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { missingPath });
+            int exitCode = InvokePatcherMain(new[] { missingPath });
             Assert(exitCode == 1, $"Expected exit code 1 when input file is not found, got {exitCode}");
+        }
+
+        static void Test_InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"invoke_capture_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            TextWriter savedOut = Console.Out;
+            TextWriter savedError = Console.Error;
+            using var outerOut = new StringWriter();
+            using var outerError = new StringWriter();
+            try
+            {
+                string logFile = Path.Combine(tempDir, "test_failure.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, "  [FAIL] SampleSuite.SampleTest - Expected 1 but got 2\n");
+
+                Console.SetOut(outerOut);
+                Console.SetError(outerError);
+
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir }, out string capturedOut, out string capturedError);
+                Assert(exitCode == 1, $"Expected exit code 1, got {exitCode}");
+                Assert(capturedOut.Contains("[TEST-FAILURE] SampleSuite.SampleTest"), "Expected captured stdout to include disambiguated failure summary");
+                Assert(string.IsNullOrEmpty(capturedError), $"Expected empty captured stderr, got '{capturedError}'");
+                Assert(string.IsNullOrEmpty(outerOut.ToString()), $"Expected outer Console.Out to remain empty during InvokePatcherMain, got '{outerOut}'");
+                Assert(string.IsNullOrEmpty(outerError.ToString()), $"Expected outer Console.Error to remain empty during InvokePatcherMain, got '{outerError}'");
+
+                // Verify post-call writes reach the restored writers (Console.SetOut wraps writers in a synchronized TextWriter)
+                Console.Out.WriteLine("post-call-stdout-marker");
+                Console.Error.WriteLine("post-call-stderr-marker");
+
+                Assert(outerOut.ToString().Contains("post-call-stdout-marker"), "Expected Console.Out to write to restored outer stdout writer");
+                Assert(outerError.ToString().Contains("post-call-stderr-marker"), "Expected Console.Error to write to restored outer stderr writer");
+            }
+            finally
+            {
+                Console.SetOut(savedOut);
+                Console.SetError(savedError);
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"invoke_throw_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            TextWriter savedOut = Console.Out;
+            TextWriter savedError = Console.Error;
+            using var outerOut = new StringWriter();
+            using var outerError = new StringWriter();
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean.log");
+                File.WriteAllText(logFile, "Build succeeded.\n");
+
+                Console.SetOut(outerOut);
+                Console.SetError(outerError);
+
+                bool threw = false;
+                try
+                {
+                    // Passing an empty outputDir causes Program.Main to print to Console.Out and then throw ArgumentException in Directory.CreateDirectory("")
+                    InvokePatcherMain(new[] { logFile, "-o", string.Empty });
+                }
+                catch (ArgumentException)
+                {
+                    threw = true;
+                }
+
+                Assert(threw, "Expected InvokePatcherMain to propagate ArgumentException from empty outputDir");
+                Assert(string.IsNullOrEmpty(outerOut.ToString()), $"Expected pre-exception output not to leak to outer Console.Out, got '{outerOut}'");
+                Assert(string.IsNullOrEmpty(outerError.ToString()), $"Expected outer Console.Error to remain empty during throwing call, got '{outerError}'");
+
+                Console.Out.WriteLine("restored-after-exception-stdout");
+                Console.Error.WriteLine("restored-after-exception-stderr");
+
+                Assert(outerOut.ToString().Contains("restored-after-exception-stdout"), "Expected Console.Out to be restored after exception");
+                Assert(outerError.ToString().Contains("restored-after-exception-stderr"), "Expected Console.Error to be restored after exception");
+            }
+            finally
+            {
+                Console.SetOut(savedOut);
+                Console.SetError(savedError);
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
         }
 
         // 9. CI Workflow Configuration Tests
