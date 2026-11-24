@@ -1,11 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType Condition="'$(OS)' == 'Windows_NT'">WinExe</OutputType>
-    <OutputType Condition="'$(OS)' != 'Windows_NT'">Library</OutputType>
-    <TargetFramework Condition="'$(OS)' == 'Windows_NT'">net48</TargetFramework>
-    <TargetFramework Condition="'$(OS)' != 'Windows_NT'">net8.0</TargetFramework>
-    <UseWPF Condition="'$(OS)' == 'Windows_NT'">true</UseWPF>
+    <_WpfTempProject Condition="'$(_WpfTempProject)' == '' and ($(MSBuildProjectFile.EndsWith('_wpftmp.csproj')) or '$(MSBuildProjectExtension)' == '.tmp_proj')">true</_WpfTempProject>
+    <TargetFrameworks Condition="'$(_WpfTempProject)' != 'true'">net8.0;net8.0-windows</TargetFrameworks>
+    <TargetFramework Condition="'$(_WpfTempProject)' == 'true' and '$(TargetFramework)' == ''">net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <OutputType Condition="'$(TargetFramework)' == 'net8.0-windows' or '$(_WpfTempProject)' == 'true'">WinExe</OutputType>
+    <OutputType Condition="'$(TargetFramework)' != 'net8.0-windows' and '$(_WpfTempProject)' != 'true'">Library</OutputType>
+    <UseWPF Condition="'$(TargetFramework)' == 'net8.0-windows' or '$(_WpfTempProject)' == 'true'">true</UseWPF>
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -21,10 +23,11 @@
     <InternalsVisibleTo Include="CollationModifier.Tests" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(OS)' != 'Windows_NT'">
+  <ItemGroup Condition="'$(TargetFramework)' != 'net8.0-windows' and '$(_WpfTempProject)' != 'true'">
     <Compile Remove="App.xaml.cs" />
     <Compile Remove="MainWindow.xaml.cs" />
     <Compile Remove="ErrorDetailsWindow.xaml.cs" />
+    <ApplicationDefinition Remove="App.xaml" />
     <Page Remove="App.xaml" />
     <Page Remove="MainWindow.xaml" />
     <Page Remove="ErrorDetailsWindow.xaml" />

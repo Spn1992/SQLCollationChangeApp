@@ -286,7 +286,7 @@ namespace CollationModifier.ViewModels
 
         private void InvalidateRequerySuggested()
         {
-#if NETFRAMEWORK
+#if NETFRAMEWORK || WINDOWS
             try
             {
                 CommandManager.InvalidateRequerySuggested();
@@ -347,7 +347,7 @@ namespace CollationModifier.ViewModels
 
         private void DefaultShowErrorDetails(string errorDetails)
         {
-#if NETFRAMEWORK
+#if NETFRAMEWORK || WINDOWS
             try
             {
                 var previouslyFocused = System.Windows.Input.Keyboard.FocusedElement;
@@ -515,7 +515,7 @@ namespace CollationModifier.ViewModels
 
         private bool DefaultConfirmCollationChange(string databaseName, string targetCollation)
         {
-#if NETFRAMEWORK
+#if NETFRAMEWORK || WINDOWS
             string message = $"Are you sure you want to change the collation of database '{databaseName}' to '{targetCollation}'?\n\nWARNING: This process will close all active database connections and force the database into SINGLE_USER mode.";
             string title = "Confirm Collation Change";
 

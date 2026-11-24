@@ -95,6 +95,7 @@ namespace MSBuildDiagnosticPatcher.Tests
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
+            RunTest("Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix", Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -1509,6 +1510,24 @@ public class Greeter : IGreeter
             Assert(content.Contains("name: build-diagnostics-report"), "Workflow must name artifact build-diagnostics-report");
             Assert(content.Contains("build-diagnostics/"), "Workflow artifact path must include build-diagnostics/");
             Assert(content.Contains("/tmp/build-and-test.log"), "Workflow artifact path must include /tmp/build-and-test.log");
+        }
+
+        static void Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix()
+        {
+            string workflowPath = FindWorkflowPath();
+            string content = File.ReadAllText(workflowPath);
+
+            Assert(content.Contains("ubuntu-latest"), "Workflow matrix must include ubuntu-latest");
+            Assert(content.Contains("windows-latest"), "Workflow matrix must include windows-latest");
+            Assert(content.Contains("runs-on: ${{ matrix.os }}"), "Workflow must run across ${{ matrix.os }}");
+            Assert(content.Contains("shell: bash"), "Workflow must set shell: bash so pipefail propagates non-zero exit codes across Linux and Windows");
+            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must explicitly verify net8.0-windows compilation and redirect output to /tmp/build-and-test.log");
+
+            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj", StringComparison.Ordinal);
+            int windowsBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows", StringComparison.Ordinal);
+            Assert(patcherBuildIndex != -1 && windowsBuildIndex != -1 && patcherBuildIndex < windowsBuildIndex,
+                "Workflow must build MSBuildDiagnosticPatcher before net8.0-windows verification step");
         }
 
         private static string FindWorkflowPath()

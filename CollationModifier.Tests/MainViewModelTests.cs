@@ -3595,6 +3595,228 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
+            string ResolveCollationModifierFilePath(params string[] relativeSegments)
+            {
+                var baseCandidates = new[]
+                {
+                    System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier"),
+                    System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier"),
+                    System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier")
+                };
+
+                foreach (var baseDir in baseCandidates)
+                {
+                    string candidate = System.IO.Path.GetFullPath(System.IO.Path.Combine(new[] { baseDir }.Concat(relativeSegments).ToArray()));
+                    if (System.IO.File.Exists(candidate))
+                    {
+                        return candidate;
+                    }
+                }
+
+                return System.IO.Path.GetFullPath(System.IO.Path.Combine(new[] { baseCandidates[0] }.Concat(relativeSegments).ToArray()));
+            }
+
+            RunSyncTest("CollationModifierCsproj_MultiTargetsNet80AndNet80Windows_WithEnableWindowsTargeting", () =>
+            {
+                string csprojPath = ResolveCollationModifierFilePath("CollationModifier.csproj");
+                Assert(System.IO.File.Exists(csprojPath), $"CollationModifier.csproj should exist at {csprojPath}");
+
+                string content = System.IO.File.ReadAllText(csprojPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var targetFrameworks = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "TargetFrameworks");
+                Assert(targetFrameworks != null, "CollationModifier.csproj must declare <TargetFrameworks>.");
+                var tfms = targetFrameworks!.Value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                Assert(tfms.Contains("net8.0"), "TargetFrameworks must include net8.0.");
+                Assert(tfms.Contains("net8.0-windows"), "TargetFrameworks must include net8.0-windows.");
+                Assert(!content.Contains(">net48<"), "CollationModifier.csproj must not target legacy net48.");
+
+                var enableWindowsTargeting = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "EnableWindowsTargeting");
+                Assert(enableWindowsTargeting != null && string.Equals(enableWindowsTargeting.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase),
+                    "CollationModifier.csproj must set <EnableWindowsTargeting>true</EnableWindowsTargeting>.");
+            });
+
+            RunSyncTest("CollationModifierCsproj_GuardsUseWpfOutputTypeAndXamlExclusions_ForWpfTempProject", () =>
+            {
+                string csprojPath = ResolveCollationModifierFilePath("CollationModifier.csproj");
+                Assert(System.IO.File.Exists(csprojPath), $"CollationModifier.csproj should exist at {csprojPath}");
+
+                var doc = System.Xml.Linq.XDocument.Parse(System.IO.File.ReadAllText(csprojPath));
+
+                var wpfTempProp = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "_WpfTempProject");
+                Assert(wpfTempProp != null, "CollationModifier.csproj must define <_WpfTempProject> for two-pass WPF markup compilation.");
+                Assert(wpfTempProp!.Attribute("Condition")?.Value.Contains("_wpftmp.csproj") == true,
+                    "_WpfTempProject condition must detect _wpftmp.csproj temporary markup projects.");
+
+                var useWpf = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "UseWPF");
+                Assert(useWpf != null && useWpf.Value.Trim() == "true", "CollationModifier.csproj must configure <UseWPF>true</UseWPF>.");
+                string useWpfCond = useWpf!.Attribute("Condition")?.Value ?? string.Empty;
+                Assert(useWpfCond.Contains("net8.0-windows") && useWpfCond.Contains("_WpfTempProject"),
+                    $"UseWPF condition must check net8.0-windows and _WpfTempProject, got '{useWpfCond}'");
+
+                var outputTypes = doc.Descendants().Where(e => e.Name.LocalName == "OutputType").ToList();
+                var winExeOutput = outputTypes.FirstOrDefault(e => e.Value.Trim() == "WinExe");
+                var libraryOutput = outputTypes.FirstOrDefault(e => e.Value.Trim() == "Library");
+                Assert(winExeOutput != null && (winExeOutput.Attribute("Condition")?.Value.Contains("_WpfTempProject") == true),
+                    "WinExe OutputType must account for net8.0-windows and _WpfTempProject.");
+                Assert(libraryOutput != null && (libraryOutput.Attribute("Condition")?.Value.Contains("_WpfTempProject") == true),
+                    "Library OutputType must exclude net8.0-windows and _WpfTempProject.");
+
+                var exclusionGroup = doc.Descendants()
+                    .Where(e => e.Name.LocalName == "ItemGroup" && e.Attribute("Condition") != null)
+                    .FirstOrDefault(g => g.Elements().Any(c => c.Name.LocalName == "Page" && c.Attribute("Remove") != null));
+                Assert(exclusionGroup != null, "CollationModifier.csproj must guard XAML/code-behind removals in a conditional ItemGroup.");
+                string exclusionCond = exclusionGroup!.Attribute("Condition")!.Value;
+                Assert(exclusionCond.Contains("net8.0-windows") && exclusionCond.Contains("_WpfTempProject"),
+                    $"XAML exclusion ItemGroup condition must check net8.0-windows and _WpfTempProject, got '{exclusionCond}'");
+            });
+
+            RunSyncTest("MainWindowXaml_WindowResources_DeclaredBeforeDataContextAndStaticResourceLookups", () =>
+            {
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml should exist at {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var rootChildren = doc.Root!.Elements().ToList();
+
+                int resourcesElemIndex = rootChildren.FindIndex(e => e.Name.LocalName == "Window.Resources");
+                int dataContextElemIndex = rootChildren.FindIndex(e => e.Name.LocalName == "Window.DataContext");
+                int gridElemIndex = rootChildren.FindIndex(e => e.Name.LocalName == "Grid");
+
+                Assert(resourcesElemIndex >= 0, "MainWindow.xaml must declare <Window.Resources>.");
+                Assert(dataContextElemIndex >= 0, "MainWindow.xaml must declare <Window.DataContext>.");
+                Assert(gridElemIndex >= 0, "MainWindow.xaml must declare root <Grid>.");
+                Assert(resourcesElemIndex < dataContextElemIndex, "<Window.Resources> must appear before <Window.DataContext>.");
+                Assert(dataContextElemIndex < gridElemIndex, "<Window.DataContext> must appear before <Grid>.");
+
+                var converterElem = rootChildren[resourcesElemIndex].Elements()
+                    .FirstOrDefault(e => e.Name.LocalName == "BooleanToVisibilityConverter");
+                Assert(converterElem != null, "<Window.Resources> must declare BooleanToVisibilityConverter.");
+
+                int resourcesTextIndex = content.IndexOf("<Window.Resources>", StringComparison.Ordinal);
+                int firstStaticResourceLookup = content.IndexOf("StaticResource BooleanToVisibilityConverter", StringComparison.Ordinal);
+                Assert(firstStaticResourceLookup > resourcesTextIndex,
+                    "Window.Resources must precede all StaticResource BooleanToVisibilityConverter lookups.");
+            });
+
+            RunSyncTest("MainWindowXaml_ProcessCollationChangeButton_ReplacesDescribedByWithHelpTextWarningBinding", () =>
+            {
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml should exist at {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                Assert(!content.Contains("AutomationProperties.DescribedBy"),
+                    "MainWindow.xaml must not contain invalid AutomationProperties.DescribedBy.");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var processButton = doc.Descendants()
+                    .FirstOrDefault(e => e.Name.LocalName == "Button" && e.Attribute("Content")?.Value == "Process Collation Change");
+                Assert(processButton != null, "MainWindow.xaml must declare the 'Process Collation Change' Button.");
+
+                string? helpTextAttr = processButton!.Attribute("AutomationProperties.HelpText")?.Value;
+                Assert(!string.IsNullOrWhiteSpace(helpTextAttr),
+                    "Process Collation Change Button must set AutomationProperties.HelpText.");
+                Assert(helpTextAttr!.Contains("Binding") && helpTextAttr.Contains("ElementName=lblWarning") && helpTextAttr.Contains("Text"),
+                    $"Process Collation Change Button HelpText must bind to lblWarning Text, got '{helpTextAttr}'");
+
+                var lblWarning = doc.Descendants()
+                    .FirstOrDefault(e => e.Name.LocalName == "TextBlock" &&
+                        e.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "lblWarning"));
+                Assert(lblWarning != null, "MainWindow.xaml must preserve lblWarning TextBlock.");
+                Assert(lblWarning!.Attribute("Text")?.Value.Contains("SINGLE_USER") == true,
+                    "lblWarning TextBlock must preserve SINGLE_USER warning text.");
+            });
+
+            RunSyncTest("MainViewModel_PreprocessorGuards_IncludeWindowsForRequeryAndModalDialogs", () =>
+            {
+                string vmPath = ResolveCollationModifierFilePath("ViewModels", "MainViewModel.cs");
+                Assert(System.IO.File.Exists(vmPath), $"MainViewModel.cs should exist at {vmPath}");
+
+                string code = System.IO.File.ReadAllText(vmPath);
+                var ifLines = code.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+                    .Select(l => l.Trim())
+                    .Where(l => l.StartsWith("#if ", StringComparison.Ordinal))
+                    .ToList();
+
+                Assert(ifLines.Count == 3, $"Expected 3 #if guards in MainViewModel.cs, found {ifLines.Count}");
+                Assert(ifLines.All(l => l == "#if NETFRAMEWORK || WINDOWS"),
+                    $"All #if guards in MainViewModel.cs must be '#if NETFRAMEWORK || WINDOWS', got: {string.Join(", ", ifLines)}");
+                Assert(code.Contains("StringComparison.OrdinalIgnoreCase"),
+                    "MainViewModel.cs must preserve String.Contains(..., StringComparison.OrdinalIgnoreCase).");
+            });
+
+            RunSyncTest("RelayCommand_CanExecuteChanged_IncludesWindowsInPreprocessorGuards", () =>
+            {
+                string rcPath = ResolveCollationModifierFilePath("ViewModels", "RelayCommand.cs");
+                Assert(System.IO.File.Exists(rcPath), $"RelayCommand.cs should exist at {rcPath}");
+
+                string code = System.IO.File.ReadAllText(rcPath);
+                var ifLines = code.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+                    .Select(l => l.Trim())
+                    .Where(l => l.StartsWith("#if ", StringComparison.Ordinal))
+                    .ToList();
+
+                Assert(ifLines.Count == 2, $"Expected 2 #if guards in RelayCommand.cs, found {ifLines.Count}");
+                Assert(ifLines.All(l => l == "#if NETFRAMEWORK || WINDOWS"),
+                    $"All #if guards in RelayCommand.cs must be '#if NETFRAMEWORK || WINDOWS', got: {string.Join(", ", ifLines)}");
+            });
+
+            RunSyncTest("CompiledTargets_VerifyNet80HeadlessIsolation_AndNet80WindowsWpfArtifacts", () =>
+            {
+                // 1. Verify the assembly loaded by CollationModifier.Tests (net8.0) has no WPF dependencies
+                var headlessAsm = typeof(MainViewModel).Assembly;
+                var referencedNames = headlessAsm.GetReferencedAssemblies().Select(a => a.Name).ToList();
+                Assert(!referencedNames.Contains("PresentationCore"),
+                    "Headless net8.0 CollationModifier assembly must not reference PresentationCore.");
+                Assert(!referencedNames.Contains("PresentationFramework"),
+                    "Headless net8.0 CollationModifier assembly must not reference PresentationFramework.");
+                Assert(headlessAsm.GetType("CollationModifier.MainWindow") == null,
+                    "Headless net8.0 CollationModifier assembly must exclude MainWindow WPF view.");
+
+                // 2. When net8.0-windows output is built on disk, inspect its PE/CLI metadata without loading PresentationCore
+                string winDebugDll = ResolveCollationModifierFilePath("bin", "Debug", "net8.0-windows", "CollationModifier.dll");
+                string winReleaseDll = ResolveCollationModifierFilePath("bin", "Release", "net8.0-windows", "CollationModifier.dll");
+                string? winDllPath = System.IO.File.Exists(winDebugDll) ? winDebugDll : (System.IO.File.Exists(winReleaseDll) ? winReleaseDll : null);
+
+                if (winDllPath != null)
+                {
+                    using var stream = System.IO.File.OpenRead(winDllPath);
+                    using var peReader = new System.Reflection.PortableExecutable.PEReader(stream);
+                    var metadataReader = System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader(peReader);
+
+                    var definedTypes = metadataReader.TypeDefinitions
+                        .Select(h =>
+                        {
+                            var td = metadataReader.GetTypeDefinition(h);
+                            string ns = metadataReader.GetString(td.Namespace);
+                            string name = metadataReader.GetString(td.Name);
+                            return string.IsNullOrEmpty(ns) ? name : $"{ns}.{name}";
+                        })
+                        .ToHashSet(StringComparer.Ordinal);
+
+                    Assert(definedTypes.Contains("CollationModifier.App"), "net8.0-windows assembly must contain CollationModifier.App.");
+                    Assert(definedTypes.Contains("CollationModifier.MainWindow"), "net8.0-windows assembly must contain CollationModifier.MainWindow.");
+                    Assert(definedTypes.Contains("CollationModifier.ErrorDetailsWindow"), "net8.0-windows assembly must contain CollationModifier.ErrorDetailsWindow.");
+
+                    var manifestResources = metadataReader.ManifestResources
+                        .Select(h => metadataReader.GetString(metadataReader.GetManifestResource(h).Name))
+                        .ToList();
+                    Assert(manifestResources.Contains("CollationModifier.g.resources"),
+                        "net8.0-windows assembly must embed compiled BAML resources in CollationModifier.g.resources.");
+
+                    var memberRefs = metadataReader.MemberReferences
+                        .Select(h => metadataReader.GetString(metadataReader.GetMemberReference(h).Name))
+                        .ToHashSet(StringComparer.Ordinal);
+                    Assert(memberRefs.Contains("InvalidateRequerySuggested"),
+                        "net8.0-windows assembly must compile CommandManager.InvalidateRequerySuggested calls under WINDOWS symbol.");
+                    Assert(memberRefs.Contains("add_RequerySuggested") && memberRefs.Contains("remove_RequerySuggested"),
+                        "net8.0-windows assembly must compile CommandManager.RequerySuggested event subscriptions under WINDOWS symbol.");
+                    Assert(memberRefs.Contains("ShowDialog") && memberRefs.Contains("Show"),
+                        "net8.0-windows assembly must compile WPF ShowDialog and MessageBox.Show handlers under WINDOWS symbol.");
+                }
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             if (failed > 0)
             {
