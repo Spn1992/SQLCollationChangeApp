@@ -17,14 +17,15 @@ namespace MSBuildDiagnosticPatcher.Reporting
 
         public string GenerateMarkdownReport(DiagnosticReport report)
         {
+            var (errorCount, warningCount) = report.GetSeverityCounts();
             var sb = new StringBuilder();
             sb.AppendLine("# MSBuild Log Diagnostic Report");
             sb.AppendLine();
             sb.AppendLine($"- **Source Log**: `{report.SourceLogPath}`");
             sb.AppendLine($"- **Generated At**: `{report.GeneratedAt:yyyy-MM-dd HH:mm:ss} UTC`");
             sb.AppendLine($"- **Parse Duration**: `{report.ParseDuration.TotalMilliseconds:F1} ms`");
-            sb.AppendLine($"- **Roslyn Errors**: `{report.ErrorCount}`");
-            sb.AppendLine($"- **Roslyn Warnings**: `{report.WarningCount}`");
+            sb.AppendLine($"- **Roslyn Errors**: `{errorCount}`");
+            sb.AppendLine($"- **Roslyn Warnings**: `{warningCount}`");
             sb.AppendLine($"- **Failed Tests**: `{report.FailureCount}`");
             sb.AppendLine($"- **Candidate Patches**: `{report.PatchCount}`");
             sb.AppendLine();
@@ -125,23 +126,28 @@ namespace MSBuildDiagnosticPatcher.Reporting
 
         public void PrintConsoleSummary(DiagnosticReport report)
         {
+            var (errorCount, warningCount) = report.GetSeverityCounts();
+
             Console.WriteLine("=================================================");
             Console.WriteLine(" MSBuild Log Diagnostic & Patch Generator Report");
             Console.WriteLine("=================================================");
             Console.WriteLine($" Source Log:       {report.SourceLogPath}");
             Console.WriteLine($" Parse Duration:   {report.ParseDuration.TotalMilliseconds:F1} ms");
-            Console.WriteLine($" Compiler Errors:  {report.ErrorCount}");
-            Console.WriteLine($" Compiler Warnings:{report.WarningCount}");
+            Console.WriteLine($" Compiler Errors:  {errorCount}");
+            Console.WriteLine($" Compiler Warnings:{warningCount}");
             Console.WriteLine($" Test Failures:    {report.FailureCount}");
             Console.WriteLine($" Patches Created:  {report.PatchCount}");
             Console.WriteLine("-------------------------------------------------");
 
-            if (report.ErrorCount > 0)
+            if (errorCount > 0)
             {
                 Console.WriteLine("\n[Compiler Errors]");
-                foreach (var err in report.Diagnostics.FindAll(d => d.Severity == DiagnosticSeverity.Error))
+                foreach (var err in report.Diagnostics)
                 {
-                    Console.WriteLine($"  [{err.Code}] {err.FilePath}({err.LineNumber},{err.ColumnNumber}): {err.Message}");
+                    if (err.Severity == DiagnosticSeverity.Error)
+                    {
+                        Console.WriteLine($"  [{err.Code}] {err.FilePath}({err.LineNumber},{err.ColumnNumber}): {err.Message}");
+                    }
                 }
             }
 
