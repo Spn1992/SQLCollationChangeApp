@@ -68,6 +68,10 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
+            RunTest("PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot", Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot);
+            RunTest("PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath", Test_PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath);
+            RunTest("PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing", Test_PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing);
+            RunTest("Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags", Test_Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -1016,6 +1020,362 @@ public class SqlWorker : ISqlWorker
             finally
             {
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot()
+        {
+            string originalCwd = Directory.GetCurrentDirectory();
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_proj_rel_{Guid.NewGuid():N}");
+            string outsideCwd = Path.Combine(Path.GetTempPath(), $"patch_outside_cwd_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
+            Directory.CreateDirectory(outsideCwd);
+
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(tempRoot, ".git"));
+                string contractsDir = Path.Combine(tempRoot, "Contracts");
+                string projectDir = Path.Combine(tempRoot, "CollationModifier");
+                string servicesDir = Path.Combine(projectDir, "Services");
+                Directory.CreateDirectory(contractsDir);
+                Directory.CreateDirectory(servicesDir);
+
+                string csprojPath = Path.Combine(projectDir, "CollationModifier.csproj");
+                File.WriteAllText(csprojPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+                // Place interface in sibling Contracts/ folder so FindRepoRoot(targetFilePath) is required when projectRoot is unset
+                File.WriteAllText(Path.Combine(contractsDir, "IRemoteCatalog.cs"), @"
+public interface IRemoteCatalog
+{
+    Task<IReadOnlyList<string>> FetchEntriesAsync(string filter, CancellationToken cancellationToken = default);
+}
+");
+
+                string implPath = Path.Combine(servicesDir, "RemoteCatalog.cs");
+                File.WriteAllText(implPath, @"
+public class RemoteCatalog : IRemoteCatalog
+{
+}
+");
+
+                Directory.SetCurrentDirectory(outsideCwd);
+                var parser = new MSBuildLogParser();
+
+                // 1. Rooted ProjectPath with unset projectRoot (CWD outside repo)
+                string rootedProjLog = $"Services/RemoteCatalog.cs(2,14): error CS0535: 'RemoteCatalog' does not implement interface member 'IRemoteCatalog.FetchEntriesAsync(string, CancellationToken)' [{csprojPath}]";
+                var rootedProjDiags = parser.ParseText(rootedProjLog);
+                Assert(rootedProjDiags.Count == 1, "Expected 1 parsed diagnostic for rooted ProjectPath log");
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patchesUnsetRoot = generator.GeneratePatches(rootedProjDiags);
+                Assert(patchesUnsetRoot.Count == 1, $"Expected 1 patch when projectRoot is unset, got {patchesUnsetRoot.Count}");
+                Assert(Path.GetFullPath(patchesUnsetRoot[0].TargetFilePath) == Path.GetFullPath(implPath),
+                    $"Expected TargetFilePath '{implPath}', got '{patchesUnsetRoot[0].TargetFilePath}'");
+                Assert(patchesUnsetRoot[0].UnifiedDiff.Contains("Task<IReadOnlyList<string>> FetchEntriesAsync(string filter, CancellationToken cancellationToken = default)"),
+                    $"Expected interface signature from repo root Contracts/, got:\n{patchesUnsetRoot[0].UnifiedDiff}");
+                Assert(patchesUnsetRoot[0].UnifiedDiff.Contains("--- a/CollationModifier/Services/RemoteCatalog.cs"),
+                    $"Expected repo-relative diff header, got:\n{patchesUnsetRoot[0].UnifiedDiff}");
+
+                // 2. Relative ProjectPath resolved against explicit root
+                string relProjLog = "Services/RemoteCatalog.cs(2,14): error CS0535: 'RemoteCatalog' does not implement interface member 'IRemoteCatalog.FetchEntriesAsync(string, CancellationToken)' [CollationModifier/CollationModifier.csproj]";
+                var relProjDiags = parser.ParseText(relProjLog);
+                var patchesRelProj = new PatchGenerator(new InterfaceDefinitionResolver()).GeneratePatches(relProjDiags, tempRoot);
+                Assert(patchesRelProj.Count == 1, $"Expected 1 patch for relative ProjectPath, got {patchesRelProj.Count}");
+                Assert(Path.GetFullPath(patchesRelProj[0].TargetFilePath) == Path.GetFullPath(implPath),
+                    $"Expected TargetFilePath '{implPath}', got '{patchesRelProj[0].TargetFilePath}'");
+
+                // 3. Unset projectRoot without .git directory falls back to project directory for interface lookup
+                Directory.Delete(Path.Combine(tempRoot, ".git"), true);
+                string abstractionsDir = Path.Combine(projectDir, "Abstractions");
+                string nestedImplDir = Path.Combine(projectDir, "Impl", "Nested");
+                Directory.CreateDirectory(abstractionsDir);
+                Directory.CreateDirectory(nestedImplDir);
+
+                File.WriteAllText(Path.Combine(abstractionsDir, "ILocalRule.cs"), @"
+public interface ILocalRule
+{
+    bool ValidateRule(string inputCode);
+}
+");
+                string nestedImplPath = Path.Combine(nestedImplDir, "LocalRule.cs");
+                File.WriteAllText(nestedImplPath, @"
+public class LocalRule : ILocalRule
+{
+}
+");
+                string noGitLog = $"Impl/Nested/LocalRule.cs(2,14): error CS0535: 'LocalRule' does not implement interface member 'ILocalRule.ValidateRule(string)' [{csprojPath}]";
+                var noGitDiags = parser.ParseText(noGitLog);
+                var noGitPatches = new PatchGenerator(new InterfaceDefinitionResolver()).GeneratePatches(noGitDiags);
+                Assert(noGitPatches.Count == 1, $"Expected 1 patch using project directory search root without .git, got {noGitPatches.Count}");
+                Assert(noGitPatches[0].UnifiedDiff.Contains("public virtual bool ValidateRule(string inputCode)"),
+                    $"Expected bool ValidateRule(string inputCode) resolved from project directory, got:\n{noGitPatches[0].UnifiedDiff}");
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(originalCwd);
+                if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
+                if (Directory.Exists(outsideCwd)) Directory.Delete(outsideCwd, true);
+            }
+        }
+
+        static void Test_PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath()
+        {
+            string solutionRoot = Path.Combine(Path.GetTempPath(), $"patch_multiproj_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(solutionRoot);
+
+            try
+            {
+                string projADir = Path.Combine(solutionRoot, "ProjectAlpha", "Services");
+                string projBDir = Path.Combine(solutionRoot, "ProjectBeta", "Services");
+                Directory.CreateDirectory(projADir);
+                Directory.CreateDirectory(projBDir);
+
+                File.WriteAllText(Path.Combine(projADir, "ISyncAgent.cs"), @"
+public interface ISyncAgent
+{
+    Task<int> RunBatchAsync(string batchId);
+}
+");
+                string workerA = Path.Combine(projADir, "SyncAgent.cs");
+                File.WriteAllText(workerA, @"
+public class SyncAgent : ISyncAgent
+{
+}
+");
+
+                File.WriteAllText(Path.Combine(projBDir, "ISyncAgent.cs"), @"
+public interface ISyncAgent
+{
+    Task<bool> VerifyChecksumAsync(string batchId);
+}
+");
+                string workerB = Path.Combine(projBDir, "SyncAgent.cs");
+                File.WriteAllText(workerB, @"
+public class SyncAgent : ISyncAgent
+{
+}
+");
+
+                string multiProjLog = @"
+Services/SyncAgent.cs(2,14): error CS0535: 'SyncAgent' does not implement interface member 'ISyncAgent.RunBatchAsync(string)' [ProjectAlpha/ProjectAlpha.csproj]
+Services/SyncAgent.cs(2,14): error CS0535: 'SyncAgent' does not implement interface member 'ISyncAgent.VerifyChecksumAsync(string)' [ProjectBeta/ProjectBeta.csproj]
+";
+
+                var diagnostics = new MSBuildLogParser().ParseText(multiProjLog);
+                Assert(diagnostics.Count == 2, $"Expected 2 diagnostics, got {diagnostics.Count}");
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, solutionRoot);
+                Assert(patches.Count == 2, $"Expected 2 separate patches for ProjectAlpha and ProjectBeta, got {patches.Count}");
+
+                var patchA = patches.FirstOrDefault(p => Path.GetFullPath(p.TargetFilePath) == Path.GetFullPath(workerA));
+                var patchB = patches.FirstOrDefault(p => Path.GetFullPath(p.TargetFilePath) == Path.GetFullPath(workerB));
+                Assert(patchA != null, "Expected patch targeting ProjectAlpha/Services/SyncAgent.cs");
+                Assert(patchB != null, "Expected patch targeting ProjectBeta/Services/SyncAgent.cs");
+                Assert(patchA!.UnifiedDiff.Contains("Task<int> RunBatchAsync(string batchId)"), $"Expected ProjectAlpha method signature, got:\n{patchA.UnifiedDiff}");
+                Assert(patchB!.UnifiedDiff.Contains("Task<bool> VerifyChecksumAsync(string batchId)"), $"Expected ProjectBeta method signature, got:\n{patchB.UnifiedDiff}");
+            }
+            finally
+            {
+                if (Directory.Exists(solutionRoot)) Directory.Delete(solutionRoot, true);
+            }
+        }
+
+        static void Test_PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing()
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_root_fallback_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
+
+            try
+            {
+                string subServicesDir = Path.Combine(tempRoot, "SubModule", "Services");
+                Directory.CreateDirectory(subServicesDir);
+
+                File.WriteAllText(Path.Combine(subServicesDir, "IAuditSink.cs"), @"
+public interface IAuditSink
+{
+    void WriteEntry(string category);
+    void FlushEntries();
+}
+");
+                string targetFile = Path.Combine(subServicesDir, "AuditSink.cs");
+                File.WriteAllText(targetFile, @"
+public class AuditSink : IAuditSink
+{
+}
+");
+
+                // 1. Empty ProjectPath falls back to root
+                var emptyProjDiags = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = "SubModule/Services/AuditSink.cs",
+                        ProjectPath = string.Empty,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'AuditSink' does not implement interface member 'IAuditSink.WriteEntry(string)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patchesEmptyProj = generator.GeneratePatches(emptyProjDiags, tempRoot);
+                Assert(patchesEmptyProj.Count == 1, $"Expected 1 patch when ProjectPath is empty, got {patchesEmptyProj.Count}");
+                Assert(Path.GetFullPath(patchesEmptyProj[0].TargetFilePath) == Path.GetFullPath(targetFile),
+                    $"Expected fallback to root file '{targetFile}', got '{patchesEmptyProj[0].TargetFilePath}'");
+
+                // 2. Non-empty ProjectPath where FilePath is already root-relative (SubModule/SubModule/Services/AuditSink.cs missing -> falls back to root)
+                var rootRelWithProjDiags = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = "SubModule/Services/AuditSink.cs",
+                        ProjectPath = "SubModule/SubModule.csproj",
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'AuditSink' does not implement interface member 'IAuditSink.FlushEntries()'"
+                    }
+                };
+
+                var patchesFallback = generator.GeneratePatches(rootRelWithProjDiags, tempRoot);
+                Assert(patchesFallback.Count == 1, $"Expected 1 patch when project candidate is missing and root candidate exists, got {patchesFallback.Count}");
+                Assert(patchesFallback[0].UnifiedDiff.Contains("public virtual void FlushEntries()"),
+                    $"Expected FlushEntries stub in diff, got:\n{patchesFallback[0].UnifiedDiff}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
+            }
+        }
+
+        static void Test_Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags()
+        {
+            string originalCwd = Directory.GetCurrentDirectory();
+            string outsideCwd = Path.Combine(Path.GetTempPath(), $"launcher_outside_{Guid.NewGuid():N}");
+            string customProjectRoot = Path.Combine(Path.GetTempPath(), $"launcher_custom_proj_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(outsideCwd);
+            Directory.CreateDirectory(customProjectRoot);
+
+            try
+            {
+                string launcherPath = FindLauncherScriptPath();
+                string cmdLauncherPath = FindLauncherCmdPath();
+                string repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(launcherPath)!, ".."));
+
+                string bashContent = File.ReadAllText(launcherPath);
+                Assert(bashContent.Contains("--project-root \"$REPO_ROOT\""), "bin/msbuild-patcher must forward --project-root \"$REPO_ROOT\"");
+
+                string cmdContent = File.ReadAllText(cmdLauncherPath);
+                Assert(cmdContent.Contains("setlocal"), "bin/msbuild-patcher.cmd must use setlocal");
+                Assert(cmdContent.Contains("--project-root \"%REPO_ROOT%\""), "bin/msbuild-patcher.cmd must forward --project-root \"%REPO_ROOT%\"");
+
+                Directory.SetCurrentDirectory(outsideCwd);
+
+                // 1. Program.Main detects -h/--help after wrapper --project-root flag without creating output dir
+                int helpShortExit = MSBuildDiagnosticPatcher.Program.Main(new[] { "--project-root", repoRoot, "-h" });
+                int helpLongExit = MSBuildDiagnosticPatcher.Program.Main(new[] { "--project-root", repoRoot, "--help" });
+                Assert(helpShortExit == 0, $"Expected exit code 0 for -h after --project-root, got {helpShortExit}");
+                Assert(helpLongExit == 0, $"Expected exit code 0 for --help after --project-root, got {helpLongExit}");
+                Assert(!Directory.Exists(Path.Combine(outsideCwd, "build-diagnostics")),
+                    "Help invocation must not create build-diagnostics directory");
+
+                // 2. Execute launcher process from outside REPO_ROOT
+                (int ExitCode, string Output) RunLauncher(params string[] launcherArgs)
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        WorkingDirectory = outsideCwd,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    if (OperatingSystem.IsWindows())
+                    {
+                        psi.FileName = "cmd.exe";
+                        string quotedArgs = string.Join(" ", launcherArgs.Select(a => $"\"{a}\""));
+                        psi.Arguments = launcherArgs.Length == 0
+                            ? $"/c \"\"{cmdLauncherPath}\"\""
+                            : $"/c \"\"{cmdLauncherPath}\" {quotedArgs}\"";
+                    }
+                    else
+                    {
+                        psi.FileName = "bash";
+                        psi.ArgumentList.Add(launcherPath);
+                        foreach (var arg in launcherArgs)
+                        {
+                            psi.ArgumentList.Add(arg);
+                        }
+                    }
+
+                    using var proc = Process.Start(psi)!;
+                    string stdout = proc.StandardOutput.ReadToEnd();
+                    string stderr = proc.StandardError.ReadToEnd();
+                    proc.WaitForExit();
+                    return (proc.ExitCode, stdout + "\n" + stderr);
+                }
+
+                // 2a. Empty arguments invocation prints help and returns 0
+                var emptyRun = RunLauncher();
+                Assert(emptyRun.ExitCode == 0, $"Expected exit code 0 for empty-arg launcher run, got {emptyRun.ExitCode}:\n{emptyRun.Output}");
+                Assert(emptyRun.Output.Contains("Usage:"), $"Expected help output for empty-arg launcher run, got:\n{emptyRun.Output}");
+
+                // 2b. -h invocation through launcher prints help and returns 0
+                var helpRun = RunLauncher("-h");
+                Assert(helpRun.ExitCode == 0, $"Expected exit code 0 for -h launcher run, got {helpRun.ExitCode}:\n{helpRun.Output}");
+                Assert(helpRun.Output.Contains("Usage:"), $"Expected help output for -h launcher run, got:\n{helpRun.Output}");
+
+                // 2c. Outside-root invocation resolves repo project-relative CS0535 log via default REPO_ROOT while writing output to CWD
+                string repoRelativeLog = Path.Combine(outsideCwd, "repo_rel.log");
+                File.WriteAllText(repoRelativeLog,
+                    "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.AlterCollationAsync(string, string, CancellationToken)' [CollationModifier/CollationModifier.csproj]\n");
+
+                var repoRelRun = RunLauncher(repoRelativeLog);
+                Assert(repoRelRun.ExitCode == 1, $"Expected exit code 1 without -a when error is unpatched, got {repoRelRun.ExitCode}:\n{repoRelRun.Output}");
+
+                string generatedPatchPath = Path.Combine(outsideCwd, "build-diagnostics", "DatabaseService.patch");
+                Assert(File.Exists(generatedPatchPath),
+                    $"Expected patch written under outside CWD at '{generatedPatchPath}'. Output:\n{repoRelRun.Output}");
+                string patchContent = File.ReadAllText(generatedPatchPath);
+                Assert(patchContent.Contains("AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)"),
+                    $"Expected IDatabaseService.AlterCollationAsync signature resolved from REPO_ROOT, got:\n{patchContent}");
+
+                Directory.Delete(Path.Combine(outsideCwd, "build-diagnostics"), true);
+
+                // 2d. Explicit -p overrides launcher's --project-root default while outputDir still defaults to outsideCwd/build-diagnostics
+                File.WriteAllText(Path.Combine(customProjectRoot, "ICustomTask.cs"), @"
+public interface ICustomTask
+{
+    string ExecuteCustom(int retries);
+}
+");
+                string customClassFile = Path.Combine(customProjectRoot, "CustomTask.cs");
+                File.WriteAllText(customClassFile, @"
+public class CustomTask : ICustomTask
+{
+}
+");
+                string customLog = Path.Combine(outsideCwd, "custom_proj.log");
+                File.WriteAllText(customLog,
+                    "CustomTask.cs(2,14): error CS0535: 'CustomTask' does not implement interface member 'ICustomTask.ExecuteCustom(int)'\n");
+
+                var overrideRun = RunLauncher(customLog, "-p", customProjectRoot, "-a", "-y");
+                Assert(overrideRun.ExitCode == 0, $"Expected exit code 0 when explicit -p remedies custom project error, got {overrideRun.ExitCode}:\n{overrideRun.Output}");
+                Assert(File.ReadAllText(customClassFile).Contains("public virtual string ExecuteCustom(int retries)"),
+                    "Expected CustomTask.cs in customProjectRoot to be patched via -p override");
+                Assert(File.Exists(Path.Combine(outsideCwd, "build-diagnostics", "diagnostic-report.json")),
+                    "Expected diagnostic-report.json in outsideCwd/build-diagnostics when -o is omitted");
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(originalCwd);
+                if (Directory.Exists(outsideCwd)) Directory.Delete(outsideCwd, true);
+                if (Directory.Exists(customProjectRoot)) Directory.Delete(customProjectRoot, true);
             }
         }
 
