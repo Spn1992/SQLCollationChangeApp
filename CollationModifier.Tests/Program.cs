@@ -116,6 +116,39 @@ namespace CollationModifier.Tests
                 failed++;
             }
 
+            try
+            {
+                await TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry();
+                Console.WriteLine("PASS: TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                await TestStalledWorkerFlushThenDisposeWaitsOnce();
+                Console.WriteLine("PASS: TestStalledWorkerFlushThenDisposeWaitsOnce");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestStalledWorkerFlushThenDisposeWaitsOnce - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestFlushShortCircuitsWhenWorkerAlreadyComplete();
+                Console.WriteLine("PASS: TestFlushShortCircuitsWhenWorkerAlreadyComplete");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestFlushShortCircuitsWhenWorkerAlreadyComplete - {ex}");
+                failed++;
+            }
+
             Console.WriteLine("\n=== Running DatabaseService MapDatabaseInfo Unit Tests ===");
             try
             {
@@ -392,6 +425,108 @@ namespace CollationModifier.Tests
             }
         }
 
+
+        static async Task TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry()
+        {
+            string baseDir = Path.Combine(Path.GetTempPath(), $"logger_lazy_dir_{Guid.NewGuid():N}");
+            string nestedDir = Path.Combine(baseDir, "nested");
+            string testLogPath = Path.Combine(nestedDir, "lazy_log.txt");
+
+            try
+            {
+                Assert(!Directory.Exists(baseDir), "Base test directory should not exist before constructing LoggerService.");
+
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    await Task.Delay(100);
+                    Assert(!Directory.Exists(baseDir), "Constructing LoggerService must not create the log directory before logging.");
+                    Assert(!Directory.Exists(nestedDir), "Constructing LoggerService must not create nested log directory before logging.");
+                    Assert(!File.Exists(testLogPath), "Constructing LoggerService must not create the log file before logging.");
+
+                    logger.LogInfo("First log entry triggers lazy directory creation");
+                }
+
+                Assert(Directory.Exists(nestedDir), "Background worker should create the log directory when writing the first log entry.");
+                Assert(File.Exists(testLogPath), "Log file should exist after writing and disposing.");
+                string content = File.ReadAllText(testLogPath);
+                Assert(content.Contains("First log entry triggers lazy directory creation"), "Log file should contain the written log entry.");
+            }
+            finally
+            {
+                if (Directory.Exists(baseDir))
+                {
+                    Directory.Delete(baseDir, recursive: true);
+                }
+            }
+        }
+
+        static async Task TestStalledWorkerFlushThenDisposeWaitsOnce()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_stalled_{Guid.NewGuid():N}.txt");
+            var workerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseWorker = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            try
+            {
+                var logger = new LoggerService(testLogPath, async reader =>
+                {
+                    workerStarted.TrySetResult(true);
+                    await reader.WaitToReadAsync().ConfigureAwait(false);
+                    await releaseWorker.Task.ConfigureAwait(false);
+                });
+
+                await workerStarted.Task;
+                logger.LogInfo("Stalled queue entry");
+
+                var timeout = TimeSpan.FromMilliseconds(200);
+                var sw = Stopwatch.StartNew();
+
+                logger.Flush(timeout);
+                logger.Dispose();
+                logger.Flush(timeout);
+
+                sw.Stop();
+                Console.WriteLine($"  [Timing] Flush(200ms) + Dispose() + Flush(200ms) on stalled worker elapsed: {sw.ElapsedMilliseconds} ms");
+
+                Assert(sw.ElapsedMilliseconds >= 150, $"Expected initial Flush to wait near {timeout.TotalMilliseconds}ms, but elapsed was {sw.ElapsedMilliseconds}ms.");
+                Assert(sw.ElapsedMilliseconds < 380, $"Expected Flush then Dispose to wait for one timeout instead of two (or 5s), but elapsed was {sw.ElapsedMilliseconds}ms.");
+                Assert(logger.IsDisposed, "Logger should be marked disposed after Dispose().");
+            }
+            finally
+            {
+                releaseWorker.TrySetResult(true);
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
+
+        static void TestFlushShortCircuitsWhenWorkerAlreadyComplete()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_shortcircuit_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                using var logger = new LoggerService(testLogPath);
+                logger.LogInfo("Entry before initial flush");
+                logger.Flush();
+
+                var sw = Stopwatch.StartNew();
+                logger.Flush(TimeSpan.FromSeconds(5));
+                logger.Dispose();
+                sw.Stop();
+
+                Assert(sw.Elapsed.TotalMilliseconds < 25, $"Subsequent Flush/Dispose after completion should short-circuit immediately, took {sw.Elapsed.TotalMilliseconds:F2}ms.");
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
 
         static void Assert(bool condition, string message)
         {

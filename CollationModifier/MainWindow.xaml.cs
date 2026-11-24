@@ -1,15 +1,24 @@
+using System;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using CollationModifier.Services;
+using CollationModifier.ViewModels;
 
 namespace CollationModifier
 {
     public partial class MainWindow : Window
     {
         public MainWindow()
+            : this((Application.Current as App)?.Logger)
+        {
+        }
+
+        public MainWindow(LoggerService? logger)
         {
             InitializeComponent();
-            Closed += (s, e) => (DataContext as System.IDisposable)?.Dispose();
+            DataContext = new MainViewModel(logger: logger);
+            Closed += (s, e) => (DataContext as IDisposable)?.Dispose();
         }
 
         private void PasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
