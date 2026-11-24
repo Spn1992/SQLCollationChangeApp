@@ -84,8 +84,11 @@
                                    Foreground="#64748B" FontSize="16" />
                     </Border>
 
-                    <StackPanel IsEnabled="{Binding IsConnected}" AutomationProperties.Name="Database Operations">
-                        <Label Content="Database Operations" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level1" FontSize="20" Margin="0,0,0,24" />
+                    <ScrollViewer x:Name="OperationsScrollViewer"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel IsEnabled="{Binding IsConnected}" AutomationProperties.Name="Database Operations">
+                            <Label Content="Database Operations" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level1" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->
                         <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
@@ -174,10 +177,26 @@
                         </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                            <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0"
+                            <Button x:Name="btnRunPreflightCheck"
+                                    Content="Run Pre-flight Check"
+                                    Command="{Binding RunPreflightCheckCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    MinHeight="36"
+                                    Margin="0,0,12,0"
+                                    AutomationProperties.Name="Run Pre-flight Check"
+                                    AutomationProperties.HelpText="Run read-only pre-flight checks for active sessions, permissions, and schema dependencies without modifying the database"
+                                    ToolTip="Run read-only pre-flight checks without modifying the database" />
+                            <Button x:Name="btnProcessCollationChange"
+                                    Content="Process Collation Change"
+                                    Command="{Binding ProcessCommand}"
+                                    Style="{StaticResource PrimaryButton}"
+                                    MinHeight="36"
+                                    Margin="0,0,12,0"
+                                    AutomationProperties.Name="Process Collation Change"
                                     AutomationProperties.DescribedBy="{Binding ElementName=lblWarning}"
                                     AutomationProperties.HelpText="Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections" />
                             <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
+                                    MinHeight="36"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
                                     AutomationProperties.Name="Cancel Operation" />
                         </StackPanel>
@@ -187,8 +206,177 @@
                                    AutomationProperties.Name="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
                                    AutomationProperties.HelpText="Database single user mode operation warning message."
                                    AutomationProperties.LiveSetting="Assertive"
-                                   Foreground="#DC2626" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
-                    </StackPanel>
+                                   Foreground="{StaticResource StatusErrorBrush}" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
+
+                        <!-- Inline Pre-flight Readiness Card -->
+                        <Border x:Name="PreflightReadinessCard"
+                                Background="{StaticResource CardBackgroundBrush}"
+                                BorderBrush="{StaticResource InputRestingBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="20"
+                                Margin="0,16,0,0"
+                                Visibility="{Binding HasPreflightReport, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.Name="Pre-flight Readiness"
+                                AutomationProperties.HeadingLevel="Level2"
+                                AutomationProperties.LiveSetting="Polite">
+                            <StackPanel>
+                                <DockPanel LastChildFill="True">
+                                    <Border x:Name="PreflightStatusPill"
+                                            DockPanel.Dock="Right"
+                                            CornerRadius="4"
+                                            Padding="10,4"
+                                            VerticalAlignment="Center">
+                                        <Border.Style>
+                                            <Style TargetType="Border">
+                                                <Setter Property="Background" Value="{StaticResource StatusSuccessBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding CurrentPreflightReport.HasBlockingConditions}" Value="True">
+                                                        <Setter Property="Background" Value="{StaticResource StatusErrorBrush}" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Border.Style>
+                                        <TextBlock x:Name="PreflightStatusBadge"
+                                                   Foreground="#FFFFFF"
+                                                   FontWeight="Bold"
+                                                   FontSize="12"
+                                                   AutomationProperties.LiveSetting="Polite">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Text" Value="PASSED" />
+                                                    <Setter Property="AutomationProperties.Name" Value="Pre-flight status: PASSED" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CurrentPreflightReport.IsValid}" Value="True">
+                                                            <Setter Property="Text" Value="PASSED" />
+                                                            <Setter Property="AutomationProperties.Name" Value="Pre-flight status: PASSED" />
+                                                        </DataTrigger>
+                                                        <DataTrigger Binding="{Binding CurrentPreflightReport.HasBlockingConditions}" Value="True">
+                                                            <Setter Property="Text" Value="BLOCKED" />
+                                                            <Setter Property="AutomationProperties.Name" Value="Pre-flight status: BLOCKED" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                    </Border>
+
+                                    <Label x:Name="PreflightCardTitle"
+                                           Content="Pre-flight Readiness"
+                                           Style="{StaticResource CardHeader}"
+                                           AutomationProperties.HeadingLevel="Level2"
+                                           Foreground="{StaticResource CardPrimaryTextBrush}"
+                                           Margin="0"
+                                           Padding="0"
+                                           VerticalAlignment="Center" />
+                                </DockPanel>
+
+                                <TextBlock x:Name="PreflightSummaryText"
+                                           Text="{Binding CurrentPreflightReport.SummaryMessage}"
+                                           Foreground="{StaticResource CardSecondaryTextBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,8,0,0"
+                                           AutomationProperties.LiveSetting="Polite" />
+
+                                <!-- Passed Checks List -->
+                                <StackPanel x:Name="PreflightPassedSection"
+                                            Margin="0,12,0,0"
+                                            Visibility="{Binding CurrentPreflightReport.IsValid, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <ItemsControl x:Name="PassedChecksList" ItemsSource="{Binding CurrentPreflightReport.PassedChecks}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding Path=., StringFormat='• {0}'}"
+                                                           Foreground="{StaticResource StatusSuccessBrush}"
+                                                           TextWrapping="Wrap"
+                                                           Margin="4,2,0,2" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
+                                <!-- Categorized Blockers -->
+                                <StackPanel x:Name="PreflightBlockersSection"
+                                            Margin="0,12,0,0"
+                                            Visibility="{Binding CurrentPreflightReport.HasBlockingConditions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                    <StackPanel x:Name="ActiveSessionsGroup"
+                                                Margin="0,0,0,12"
+                                                Visibility="{Binding CurrentPreflightReport.HasActiveSessions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <TextBlock Text="{Binding CurrentPreflightReport.ActiveSessions.Count, StringFormat='Active User Sessions ({0})'}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource StatusErrorBrush}"
+                                                   Margin="0,0,0,4" />
+                                        <ItemsControl x:Name="ActiveSessionsList" ItemsSource="{Binding CurrentPreflightReport.ActiveSessions}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplaySummary, StringFormat='• {0}'}"
+                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="8,2,0,2" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <StackPanel x:Name="SchemaDependenciesGroup"
+                                                Margin="0,0,0,12"
+                                                Visibility="{Binding CurrentPreflightReport.HasSchemaDependencies, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <TextBlock Text="{Binding CurrentPreflightReport.SchemaDependencies.Count, StringFormat='Schema Dependencies ({0})'}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource StatusErrorBrush}"
+                                                   Margin="0,0,0,4" />
+                                        <ItemsControl x:Name="SchemaDependenciesList" ItemsSource="{Binding CurrentPreflightReport.SchemaDependencies}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding DisplaySummary, StringFormat='• {0}'}"
+                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="8,2,0,2" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <StackPanel x:Name="MissingPermissionsGroup"
+                                                Margin="0,0,0,12"
+                                                Visibility="{Binding CurrentPreflightReport.HasMissingPermissions, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <TextBlock Text="{Binding CurrentPreflightReport.MissingPermissions.Count, StringFormat='Missing Permissions ({0})'}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource StatusErrorBrush}"
+                                                   Margin="0,0,0,4" />
+                                        <ItemsControl x:Name="MissingPermissionsList" ItemsSource="{Binding CurrentPreflightReport.MissingPermissions}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Path=., StringFormat='• {0}'}"
+                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="8,2,0,2" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <StackPanel x:Name="ValidationErrorsGroup"
+                                                Visibility="{Binding CurrentPreflightReport.HasValidationErrors, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <TextBlock Text="{Binding CurrentPreflightReport.ValidationErrors.Count, StringFormat='Validation Errors ({0})'}"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource StatusErrorBrush}"
+                                                   Margin="0,0,0,4" />
+                                        <ItemsControl x:Name="ValidationErrorsList" ItemsSource="{Binding CurrentPreflightReport.ValidationErrors}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Path=., StringFormat='• {0}'}"
+                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
+                                                               TextWrapping="Wrap"
+                                                               Margin="8,2,0,2" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                        </StackPanel>
+                    </ScrollViewer>
                 </Grid>
             </Border>
         </Grid>

@@ -401,6 +401,8 @@ namespace CollationModifier.Services
 
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var report = new PreflightReport
             {
                 DatabaseName = databaseName
@@ -444,6 +446,10 @@ namespace CollationModifier.Services
                                 cachedCollations = _cachedSupportedCollations;
                             }
                         }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
                         catch (Exception ex)
                         {
                             _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
@@ -457,6 +463,10 @@ namespace CollationModifier.Services
                             report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
                         }
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -642,8 +652,19 @@ namespace CollationModifier.Services
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo($"Preflight check for {databaseName} was cancelled.");
+                throw;
+            }
             catch (Exception ex)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogInfo($"Preflight check for {databaseName} was cancelled.");
+                    throw new OperationCanceledException(cancellationToken);
+                }
+
                 _logger.LogError($"Preflight check failed for {databaseName}", ex);
                 report.ValidationErrors.Add($"Database connection or pre-flight query error: {ex.Message}");
             }

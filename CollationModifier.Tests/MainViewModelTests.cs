@@ -126,9 +126,23 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
+        public int PreflightCheckCount { get; private set; }
+        public string? LastPreflightDatabase { get; private set; }
+        public string? LastPreflightBackupDirectory { get; private set; }
+        public string? LastPreflightTargetCollation { get; private set; }
+        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
+
+        public async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
+            if (OnPreflightCheck != null)
+            {
+                await OnPreflightCheck(cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
+            PreflightCheckCount++;
+            LastPreflightDatabase = databaseName;
+            LastPreflightBackupDirectory = backupDirectory;
+            LastPreflightTargetCollation = targetCollation;
             PreflightReportToReturn.DatabaseName = databaseName;
             if (!string.IsNullOrEmpty(targetCollation))
             {
@@ -151,7 +165,7 @@ namespace CollationModifier.Tests
                     DatabaseService.EvaluateCollation(databaseName, currentCollation, targetCollation, PreflightReportToReturn);
                 }
             }
-            return Task.FromResult(PreflightReportToReturn);
+            return PreflightReportToReturn;
         }
 
         public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -3593,6 +3607,452 @@ namespace CollationModifier.Tests
                 Assert(isDefaultAttr != null, "btnConnect must declare IsDefault attribute.");
                 Assert(isDefaultAttr.Contains("CanEditConnectionParameters"),
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
+            });
+
+            RunSyncTest("RunPreflightCheckCommand_CanExecute_EnabledWhenConnectedIdleAndDatabaseSelected", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+                var db = new DatabaseInfo { Name = "AuditDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(db);
+
+                // Disconnected -> disabled
+                Assert(!vm.RunPreflightCheckCommand.CanExecute(null), "RunPreflightCheckCommand should be disabled when disconnected.");
+
+                // Connected, idle, no database selected -> disabled
+                vm.IsConnected = true;
+                Assert(!vm.RunPreflightCheckCommand.CanExecute(null), "RunPreflightCheckCommand should be disabled when no database is selected.");
+
+                // Connected, idle, database selected, empty TargetCollation -> enabled
+                vm.SelectedDatabase = db;
+                vm.TargetCollation = string.Empty;
+                Assert(vm.RunPreflightCheckCommand.CanExecute(null), "RunPreflightCheckCommand must be enabled when connected, idle, and a database is selected (even with empty TargetCollation).");
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand must still require TargetCollation.");
+
+                // Busy -> disabled
+                vm.IsBusy = true;
+                Assert(!vm.RunPreflightCheckCommand.CanExecute(null), "RunPreflightCheckCommand must be disabled while IsBusy is true.");
+
+                // Back to idle -> enabled
+                vm.IsBusy = false;
+                Assert(vm.RunPreflightCheckCommand.CanExecute(null), "RunPreflightCheckCommand must re-enable when IsBusy returns to false.");
+            });
+
+            await RunAsyncTest("RunPreflightCheckAsync_PassedCheck_UpdatesCurrentPreflightReport_WithZeroBackupsOrAlterations", async () =>
+            {
+                var db = new DatabaseInfo { Name = "ReadyDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { db },
+                    PreflightReportToReturn = new PreflightReport { DatabaseName = "ReadyDB" }
+                };
+
+                var vm = new MainViewModel(mockService);
+                bool confirmPrompted = false;
+                vm.ConfirmCollationChangeHandler = (d, c) =>
+                {
+                    confirmPrompted = true;
+                    return true;
+                };
+
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.BackupDirectory = @"C:\SQLBackups";
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.RunPreflightCheckAsync();
+
+                Assert(mockService.PreflightCheckCount == 1, $"Expected PreflightCheckAsync to be called once, got {mockService.PreflightCheckCount}");
+                Assert(mockService.BackupCount == 0, "Standalone pre-flight check must NOT call BackupDatabaseAsync.");
+                Assert(mockService.AlterCollationCount == 0, "Standalone pre-flight check must NOT call AlterCollationAsync.");
+                Assert(!confirmPrompted, "Standalone pre-flight check must NOT invoke ConfirmCollationChangeHandler.");
+                Assert(vm.CurrentPreflightReport != null, "CurrentPreflightReport must be populated.");
+                Assert(vm.HasPreflightReport, "HasPreflightReport must be true.");
+                Assert(vm.CurrentPreflightReport!.IsValid, "CurrentPreflightReport.IsValid must be true.");
+                Assert(vm.PreflightStatusText == "PASSED", $"Expected PreflightStatusText 'PASSED', got '{vm.PreflightStatusText}'");
+                Assert(vm.CurrentPreflightReport.StatusBadgeText == "PASSED", $"Expected StatusBadgeText 'PASSED', got '{vm.CurrentPreflightReport.StatusBadgeText}'");
+                Assert(vm.CurrentPreflightReport.PassedChecks.Count >= 4, "PassedChecks should list verified readiness items.");
+                Assert(!vm.HasDetailedError, "HasDetailedError must be false when pre-flight check passes.");
+            });
+
+            await RunAsyncTest("RunPreflightCheckAsync_BlockedCheck_PopulatesCategorizedBlockers_AndPlainLanguageDetailsWithoutStackTrace", async () =>
+            {
+                var db = new DatabaseInfo { Name = "BlockedAuditDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var blockedReport = new PreflightReport
+                {
+                    DatabaseName = "BlockedAuditDB",
+                    ActiveSessions = new List<ActiveSessionInfo>
+                    {
+                        new ActiveSessionInfo { SessionId = 71, LoginName = "etl_worker", HostName = "ETL01", ProgramName = "SqlJob", Status = "running" }
+                    },
+                    SchemaDependencies = new List<SchemaDependencyInfo>
+                    {
+                        new SchemaDependencyInfo { SchemaName = "dbo", ObjectName = "vw_Summary", ObjectType = "Schema-Bound Object", Details = "Definition is schema-bound (VIEW)." }
+                    },
+                    MissingPermissions = new List<string> { "User does not have BACKUP DATABASE permission on the database." },
+                    ValidationErrors = new List<string> { "Target collation 'Unknown_Col' is not supported by SQL Server." }
+                };
+
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { db },
+                    PreflightReportToReturn = blockedReport
+                };
+
+                var vm = new MainViewModel(mockService);
+                string? capturedDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedDetails = details;
+
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                await vm.RunPreflightCheckAsync();
+
+                Assert(mockService.BackupCount == 0, "Blocked standalone pre-flight check must NOT call BackupDatabaseAsync.");
+                Assert(mockService.AlterCollationCount == 0, "Blocked standalone pre-flight check must NOT call AlterCollationAsync.");
+                Assert(vm.CurrentPreflightReport != null && vm.CurrentPreflightReport.HasBlockingConditions, "CurrentPreflightReport must indicate blocking conditions.");
+                Assert(vm.PreflightStatusText == "BLOCKED", $"Expected PreflightStatusText 'BLOCKED', got '{vm.PreflightStatusText}'");
+                Assert(vm.CurrentPreflightReport!.ActiveSessions[0].DisplaySummary.Contains("Session ID: 71"), "ActiveSessionInfo.DisplaySummary must format session details.");
+                Assert(vm.CurrentPreflightReport.SchemaDependencies[0].DisplaySummary.Contains("[Schema-Bound Object] dbo.vw_Summary"), "SchemaDependencyInfo.DisplaySummary must format schema object details.");
+                Assert(vm.HasDetailedError, "HasDetailedError must be true after blocked pre-flight check.");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null), "ShowErrorDetailsCommand must be executable after blocked pre-flight check.");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedDetails != null, "Details handler must receive diagnostic report text.");
+                Assert(capturedDetails!.Contains("Pre-flight Validation Report for Database 'BlockedAuditDB'"), "Details must contain PreflightReport header.");
+                Assert(capturedDetails.Contains("[Active User Sessions (1)]"), "Details must contain Active User Sessions group.");
+                Assert(capturedDetails.Contains("[Schema Dependencies (1)]"), "Details must contain Schema Dependencies group.");
+                Assert(capturedDetails.Contains("[Missing Permissions (1)]"), "Details must contain Missing Permissions group.");
+                Assert(capturedDetails.Contains("[Validation Errors (1)]"), "Details must contain Validation Errors group.");
+                Assert(!capturedDetails.Contains("Error Type:"), $"Details must NOT contain 'Error Type:', got:\n{capturedDetails}");
+                Assert(!capturedDetails.Contains("Stack Trace:"), $"Details must NOT contain 'Stack Trace:', got:\n{capturedDetails}");
+                Assert(!capturedDetails.Contains("PreflightValidationException"), $"Details must NOT contain exception class name, got:\n{capturedDetails}");
+            });
+
+            await RunAsyncTest("RunPreflightCheckAsync_SupportsCancellation_WithoutBackupOrMultiUserReset", async () =>
+            {
+                var preflightStarted = new TaskCompletionSource<bool>();
+                var db = new DatabaseInfo { Name = "CancelPreflightDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { db },
+                    OnPreflightCheck = async token =>
+                    {
+                        preflightStarted.SetResult(true);
+                        var tcs = new TaskCompletionSource<bool>();
+                        using var reg = token.Register(() => tcs.TrySetCanceled());
+                        await tcs.Task;
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                var checkTask = vm.RunPreflightCheckAsync();
+                await preflightStarted.Task;
+
+                Assert(vm.IsBusy, "ViewModel should be busy during standalone pre-flight check.");
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand should be enabled during standalone pre-flight check.");
+
+                vm.CancelCommand.Execute(null);
+                await checkTask;
+
+                Assert(!vm.IsBusy, "ViewModel IsBusy must reset to false after cancellation.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.', got '{vm.StatusMessage}'");
+                Assert(vm.CurrentPreflightReport == null, "CurrentPreflightReport should remain null when check is cancelled.");
+                Assert(mockService.BackupCount == 0, "BackupDatabaseAsync must NOT be called.");
+                Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync must NOT be called.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync must NOT be called during read-only pre-flight cancellation.");
+
+                // Also verify DatabaseService.PreflightCheckAsync propagates pre-cancelled CancellationToken
+                using var logger = new LoggerService();
+                var realService = new DatabaseService(logger);
+                using var cancelledCts = new CancellationTokenSource();
+                cancelledCts.Cancel();
+                bool threwCanceled = false;
+                try
+                {
+                    await realService.PreflightCheckAsync("CancelPreflightDB", "", "", cancelledCts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    threwCanceled = true;
+                }
+                Assert(threwCanceled, "DatabaseService.PreflightCheckAsync must throw OperationCanceledException when token is cancelled.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_WhenBlocked_SkipsConfirmationHandler_AndShowsInlineBlockersWithoutStackTrace", async () =>
+            {
+                var db = new DatabaseInfo { Name = "BlockedProcessDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { db },
+                    PreflightReportToReturn = new PreflightReport
+                    {
+                        DatabaseName = "BlockedProcessDB",
+                        ActiveSessions = new List<ActiveSessionInfo>
+                        {
+                            new ActiveSessionInfo { SessionId = 88, LoginName = "svc_api", HostName = "API02", ProgramName = "WebApp", Status = "sleeping" }
+                        }
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                int confirmCallCount = 0;
+                vm.ConfirmCollationChangeHandler = (dbName, col) =>
+                {
+                    confirmCallCount++;
+                    return true;
+                };
+                string? capturedDetails = null;
+                vm.ShowErrorDetailsHandler = details => capturedDetails = details;
+
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(confirmCallCount == 0, $"ConfirmCollationChangeHandler must NOT be called when pre-flight has blocking conditions (called {confirmCallCount} times).");
+                Assert(mockService.BackupCount == 0, "BackupDatabaseAsync must NOT be called when blocked.");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync must NOT be called when blocked.");
+                Assert(vm.CurrentPreflightReport != null && vm.CurrentPreflightReport.HasBlockingConditions, "CurrentPreflightReport must contain blocking report for inline card.");
+                Assert(vm.PreflightStatusText == "BLOCKED", $"Expected PreflightStatusText 'BLOCKED', got '{vm.PreflightStatusText}'");
+
+                vm.ShowErrorDetailsCommand.Execute(null);
+                Assert(capturedDetails != null && capturedDetails.Contains("Pre-flight Validation Report for Database 'BlockedProcessDB'"),
+                    $"Expected PreflightReport diagnostic text in Details..., got:\n{capturedDetails}");
+                Assert(!capturedDetails!.Contains("Error Type:"), $"Details... must NOT contain 'Error Type:', got:\n{capturedDetails}");
+                Assert(!capturedDetails.Contains("Stack Trace:"), $"Details... must NOT contain 'Stack Trace:', got:\n{capturedDetails}");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_WhenValid_SetsInlineCardPassed_PromptsConfirmationOnce_BeforeBackupAndAlter", async () =>
+            {
+                var db = new DatabaseInfo { Name = "ValidOrderDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { db },
+                    PreflightReportToReturn = new PreflightReport { DatabaseName = "ValidOrderDB" }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // 1. User declines SINGLE_USER confirmation after pre-flight passes
+                int declineConfirmCalls = 0;
+                string? statusDuringDeclinePrompt = null;
+                vm.ConfirmCollationChangeHandler = (dbName, col) =>
+                {
+                    declineConfirmCalls++;
+                    statusDuringDeclinePrompt = vm.PreflightStatusText;
+                    Assert(vm.CurrentPreflightReport != null && vm.CurrentPreflightReport.IsValid,
+                        "CurrentPreflightReport must already be set to valid/PASSED before SINGLE_USER confirmation is requested.");
+                    Assert(mockService.BackupCount == 0 && mockService.AlterCollationCount == 0,
+                        "No backup or collation change may run before SINGLE_USER confirmation.");
+                    return false;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(declineConfirmCalls == 1, $"Expected confirmation prompt once, got {declineConfirmCalls}");
+                Assert(statusDuringDeclinePrompt == "PASSED", $"Expected inline status 'PASSED' during prompt, got '{statusDuringDeclinePrompt}'");
+                Assert(mockService.BackupCount == 0, "Backup must not run when user declines confirmation.");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollation must not run when user declines confirmation.");
+                Assert(vm.StatusMessage == "Collation change operation cancelled.", $"Expected cancellation status, got '{vm.StatusMessage}'");
+                Assert(vm.PreflightStatusText == "PASSED", "PASSED readiness card should remain visible when user declines SINGLE_USER prompt.");
+
+                // 2. User accepts SINGLE_USER confirmation -> backup and collation change proceed
+                int acceptConfirmCalls = 0;
+                vm.ConfirmCollationChangeHandler = (dbName, col) =>
+                {
+                    acceptConfirmCalls++;
+                    Assert(vm.CurrentPreflightReport != null && vm.CurrentPreflightReport.IsValid && vm.PreflightStatusText == "PASSED",
+                        "Inline card must be PASSED when confirmation prompt is displayed.");
+                    Assert(mockService.BackupCount == 0 && mockService.AlterCollationCount == 0,
+                        "Backup and alteration must occur strictly after confirmation.");
+                    return true;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(acceptConfirmCalls == 1, $"Expected confirmation prompt exactly once on valid run, got {acceptConfirmCalls}");
+                Assert(mockService.BackupCount == 1, "BackupDatabaseAsync must run once after confirmation.");
+                Assert(mockService.AlterCollationCount == 1, "AlterCollationAsync must run once after confirmation.");
+                Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected success message, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("CurrentPreflightReport_ClearsImmediately_WhenInputsOrConnectionStateChange", async () =>
+            {
+                var db1 = new DatabaseInfo { Name = "DB_One", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var db2 = new DatabaseInfo { Name = "DB_Two", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { db1, db2 },
+                    PreflightReportToReturn = new PreflightReport { DatabaseName = "DB_One" }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                vm.BackupDirectory = @"C:\BackupsA";
+
+                var notifiedProps = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null) notifiedProps.Add(e.PropertyName);
+                };
+
+                // 1. Changing SelectedDatabase clears CurrentPreflightReport
+                await vm.RunPreflightCheckAsync();
+                Assert(vm.CurrentPreflightReport != null && vm.HasPreflightReport, "Precondition: report populated.");
+                notifiedProps.Clear();
+                vm.SelectedDatabase = vm.Databases[1];
+                Assert(vm.CurrentPreflightReport == null && !vm.HasPreflightReport && vm.PreflightStatusText == string.Empty,
+                    "Changing SelectedDatabase must clear CurrentPreflightReport immediately.");
+                Assert(notifiedProps.Contains(nameof(MainViewModel.CurrentPreflightReport)) && notifiedProps.Contains(nameof(MainViewModel.HasPreflightReport)),
+                    "Clearing CurrentPreflightReport must raise PropertyChanged notifications.");
+
+                // 2. Changing TargetCollation clears CurrentPreflightReport
+                await vm.RunPreflightCheckAsync();
+                Assert(vm.CurrentPreflightReport != null, "Precondition: report populated before TargetCollation change.");
+                vm.TargetCollation = "Japanese_CI_AS";
+                Assert(vm.CurrentPreflightReport == null && !vm.HasPreflightReport,
+                    "Changing TargetCollation must clear CurrentPreflightReport immediately.");
+
+                // 3. Changing BackupDirectory clears CurrentPreflightReport
+                await vm.RunPreflightCheckAsync();
+                Assert(vm.CurrentPreflightReport != null, "Precondition: report populated before BackupDirectory change.");
+                vm.BackupDirectory = @"D:\BackupsB";
+                Assert(vm.CurrentPreflightReport == null && !vm.HasPreflightReport,
+                    "Changing BackupDirectory must clear CurrentPreflightReport immediately.");
+
+                // 4. Changing IsConnected (Disconnect) clears CurrentPreflightReport
+                await vm.RunPreflightCheckAsync();
+                Assert(vm.CurrentPreflightReport != null, "Precondition: report populated before Disconnect.");
+                vm.IsConnected = false;
+                Assert(vm.CurrentPreflightReport == null && !vm.HasPreflightReport,
+                    "Changing IsConnected must clear CurrentPreflightReport immediately.");
+            });
+
+            RunSyncTest("ErrorFormattingHelper_GetDetailedErrorText_OmitsExceptionTypeAndStackTraceForPreflightBlockers", () =>
+            {
+                var report = new PreflightReport
+                {
+                    DatabaseName = "PlainTextDB",
+                    MissingPermissions = new List<string> { "User does not have ALTER permission on the database." }
+                };
+
+                Exception caughtPreflightEx;
+                try
+                {
+                    throw new CollationModifier.Exceptions.PreflightValidationException(report);
+                }
+                catch (Exception ex)
+                {
+                    caughtPreflightEx = ex;
+                }
+
+                Assert(!string.IsNullOrWhiteSpace(caughtPreflightEx.StackTrace), "Thrown exception should have a real CLR stack trace.");
+
+                string formatted = ErrorFormattingHelper.GetDetailedErrorText(caughtPreflightEx);
+                Assert(formatted == report.GetDiagnosticSummary().TrimEnd(),
+                    $"Expected exact plain-language PreflightReport summary, got:\n{formatted}");
+                Assert(!formatted.Contains("Error Type:"), "Preflight formatted error must NOT contain 'Error Type:'.");
+                Assert(!formatted.Contains("Stack Trace:"), "Preflight formatted error must NOT contain 'Stack Trace:'.");
+                Assert(!formatted.Contains("PreflightValidationException"), "Preflight formatted error must NOT contain exception type name.");
+
+                // Non-preflight exceptions still include full diagnostic metadata
+                Exception caughtRuntimeEx;
+                try
+                {
+                    throw new InvalidOperationException("Unexpected I/O failure");
+                }
+                catch (Exception ex)
+                {
+                    caughtRuntimeEx = ex;
+                }
+
+                string runtimeFormatted = ErrorFormattingHelper.GetDetailedErrorText(caughtRuntimeEx);
+                Assert(runtimeFormatted.Contains("Error Type: System.InvalidOperationException"), "Standard runtime exception should retain Error Type.");
+                Assert(runtimeFormatted.Contains("Stack Trace:"), "Standard runtime exception should retain Stack Trace.");
+            });
+
+            RunSyncTest("MainWindowXaml_PreflightButtonAndInlineCard_WcagAccessibilityAndScrollViewer_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml should exist at {mainWindowXamlPath}");
+
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(mainWindowXamlPath)!, "App.xaml"));
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml should exist at {appXamlPath}");
+
+                string mainContent = System.IO.File.ReadAllText(mainWindowXamlPath);
+                string appContent = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(mainContent);
+                var xName = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+
+                // 1. Verify Operations panel is wrapped in a ScrollViewer
+                var scrollViewer = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "ScrollViewer");
+                Assert(scrollViewer != null, "MainWindow.xaml must wrap Database Operations in a ScrollViewer.");
+                var opsStack = scrollViewer!.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "StackPanel" && e.Attribute("AutomationProperties.Name")?.Value == "Database Operations");
+                Assert(opsStack != null, "ScrollViewer must wrap the 'Database Operations' StackPanel.");
+
+                // 2. Verify standalone Run Pre-flight Check secondary button and WCAG 2.2 attributes
+                var btnPreflight = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Button" &&
+                    (e.Attribute(xName)?.Value == "btnRunPreflightCheck" || e.Attribute("Content")?.Value == "Run Pre-flight Check"));
+                Assert(btnPreflight != null, "MainWindow.xaml must declare 'Run Pre-flight Check' button.");
+                Assert(btnPreflight!.Attribute("Content")?.Value == "Run Pre-flight Check", "Button Content must be 'Run Pre-flight Check'.");
+                Assert(btnPreflight.Attribute("Command")?.Value == "{Binding RunPreflightCheckCommand}", "Button must bind Command to RunPreflightCheckCommand.");
+                Assert(btnPreflight.Attribute("Style")?.Value == "{StaticResource SecondaryButton}", "Button must use SecondaryButton style.");
+                Assert(btnPreflight.Attribute("AutomationProperties.Name")?.Value == "Run Pre-flight Check", "Button must set AutomationProperties.Name='Run Pre-flight Check'.");
+                double minHeight = double.TryParse(btnPreflight.Attribute("MinHeight")?.Value, out var mh) ? mh : 0;
+                Assert(minHeight >= 24.0, $"Button MinHeight ({minHeight}) must be at least 24 DIP per WCAG 2.2 SC 2.5.8.");
+
+                // 3. Verify Inline Pre-flight Readiness Card and WCAG 2.2 attributes
+                var card = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Border" && e.Attribute(xName)?.Value == "PreflightReadinessCard");
+                Assert(card != null, "MainWindow.xaml must declare PreflightReadinessCard Border.");
+                Assert(card!.Attribute("AutomationProperties.HeadingLevel")?.Value == "Level2",
+                    "PreflightReadinessCard must set AutomationProperties.HeadingLevel='Level2'.");
+                Assert(card.Attribute("AutomationProperties.LiveSetting")?.Value == "Polite",
+                    "PreflightReadinessCard must set AutomationProperties.LiveSetting='Polite'.");
+                Assert(card.Attribute("BorderBrush")?.Value == "{StaticResource InputRestingBorderBrush}",
+                    "PreflightReadinessCard must use InputRestingBorderBrush (>= 3.0:1 border contrast).");
+                Assert(card.Attribute("Visibility")?.Value.Contains("HasPreflightReport") == true,
+                    "PreflightReadinessCard Visibility must bind to HasPreflightReport.");
+
+                // 4. Verify PASSED / BLOCKED text and grouped blocker list bindings
+                string cardXml = card.ToString();
+                Assert(cardXml.Contains("\"PASSED\""), "Inline readiness card must configure PASSED status text.");
+                Assert(cardXml.Contains("\"BLOCKED\""), "Inline readiness card must configure BLOCKED status text.");
+                Assert(cardXml.Contains("CurrentPreflightReport.ActiveSessions"), "Card must bind ActiveSessions blocker group.");
+                Assert(cardXml.Contains("CurrentPreflightReport.SchemaDependencies"), "Card must bind SchemaDependencies blocker group.");
+                Assert(cardXml.Contains("CurrentPreflightReport.MissingPermissions"), "Card must bind MissingPermissions blocker group.");
+                Assert(cardXml.Contains("CurrentPreflightReport.ValidationErrors"), "Card must bind ValidationErrors blocker group.");
+
+                // 5. Verify StatusErrorBrush (#B91C1C) in App.xaml meets >= 4.5:1 contrast against white (#FFFFFF) and #F8FAFC
+                Assert(appContent.Contains("x:Key=\"StatusErrorBrush\" Color=\"#B91C1C\""),
+                    "App.xaml must declare StatusErrorBrush with #B91C1C.");
+                double errR = 185.0 / 255.0, errG = 28.0 / 255.0, errB = 28.0 / 255.0;
+                double errRLin = errR <= 0.04045 ? errR / 12.92 : Math.Pow((errR + 0.055) / 1.055, 2.4);
+                double errGLin = errG <= 0.04045 ? errG / 12.92 : Math.Pow((errG + 0.055) / 1.055, 2.4);
+                double errBLin = errB <= 0.04045 ? errB / 12.92 : Math.Pow((errB + 0.055) / 1.055, 2.4);
+                double errLum = 0.2126 * errRLin + 0.7152 * errGLin + 0.0722 * errBLin;
+                double errContrastWhite = (1.0 + 0.05) / (errLum + 0.05);
+                Assert(errContrastWhite >= 4.5, $"StatusErrorBrush contrast {errContrastWhite:F2}:1 against white must be >= 4.5:1.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
