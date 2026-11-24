@@ -3060,6 +3060,70 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("AutomationProperties.Name=\"Please connect to a server to continue.\""), "lblDisconnectedOverlay should configure AutomationProperties.Name");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml should configure AutomationProperties.LiveSetting=\"Polite\"");
                 Assert(content.Contains("AutomationProperties.Name=\"Database Operations\""), "Operations container should configure AutomationProperties.Name=\"Database Operations\"");
+
+                // Verify <Window.Resources> precedes <Grid> so StaticResource resolves BooleanToVisibilityConverter on net48
+                int windowResourcesIndex = content.IndexOf("<Window.Resources>");
+                int rootGridIndex = content.IndexOf("<Grid>");
+                Assert(windowResourcesIndex >= 0, "MainWindow.xaml must declare <Window.Resources>");
+                Assert(rootGridIndex >= 0, "MainWindow.xaml must declare root <Grid>");
+                Assert(windowResourcesIndex < rootGridIndex, "<Window.Resources> must precede <Grid> in MainWindow.xaml");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var rootElements = doc.Root!.Elements().ToList();
+                var windowResourcesElements = rootElements.Where(e => e.Name.LocalName == "Window.Resources").ToList();
+                Assert(windowResourcesElements.Count == 1, "MainWindow.xaml should declare exactly one <Window.Resources> block");
+                var rootGridElement = rootElements.FirstOrDefault(e => e.Name.LocalName == "Grid");
+                Assert(rootGridElement != null, "MainWindow.xaml root must contain <Grid>");
+                Assert(rootElements.IndexOf(windowResourcesElements[0]) < rootElements.IndexOf(rootGridElement!),
+                    "<Window.Resources> element must precede <Grid> element in Window children");
+                Assert(windowResourcesElements[0].Elements().Any(e =>
+                    e.Name.LocalName == "BooleanToVisibilityConverter" &&
+                    e.Attributes().Any(a => a.Name.LocalName == "Key" && a.Value == "BooleanToVisibilityConverter")),
+                    "<Window.Resources> must define BooleanToVisibilityConverter with x:Key='BooleanToVisibilityConverter'");
+
+                // Verify Database Operations StackPanel binds Visibility to IsConnected via BooleanToVisibilityConverter while preserving IsEnabled
+                var operationsPanel = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "StackPanel" &&
+                    e.Attribute("AutomationProperties.Name")?.Value == "Database Operations");
+                Assert(operationsPanel != null, "MainWindow.xaml must contain Database Operations StackPanel");
+                Assert(operationsPanel!.Attribute("IsEnabled")?.Value == "{Binding IsConnected}",
+                    "Database Operations StackPanel must preserve IsEnabled=\"{Binding IsConnected}\"");
+                string? opsVisibility = operationsPanel.Attribute("Visibility")?.Value;
+                Assert(opsVisibility == "{Binding IsConnected, Converter={StaticResource BooleanToVisibilityConverter}}",
+                    $"Database Operations StackPanel must bind Visibility to IsConnected via BooleanToVisibilityConverter, got '{opsVisibility}'");
+
+                // Verify TargetCollationInput_Loaded calls ApplyTemplate before checking Template and calling Template.FindName
+                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+
+                string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
+                int loadedMethodIndex = csContent.IndexOf("TargetCollationInput_Loaded");
+                Assert(loadedMethodIndex >= 0, "MainWindow.xaml.cs must define TargetCollationInput_Loaded");
+                string loadedMethodBody = csContent.Substring(loadedMethodIndex);
+                int applyTemplateIndex = loadedMethodBody.IndexOf("TargetCollationInput?.ApplyTemplate()");
+                if (applyTemplateIndex < 0)
+                {
+                    applyTemplateIndex = loadedMethodBody.IndexOf(".ApplyTemplate()");
+                }
+                int templateCheckIndex = loadedMethodBody.IndexOf("Template != null");
+                int findNameIndex = loadedMethodBody.IndexOf("Template.FindName");
+                if (findNameIndex < 0)
+                {
+                    findNameIndex = loadedMethodBody.IndexOf("Template?.FindName");
+                }
+                Assert(applyTemplateIndex >= 0, "TargetCollationInput_Loaded must call ApplyTemplate() on TargetCollationInput");
+                Assert(templateCheckIndex >= 0 && applyTemplateIndex < templateCheckIndex,
+                    "TargetCollationInput_Loaded must call ApplyTemplate() before checking Template");
+                Assert(findNameIndex >= 0 && applyTemplateIndex < findNameIndex,
+                    "TargetCollationInput_Loaded must call ApplyTemplate() before calling Template.FindName");
             });
 
             RunSyncTest("MainViewModel_IsConnected_TransitionsAnnounceOperationsPanelState", () =>
