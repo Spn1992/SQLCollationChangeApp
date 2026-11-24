@@ -30,6 +30,7 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkErrorWithCoordinates", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkErrorWithCoordinates);
             RunTest("MSBuildLogParser_ParseLine_ExtractsSyslibWarningWithCoordinates", Test_MSBuildLogParser_ParseLine_ExtractsSyslibWarningWithCoordinates);
             RunTest("MSBuildLogParser_ParseLine_ExtractsNuGetRestoreErrorWithoutCoordinates", Test_MSBuildLogParser_ParseLine_ExtractsNuGetRestoreErrorWithoutCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors", Test_MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors);
             RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError);
             RunTest("MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity", Test_MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError);
@@ -95,6 +96,7 @@ namespace MSBuildDiagnosticPatcher.Tests
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
+            RunTest("Workflow_PostMergeBuildVerification_EnforcesNuGetV3AuditsAndLockfiles", Test_Workflow_PostMergeBuildVerification_EnforcesNuGetV3AuditsAndLockfiles);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -224,6 +226,28 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(diag.FilePath == "/app/CollationModifier/CollationModifier.csproj", $"Expected FilePath '/app/CollationModifier/CollationModifier.csproj', got '{diag.FilePath}'");
             Assert(diag.ProjectPath == "/app/CollationModifier/CollationModifier.csproj", $"Expected ProjectPath '/app/CollationModifier/CollationModifier.csproj', got '{diag.ProjectPath}'");
             Assert(diag.Message.Contains("Detected package downgrade"), "Expected message to contain package downgrade text");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors()
+        {
+            var parser = new MSBuildLogParser();
+            string[] codes = { "NU1901", "NU1902", "NU1903", "NU1904", "NU1004" };
+            foreach (string code in codes)
+            {
+                string standaloneRestoreLine = $"/app/CollationModifier/CollationModifier.csproj : error {code}: Warning As Error: Package 'System.Text.Json' 8.0.0 has a known high severity vulnerability, https://github.com/advisories/GHSA-8g4q-xg66-9fp4";
+                var standaloneDiag = parser.ParseLine(standaloneRestoreLine);
+                Assert(standaloneDiag != null, $"Expected standalone {code} restore error to be parsed.");
+                Assert(standaloneDiag!.Code == code, $"Expected code {code}, got {standaloneDiag.Code}");
+                Assert(standaloneDiag.Severity == DiagnosticSeverity.Error, $"Expected severity Error for {code}, got {standaloneDiag.Severity}");
+                Assert(standaloneDiag.FilePath == "/app/CollationModifier/CollationModifier.csproj", $"Expected project FilePath for {code}, got '{standaloneDiag.FilePath}'");
+
+                string graphRestoreLine = $"{standaloneRestoreLine} [/app/CollationModifier/CollationModifier.csproj]";
+                var graphDiag = parser.ParseLine(graphRestoreLine);
+                Assert(graphDiag != null, $"Expected project-suffixed {code} restore error to be parsed.");
+                Assert(graphDiag!.Code == code, $"Expected code {code}, got {graphDiag.Code}");
+                Assert(graphDiag.Severity == DiagnosticSeverity.Error, $"Expected severity Error for {code}, got {graphDiag.Severity}");
+                Assert(graphDiag.ProjectPath == "/app/CollationModifier/CollationModifier.csproj", $"Expected ProjectPath for {code}, got '{graphDiag.ProjectPath}'");
+            }
         }
 
         static void Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError()
@@ -1509,6 +1533,53 @@ public class Greeter : IGreeter
             Assert(content.Contains("name: build-diagnostics-report"), "Workflow must name artifact build-diagnostics-report");
             Assert(content.Contains("build-diagnostics/"), "Workflow artifact path must include build-diagnostics/");
             Assert(content.Contains("/tmp/build-and-test.log"), "Workflow artifact path must include /tmp/build-and-test.log");
+        }
+
+        static void Test_Workflow_PostMergeBuildVerification_EnforcesNuGetV3AuditsAndLockfiles()
+        {
+            string workflowPath = FindWorkflowPath();
+            string repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(workflowPath)!, "..", ".."));
+
+            string nugetConfig = File.ReadAllText(Path.Combine(repoRoot, "nuget.config"));
+            Assert(nugetConfig.Contains("https://api.nuget.org/v3/index.json"), "nuget.config must register NuGet V3 index endpoint");
+            Assert(nugetConfig.Contains("protocolVersion=\"3\""), "nuget.config must specify protocolVersion=\"3\"");
+            Assert(!nugetConfig.Contains("https://www.nuget.org/api/v2"), "nuget.config must not reference legacy V2 feed");
+
+            string dirBuildPropsPath = Path.Combine(repoRoot, "Directory.Build.props");
+            Assert(File.Exists(dirBuildPropsPath), "Root Directory.Build.props must exist");
+            string dirBuildProps = File.ReadAllText(dirBuildPropsPath);
+            Assert(dirBuildProps.Contains("<NuGetAudit>true</NuGetAudit>"), "Directory.Build.props must set NuGetAudit=true");
+            Assert(dirBuildProps.Contains("<NuGetAuditMode>all</NuGetAuditMode>"), "Directory.Build.props must set NuGetAuditMode=all");
+            Assert(dirBuildProps.Contains("<NuGetAuditLevel>low</NuGetAuditLevel>"), "Directory.Build.props must set NuGetAuditLevel=low");
+            foreach (string code in new[] { "NU1901", "NU1902", "NU1903", "NU1904" })
+            {
+                Assert(dirBuildProps.Contains(code), $"Directory.Build.props WarningsAsErrors must include {code}");
+            }
+            Assert(dirBuildProps.Contains("<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>"), "Directory.Build.props must set RestorePackagesWithLockFile=true");
+
+            string collationCsproj = File.ReadAllText(Path.Combine(repoRoot, "CollationModifier", "CollationModifier.csproj"));
+            Assert(collationCsproj.Contains("<NuGetLockFilePath>packages.$(TargetFramework).lock.json</NuGetLockFilePath>"), "CollationModifier.csproj must configure per-framework NuGetLockFilePath");
+
+            string[] expectedLockFiles =
+            {
+                Path.Combine(repoRoot, "CollationModifier", "packages.net8.0.lock.json"),
+                Path.Combine(repoRoot, "CollationModifier", "packages.net48.lock.json"),
+                Path.Combine(repoRoot, "CollationModifier.Tests", "packages.lock.json"),
+                Path.Combine(repoRoot, "MSBuildDiagnosticPatcher", "packages.lock.json"),
+                Path.Combine(repoRoot, "MSBuildDiagnosticPatcher.Tests", "packages.lock.json")
+            };
+            foreach (string lockFile in expectedLockFiles)
+            {
+                Assert(File.Exists(lockFile), $"Expected lockfile to exist: {lockFile}");
+            }
+
+            string workflow = File.ReadAllText(workflowPath);
+            Assert(workflow.Contains("dotnet restore CollationModifier/CollationModifier.csproj --locked-mode"), "Workflow must restore CollationModifier with --locked-mode");
+            Assert(workflow.Contains("dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj --locked-mode"), "Workflow must restore CollationModifier.Tests with --locked-mode");
+            Assert(workflow.Contains("dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj --locked-mode"), "Workflow must restore MSBuildDiagnosticPatcher with --locked-mode");
+            Assert(workflow.Contains("dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj --locked-mode"), "Workflow must restore MSBuildDiagnosticPatcher.Tests with --locked-mode");
+            Assert(workflow.Contains("-p:OS=Windows_NT -p:EnableWindowsTargeting=true"), "Workflow must verify Windows_NT net48 lockfile");
+            Assert(workflow.Contains("dotnet list CollationModifier/CollationModifier.csproj package --deprecated --include-transitive --no-restore 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append deprecated transitive package audit to /tmp/build-and-test.log");
         }
 
         private static string FindWorkflowPath()
