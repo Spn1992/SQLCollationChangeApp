@@ -114,7 +114,7 @@ namespace MSBuildDiagnosticPatcher
             {
                 Console.WriteLine("\n[INFO] Applying candidate remediation patches...");
                 var applicator = new PatchApplicator();
-                var originalFileContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var originalFileContents = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var patch in patchCandidates)
                 {
@@ -123,7 +123,7 @@ namespace MSBuildDiagnosticPatcher
                         string fullTargetPath = Path.GetFullPath(patch.TargetFilePath);
                         if (!originalFileContents.ContainsKey(fullTargetPath))
                         {
-                            originalFileContents[fullTargetPath] = File.ReadAllText(fullTargetPath);
+                            originalFileContents[fullTargetPath] = File.ReadAllBytes(fullTargetPath);
                         }
                     }
 
@@ -173,9 +173,9 @@ namespace MSBuildDiagnosticPatcher
                         {
                             string fullTargetPath = Path.GetFullPath(patch.TargetFilePath);
                             if (restoredFiles.Add(fullTargetPath) &&
-                                originalFileContents.TryGetValue(fullTargetPath, out var originalText))
+                                originalFileContents.TryGetValue(fullTargetPath, out var originalBytes))
                             {
-                                File.WriteAllText(fullTargetPath, originalText);
+                                File.WriteAllBytes(fullTargetPath, originalBytes);
                                 Console.WriteLine($"[INFO] Rolled back '{fullTargetPath}' to original contents.");
                             }
                         }

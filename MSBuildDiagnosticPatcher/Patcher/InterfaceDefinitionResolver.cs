@@ -40,7 +40,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
         private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _rootSearchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _fileContentCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, (int Start, int Length)> _interfaceBodyOffsetsCache = new Dictionary<string, (int Start, int Length)>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, (string BodyStripped, string BodyMasked, Dictionary<string, string>? TypeParamMap)> _interfaceBodyCache =
+            new Dictionary<string, (string, string, Dictionary<string, string>?)>(StringComparer.OrdinalIgnoreCase);
 
         public void ClearCache()
         {
@@ -49,7 +50,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 _filePathCache.Clear();
                 _rootSearchCache.Clear();
                 _fileContentCache.Clear();
-                _interfaceBodyOffsetsCache.Clear();
+                _interfaceBodyCache.Clear();
             }
         }
 
@@ -129,7 +130,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 string? content = GetOrReadFileContent(interfaceFile);
                 if (content != null)
                 {
-                    var memberInfo = ExtractMemberFromInterfaceSource(content, interfaceName, memberName, expectedParamTypes);
+                    var memberInfo = ExtractMemberFromInterfaceSourceCore(
+                        content,
+                        interfaceName,
+                        memberName,
+                        expectedParamTypes,
+                        cacheKey: $"{interfaceFile}|{interfaceName}");
                     if (memberInfo != null)
                     {
                         memberInfo.InterfaceFilePath = interfaceFile;
@@ -144,7 +150,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 string? contextContent = GetOrReadFileContent(contextFilePath);
                 if (contextContent != null && ContainsInterfaceDeclaration(contextContent, interfaceName))
                 {
-                    var contextMember = ExtractMemberFromInterfaceSource(contextContent, interfaceName, memberName, expectedParamTypes);
+                    var contextMember = ExtractMemberFromInterfaceSourceCore(
+                        contextContent,
+                        interfaceName,
+                        memberName,
+                        expectedParamTypes,
+                        cacheKey: $"{contextFilePath}|{interfaceName}");
                     if (contextMember != null)
                     {
                         contextMember.InterfaceFilePath = contextFilePath;
@@ -173,29 +184,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
         {
             var segments = CSharpLexer.SplitQualifiedTypeSegments(interfaceName);
             return segments.Count > 0 ? segments[segments.Count - 1].TrimStart('@') : CSharpLexer.StripGenericArity(interfaceName).TrimStart('@');
-        }
-
-        private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
-        {
-            string cacheKey = $"{filePath}|{interfaceName}";
-            lock (_cacheLock)
-            {
-                if (_interfaceBodyOffsetsCache.TryGetValue(cacheKey, out var cached) &&
-                    cached.Start >= 0 &&
-                    cached.Length >= 0 &&
-                    cached.Start + cached.Length <= content.Length)
-                {
-                    return cached;
-                }
-            }
-
-            var computed = FindInterfaceBodyOffsets(content.AsSpan(), interfaceName);
-            lock (_cacheLock)
-            {
-                _interfaceBodyOffsetsCache[cacheKey] = computed;
-            }
-
-            return computed;
         }
 
         private string? GetOrReadFileContent(string filePath)
@@ -307,13 +295,51 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string memberName,
             string expectedParamTypes)
         {
+            return ExtractMemberFromInterfaceSourceCore(sourceCode, interfaceName, memberName, expectedParamTypes, cacheKey: null);
+        }
+
+        private InterfaceMemberInfo? ExtractMemberFromInterfaceSourceCore(
+            string sourceCode,
+            string interfaceName,
+            string memberName,
+            string expectedParamTypes,
+            string? cacheKey)
+        {
             if (string.IsNullOrWhiteSpace(sourceCode) || string.IsNullOrWhiteSpace(memberName))
             {
                 return null;
             }
 
-            var scanned = CSharpLexer.Scan(sourceCode);
-            var (bodyStripped, bodyMasked, typeParamMap) = ExtractInterfaceBodySlices(scanned, interfaceName);
+            (string bodyStripped, string bodyMasked, Dictionary<string, string>? typeParamMap) bodySlices =
+                (string.Empty, string.Empty, null);
+            bool foundCached = false;
+
+            if (!string.IsNullOrEmpty(cacheKey))
+            {
+                lock (_cacheLock)
+                {
+                    if (_interfaceBodyCache.TryGetValue(cacheKey, out var cachedSlices))
+                    {
+                        bodySlices = cachedSlices;
+                        foundCached = true;
+                    }
+                }
+            }
+
+            if (!foundCached)
+            {
+                var scanned = CSharpLexer.Scan(sourceCode);
+                bodySlices = ExtractInterfaceBodySlices(scanned, interfaceName);
+                if (!string.IsNullOrEmpty(cacheKey))
+                {
+                    lock (_cacheLock)
+                    {
+                        _interfaceBodyCache[cacheKey] = bodySlices;
+                    }
+                }
+            }
+
+            var (bodyStripped, bodyMasked, typeParamMap) = bodySlices;
 
             var declarations = SplitInterfaceDeclarations(bodyStripped, bodyMasked);
             string targetBaseMemberName = CSharpLexer.StripGenericArity(memberName).TrimStart('@');
@@ -482,8 +508,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return false;
             }
 
-            // Exclude default expression-bodied end if '=>' exists at top level
+            // Reject expression-bodied default interface methods ('=> ...;')
             int sigEnd = FindTopLevelArrowOrEnd(declMasked, pos, declMasked.Length - 1);
+            if (sigEnd < declMasked.Length - 1)
+            {
+                return false;
+            }
 
             // Collect all top-level (...) groups in [pos .. sigEnd)
             var parenGroups = new List<(int Open, int Close)>();
@@ -597,7 +627,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             string rawReturnType = declStripped.Substring(pos, nameStart - pos);
-            string returnType = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            string returnType = FormatReturnType(rawReturnType);
             if (string.IsNullOrWhiteSpace(returnType) || !IsBalancedTypeTokens(returnType))
             {
                 return false;
@@ -713,7 +743,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             string rawReturnType = declStripped.Substring(pos, nameStart - pos);
-            string returnType = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            string returnType = FormatReturnType(rawReturnType);
             if (string.IsNullOrWhiteSpace(returnType) || !IsBalancedTypeTokens(returnType))
             {
                 return false;
@@ -721,6 +751,14 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             string access = CSharpLexer.CollapseWhitespacePreservingLiterals(
                 declStripped.Substring(openBrace + 1, closeBrace - openBrace - 1));
+
+            bool hasGetter = Regex.IsMatch(access, @"\bget\b");
+            bool hasSetter = Regex.IsMatch(access, @"\bset\b");
+            bool hasInit = Regex.IsMatch(access, @"\binit\b");
+            if (!hasGetter && !hasSetter && !hasInit)
+            {
+                return false;
+            }
 
             if (typeParamMap != null && typeParamMap.Count > 0)
             {
@@ -733,11 +771,38 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 MemberName = parsedName,
                 ReturnType = returnType,
                 IsProperty = true,
-                HasGetter = Regex.IsMatch(access, @"\bget\b"),
-                HasSetter = Regex.IsMatch(access, @"\bset\b"),
+                HasGetter = hasGetter,
+                HasSetter = hasSetter || hasInit,
                 FullSignature = $"{returnType} {parsedName} {{ {access} }}"
             };
             return true;
+        }
+
+        private static string FormatReturnType(string rawReturnType)
+        {
+            string collapsed = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            if (string.IsNullOrEmpty(collapsed))
+            {
+                return collapsed;
+            }
+
+            var sb = new StringBuilder(collapsed.Length);
+            for (int i = 0; i < collapsed.Length; i++)
+            {
+                char c = collapsed[i];
+                if (c == ' ')
+                {
+                    char prev = sb.Length > 0 ? sb[sb.Length - 1] : '\0';
+                    char next = i + 1 < collapsed.Length ? collapsed[i + 1] : '\0';
+                    if (prev == '<' || prev == '(' || prev == '[' || prev == '.' ||
+                        next == '>' || next == ')' || next == ']' || next == ',' || next == '[' || next == '?')
+                    {
+                        continue;
+                    }
+                }
+                sb.Append(c);
+            }
+            return sb.ToString();
         }
 
         private static bool IsBalancedTypeTokens(string typeText)
