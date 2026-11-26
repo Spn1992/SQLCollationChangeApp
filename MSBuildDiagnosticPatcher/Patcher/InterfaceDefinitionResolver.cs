@@ -28,6 +28,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
         private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _rootSearchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _fileContentCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, (int Start, int Length)> _interfaceBodyOffsetsCache = new Dictionary<string, (int Start, int Length)>(StringComparer.OrdinalIgnoreCase);
 
         public void ClearCache()
         {
@@ -36,6 +37,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 _filePathCache.Clear();
                 _rootSearchCache.Clear();
                 _fileContentCache.Clear();
+                _interfaceBodyOffsetsCache.Clear();
             }
         }
 
@@ -75,7 +77,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
             }
 
-            var memberInfo = ExtractMemberFromInterfaceSource(content, interfaceName, memberName, expectedParamTypes);
+            var bodyOffsets = GetOrComputeInterfaceBodyOffsets(interfaceFile, interfaceName, content);
+            ReadOnlySpan<char> bodySpan = content.AsSpan(bodyOffsets.Start, bodyOffsets.Length);
+
+            var memberInfo = ExtractMemberFromInterfaceBody(bodySpan, interfaceName, memberName, expectedParamTypes);
             if (memberInfo != null)
             {
                 memberInfo.InterfaceFilePath = interfaceFile;
@@ -83,6 +88,29 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
+        }
+
+        private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
+        {
+            string cacheKey = $"{filePath}|{interfaceName}";
+            lock (_cacheLock)
+            {
+                if (_interfaceBodyOffsetsCache.TryGetValue(cacheKey, out var cached) &&
+                    cached.Start >= 0 &&
+                    cached.Length >= 0 &&
+                    cached.Start + cached.Length <= content.Length)
+                {
+                    return cached;
+                }
+            }
+
+            var computed = FindInterfaceBodyOffsets(content.AsSpan(), interfaceName);
+            lock (_cacheLock)
+            {
+                _interfaceBodyOffsetsCache[cacheKey] = computed;
+            }
+
+            return computed;
         }
 
         private string? GetOrReadFileContent(string filePath)
@@ -193,68 +221,149 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string memberName,
             string expectedParamTypes)
         {
-            string searchBody = ExtractInterfaceBody(sourceCode, interfaceName);
-
-            // Pattern for method declaration in interface:
-            // e.g.: Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken = default);
-            var methodRegex = new Regex(
-                $@"(?<return>[\w\<\>\?,\.\s]+?)\s+{Regex.Escape(memberName)}\s*\((?<params>[^)]*)\)\s*;");
-
-            var matches = methodRegex.Matches(searchBody);
-            InterfaceMemberInfo? bestMatch = null;
-
-            foreach (Match match in matches)
+            if (string.IsNullOrEmpty(sourceCode) || string.IsNullOrWhiteSpace(memberName))
             {
-                string returnType = match.Groups["return"].Value.Trim();
-                string paramList = match.Groups["params"].Value.Trim();
+                return null;
+            }
 
-                var info = new InterfaceMemberInfo
-                {
-                    InterfaceName = interfaceName,
-                    MemberName = memberName,
-                    ReturnType = returnType,
-                    ParameterList = paramList,
-                    IsProperty = false,
-                    FullSignature = $"{returnType} {memberName}({paramList})"
-                };
+            var bodyOffsets = FindInterfaceBodyOffsets(sourceCode.AsSpan(), interfaceName);
+            ReadOnlySpan<char> bodySpan = sourceCode.AsSpan(bodyOffsets.Start, bodyOffsets.Length);
+            return ExtractMemberFromInterfaceBody(bodySpan, interfaceName, memberName, expectedParamTypes);
+        }
 
-                // Check parameter type matching
-                if (MatchesParameterTypes(paramList, expectedParamTypes))
+        private static InterfaceMemberInfo? ExtractMemberFromInterfaceBody(
+            ReadOnlySpan<char> bodySpan,
+            string interfaceName,
+            string memberName,
+            string expectedParamTypes)
+        {
+            if (bodySpan.IsEmpty || string.IsNullOrWhiteSpace(memberName))
+            {
+                return null;
+            }
+
+            ReadOnlySpan<char> targetName = memberName.AsSpan();
+            InterfaceMemberInfo? bestMethodMatch = null;
+            InterfaceMemberInfo? propertyMatch = null;
+            int searchStart = 0;
+
+            while (searchStart < bodySpan.Length)
+            {
+                int relIdx = bodySpan.Slice(searchStart).IndexOf(targetName, StringComparison.Ordinal);
+                if (relIdx < 0)
                 {
-                    return info;
+                    break;
                 }
 
-                bestMatch ??= info;
-            }
+                int nameIdx = searchStart + relIdx;
+                searchStart = nameIdx + 1;
 
-            if (bestMatch != null)
-            {
-                return bestMatch;
-            }
-
-            // Pattern for property declaration in interface:
-            // e.g.: string ConnectionString { get; set; }
-            var propRegex = new Regex(
-                $@"(?<return>[\w\<\>\?,\.\s]+?)\s+{Regex.Escape(memberName)}\s*\{{\s*(?<access>[^}}]*)\s*\}}");
-
-            var propMatch = propRegex.Match(searchBody);
-            if (propMatch.Success)
-            {
-                string returnType = propMatch.Groups["return"].Value.Trim();
-                string access = propMatch.Groups["access"].Value.Trim();
-                return new InterfaceMemberInfo
+                // Member declaration name must be preceded by whitespace
+                if (nameIdx == 0 || !char.IsWhiteSpace(bodySpan[nameIdx - 1]))
                 {
-                    InterfaceName = interfaceName,
-                    MemberName = memberName,
-                    ReturnType = returnType,
-                    IsProperty = true,
-                    HasGetter = access.Contains("get"),
-                    HasSetter = access.Contains("set"),
-                    FullSignature = $"{returnType} {memberName} {{ {access} }}"
-                };
+                    continue;
+                }
+
+                int afterName = nameIdx + targetName.Length;
+                while (afterName < bodySpan.Length && char.IsWhiteSpace(bodySpan[afterName]))
+                {
+                    afterName++;
+                }
+
+                if (afterName >= bodySpan.Length)
+                {
+                    break;
+                }
+
+                char delimiter = bodySpan[afterName];
+                if (delimiter == '(')
+                {
+                    int paramStart = afterName + 1;
+                    int closeParenRel = bodySpan.Slice(paramStart).IndexOf(')');
+                    if (closeParenRel < 0)
+                    {
+                        continue;
+                    }
+
+                    int closeParen = paramStart + closeParenRel;
+                    int afterCloseParen = closeParen + 1;
+                    while (afterCloseParen < bodySpan.Length && char.IsWhiteSpace(bodySpan[afterCloseParen]))
+                    {
+                        afterCloseParen++;
+                    }
+
+                    // Require a terminating semicolon token so default interface implementations are ignored
+                    if (afterCloseParen >= bodySpan.Length || bodySpan[afterCloseParen] != ';')
+                    {
+                        continue;
+                    }
+
+                    if (!TryExtractReturnTypeSpan(bodySpan, nameIdx, out ReadOnlySpan<char> returnTypeSpan))
+                    {
+                        continue;
+                    }
+
+                    string returnType = NormalizeReturnType(returnTypeSpan);
+                    string paramList = bodySpan.Slice(paramStart, closeParenRel).Trim().ToString();
+
+                    var info = new InterfaceMemberInfo
+                    {
+                        InterfaceName = interfaceName,
+                        MemberName = memberName,
+                        ReturnType = returnType,
+                        ParameterList = paramList,
+                        IsProperty = false,
+                        FullSignature = $"{returnType} {memberName}({paramList})"
+                    };
+
+                    // Check parameter type matching
+                    if (MatchesParameterTypes(paramList, expectedParamTypes))
+                    {
+                        return info;
+                    }
+
+                    bestMethodMatch ??= info;
+                    searchStart = afterCloseParen + 1;
+                }
+                else if (delimiter == '{' && propertyMatch == null)
+                {
+                    int accessStart = afterName + 1;
+                    int closeBraceRel = bodySpan.Slice(accessStart).IndexOf('}');
+                    if (closeBraceRel < 0)
+                    {
+                        continue;
+                    }
+
+                    if (!TryExtractReturnTypeSpan(bodySpan, nameIdx, out ReadOnlySpan<char> propReturnSpan))
+                    {
+                        continue;
+                    }
+
+                    string access = bodySpan.Slice(accessStart, closeBraceRel).Trim().ToString();
+                    bool hasGetter = access.Contains("get", StringComparison.Ordinal);
+                    bool hasSetter = access.Contains("set", StringComparison.Ordinal);
+                    bool hasInit = access.Contains("init", StringComparison.Ordinal);
+                    if (!hasGetter && !hasSetter && !hasInit)
+                    {
+                        continue;
+                    }
+
+                    string returnType = NormalizeReturnType(propReturnSpan);
+                    propertyMatch = new InterfaceMemberInfo
+                    {
+                        InterfaceName = interfaceName,
+                        MemberName = memberName,
+                        ReturnType = returnType,
+                        IsProperty = true,
+                        HasGetter = hasGetter,
+                        HasSetter = hasSetter,
+                        FullSignature = $"{returnType} {memberName} {{ {access} }}"
+                    };
+                    searchStart = accessStart + closeBraceRel + 1;
+                }
             }
 
-            return null;
+            return bestMethodMatch ?? propertyMatch;
         }
 
         private static bool MatchesParameterTypes(string actualParamList, string expectedParamTypes)
@@ -338,29 +447,468 @@ namespace MSBuildDiagnosticPatcher.Patcher
             };
         }
 
-        private static string ExtractInterfaceBody(string sourceCode, string interfaceName)
+        private static (int Start, int Length) FindInterfaceBodyOffsets(ReadOnlySpan<char> source, string interfaceName)
         {
-            var ifaceMatch = Regex.Match(sourceCode, $@"\binterface\s+{Regex.Escape(interfaceName)}\b");
-            if (!ifaceMatch.Success) return sourceCode;
-
-            int openBrace = sourceCode.IndexOf('{', ifaceMatch.Index);
-            if (openBrace < 0) return sourceCode;
-
-            int depth = 1;
-            for (int i = openBrace + 1; i < sourceCode.Length; i++)
+            if (source.IsEmpty || string.IsNullOrWhiteSpace(interfaceName))
             {
-                if (sourceCode[i] == '{') depth++;
-                else if (sourceCode[i] == '}')
+                return (0, source.Length);
+            }
+
+            ReadOnlySpan<char> keyword = "interface".AsSpan();
+            ReadOnlySpan<char> targetInterface = interfaceName.AsSpan();
+            int searchPos = 0;
+            int ifaceDeclIndex = -1;
+
+            while (searchPos < source.Length)
+            {
+                int rel = source.Slice(searchPos).IndexOf(keyword, StringComparison.Ordinal);
+                if (rel < 0)
+                {
+                    break;
+                }
+
+                int kwStart = searchPos + rel;
+                int kwEnd = kwStart + keyword.Length;
+                searchPos = kwEnd;
+
+                if (kwStart > 0 && IsWordChar(source[kwStart - 1]))
+                {
+                    continue;
+                }
+
+                if (kwEnd >= source.Length || !char.IsWhiteSpace(source[kwEnd]))
+                {
+                    continue;
+                }
+
+                int nameStart = kwEnd;
+                while (nameStart < source.Length && char.IsWhiteSpace(source[nameStart]))
+                {
+                    nameStart++;
+                }
+
+                if (nameStart + targetInterface.Length > source.Length ||
+                    !source.Slice(nameStart, targetInterface.Length).Equals(targetInterface, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                int nameEnd = nameStart + targetInterface.Length;
+                if (nameEnd < source.Length && IsWordChar(source[nameEnd]))
+                {
+                    continue;
+                }
+
+                if (IsInSingleLineComment(source, kwStart))
+                {
+                    continue;
+                }
+
+                ifaceDeclIndex = nameEnd;
+                break;
+            }
+
+            if (ifaceDeclIndex < 0)
+            {
+                return (0, source.Length);
+            }
+
+            int openBraceRel = source.Slice(ifaceDeclIndex).IndexOf('{');
+            if (openBraceRel < 0)
+            {
+                return (0, source.Length);
+            }
+
+            int openBrace = ifaceDeclIndex + openBraceRel;
+            int bodyStart = openBrace + 1;
+            int depth = 1;
+
+            for (int i = bodyStart; i < source.Length; i++)
+            {
+                char c = source[i];
+                if (c == '{')
+                {
+                    depth++;
+                }
+                else if (c == '}')
                 {
                     depth--;
                     if (depth == 0)
                     {
-                        return sourceCode.Substring(openBrace + 1, i - openBrace - 1);
+                        return (bodyStart, i - bodyStart);
                     }
                 }
             }
 
-            return sourceCode.Substring(openBrace + 1);
+            return (bodyStart, source.Length - bodyStart);
+        }
+
+        internal static bool TryExtractReturnTypeSpan(
+            ReadOnlySpan<char> source,
+            int memberNameIndex,
+            out ReadOnlySpan<char> returnTypeSpan)
+        {
+            returnTypeSpan = default;
+
+            int i = memberNameIndex - 1;
+            while (i >= 0 && (source[i] == ' ' || source[i] == '\t'))
+            {
+                i--;
+            }
+
+            if (i < 0 || source[i] == '\n' || source[i] == '\r')
+            {
+                return false;
+            }
+
+            int returnEnd = i + 1;
+            int angleDepth = 0;
+            int parenDepth = 0;
+            bool hasIdentifier = false;
+
+            while (i >= 0)
+            {
+                char c = source[i];
+
+                if (c == '\n' || c == '\r')
+                {
+                    if (angleDepth == 0)
+                    {
+                        break;
+                    }
+                    i--;
+                    continue;
+                }
+
+                if (c == ' ' || c == '\t')
+                {
+                    i--;
+                    continue;
+                }
+
+                if (c == '>')
+                {
+                    // Reject '=>' or '->' arrow tokens
+                    if (i > 0 && (source[i - 1] == '=' || source[i - 1] == '-'))
+                    {
+                        break;
+                    }
+                    angleDepth++;
+                    i--;
+                    continue;
+                }
+
+                if (c == '<')
+                {
+                    if (angleDepth == 0)
+                    {
+                        break;
+                    }
+                    angleDepth--;
+                    i--;
+                    continue;
+                }
+
+                if (c == ')' && angleDepth > 0)
+                {
+                    parenDepth++;
+                    i--;
+                    continue;
+                }
+
+                if (c == '(' && angleDepth > 0)
+                {
+                    if (parenDepth == 0)
+                    {
+                        break;
+                    }
+                    parenDepth--;
+                    i--;
+                    continue;
+                }
+
+                if (c == ']')
+                {
+                    int k = i - 1;
+                    while (k >= 0 && (source[k] == ' ' || source[k] == '\t' || source[k] == ','))
+                    {
+                        k--;
+                    }
+                    if (k >= 0 && source[k] == '[')
+                    {
+                        i = k - 1;
+                        continue;
+                    }
+                    break;
+                }
+
+                if (IsWordChar(c))
+                {
+                    hasIdentifier = true;
+                    i--;
+                    continue;
+                }
+
+                if (c == '?' || c == '.')
+                {
+                    i--;
+                    continue;
+                }
+
+                if (c == ':' && i > 0 && source[i - 1] == ':')
+                {
+                    i -= 2;
+                    continue;
+                }
+
+                if (c == ',' && (angleDepth > 0 || parenDepth > 0))
+                {
+                    i--;
+                    continue;
+                }
+
+                break;
+            }
+
+            if (!hasIdentifier || angleDepth != 0 || parenDepth != 0)
+            {
+                return false;
+            }
+
+            int returnStart = i + 1;
+            if (IsInSingleLineComment(source, returnStart))
+            {
+                return false;
+            }
+
+            ReadOnlySpan<char> candidate = source.Slice(returnStart, returnEnd - returnStart).Trim();
+            candidate = StripLeadingModifiers(candidate);
+            if (candidate.IsEmpty || !ContainsIdentifierStart(candidate) || IsNonTypeKeyword(candidate))
+            {
+                return false;
+            }
+
+            if (HasMultipleTopLevelWords(candidate))
+            {
+                return false;
+            }
+
+            returnTypeSpan = candidate;
+            return true;
+        }
+
+        private static string NormalizeReturnType(ReadOnlySpan<char> returnTypeSpan)
+        {
+            if (returnTypeSpan.IndexOfAny('\r', '\n') < 0)
+            {
+                return returnTypeSpan.ToString();
+            }
+
+            var sb = new System.Text.StringBuilder(returnTypeSpan.Length);
+            bool inWhitespace = false;
+            for (int i = 0; i < returnTypeSpan.Length; i++)
+            {
+                char c = returnTypeSpan[i];
+                if (char.IsWhiteSpace(c))
+                {
+                    inWhitespace = true;
+                }
+                else
+                {
+                    if (inWhitespace && sb.Length > 0)
+                    {
+                        char prev = sb[sb.Length - 1];
+                        if (prev != '<' && prev != '(' && prev != '.' &&
+                            c != '>' && c != ')' && c != ',' && c != '?' && c != '[')
+                        {
+                            sb.Append(' ');
+                        }
+                    }
+                    sb.Append(c);
+                    inWhitespace = false;
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static ReadOnlySpan<char> StripLeadingModifiers(ReadOnlySpan<char> span)
+        {
+            while (!span.IsEmpty)
+            {
+                int wordLen = 0;
+                while (wordLen < span.Length && IsWordChar(span[wordLen]))
+                {
+                    wordLen++;
+                }
+
+                if (wordLen == 0 || wordLen >= span.Length || !char.IsWhiteSpace(span[wordLen]))
+                {
+                    break;
+                }
+
+                ReadOnlySpan<char> word = span.Slice(0, wordLen);
+                if (!IsModifierKeyword(word))
+                {
+                    break;
+                }
+
+                span = span.Slice(wordLen).TrimStart();
+            }
+
+            return span;
+        }
+
+        private static bool IsModifierKeyword(ReadOnlySpan<char> word)
+        {
+            return word.Equals("public", StringComparison.Ordinal) ||
+                   word.Equals("protected", StringComparison.Ordinal) ||
+                   word.Equals("internal", StringComparison.Ordinal) ||
+                   word.Equals("private", StringComparison.Ordinal) ||
+                   word.Equals("virtual", StringComparison.Ordinal) ||
+                   word.Equals("override", StringComparison.Ordinal) ||
+                   word.Equals("abstract", StringComparison.Ordinal) ||
+                   word.Equals("async", StringComparison.Ordinal) ||
+                   word.Equals("static", StringComparison.Ordinal) ||
+                   word.Equals("sealed", StringComparison.Ordinal) ||
+                   word.Equals("new", StringComparison.Ordinal) ||
+                   word.Equals("partial", StringComparison.Ordinal) ||
+                   word.Equals("unsafe", StringComparison.Ordinal) ||
+                   word.Equals("extern", StringComparison.Ordinal) ||
+                   word.Equals("ref", StringComparison.Ordinal) ||
+                   word.Equals("readonly", StringComparison.Ordinal) ||
+                   word.Equals("scoped", StringComparison.Ordinal) ||
+                   word.Equals("required", StringComparison.Ordinal);
+        }
+
+        private static bool IsNonTypeKeyword(ReadOnlySpan<char> word)
+        {
+            if (IsModifierKeyword(word))
+            {
+                return true;
+            }
+
+            return word.Equals("return", StringComparison.Ordinal) ||
+                   word.Equals("await", StringComparison.Ordinal) ||
+                   word.Equals("throw", StringComparison.Ordinal) ||
+                   word.Equals("yield", StringComparison.Ordinal) ||
+                   word.Equals("else", StringComparison.Ordinal) ||
+                   word.Equals("case", StringComparison.Ordinal) ||
+                   word.Equals("goto", StringComparison.Ordinal) ||
+                   word.Equals("if", StringComparison.Ordinal) ||
+                   word.Equals("while", StringComparison.Ordinal) ||
+                   word.Equals("for", StringComparison.Ordinal) ||
+                   word.Equals("foreach", StringComparison.Ordinal) ||
+                   word.Equals("switch", StringComparison.Ordinal) ||
+                   word.Equals("using", StringComparison.Ordinal) ||
+                   word.Equals("lock", StringComparison.Ordinal) ||
+                   word.Equals("catch", StringComparison.Ordinal) ||
+                   word.Equals("when", StringComparison.Ordinal) ||
+                   word.Equals("nameof", StringComparison.Ordinal) ||
+                   word.Equals("typeof", StringComparison.Ordinal) ||
+                   word.Equals("sizeof", StringComparison.Ordinal) ||
+                   word.Equals("default", StringComparison.Ordinal) ||
+                   word.Equals("base", StringComparison.Ordinal) ||
+                   word.Equals("this", StringComparison.Ordinal) ||
+                   word.Equals("var", StringComparison.Ordinal) ||
+                   word.Equals("class", StringComparison.Ordinal) ||
+                   word.Equals("struct", StringComparison.Ordinal) ||
+                   word.Equals("interface", StringComparison.Ordinal) ||
+                   word.Equals("enum", StringComparison.Ordinal) ||
+                   word.Equals("record", StringComparison.Ordinal) ||
+                   word.Equals("delegate", StringComparison.Ordinal) ||
+                   word.Equals("namespace", StringComparison.Ordinal) ||
+                   word.Equals("event", StringComparison.Ordinal);
+        }
+
+        private static bool ContainsIdentifierStart(ReadOnlySpan<char> span)
+        {
+            for (int i = 0; i < span.Length; i++)
+            {
+                char c = span[i];
+                if (char.IsLetter(c) || c == '_')
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool HasMultipleTopLevelWords(ReadOnlySpan<char> candidate)
+        {
+            int angleDepth = 0;
+            bool seenIdentifier = false;
+            bool sawWhitespaceAfterIdentifier = false;
+
+            for (int i = 0; i < candidate.Length; i++)
+            {
+                char c = candidate[i];
+                if (c == '<')
+                {
+                    angleDepth++;
+                    sawWhitespaceAfterIdentifier = false;
+                }
+                else if (c == '>')
+                {
+                    angleDepth--;
+                    sawWhitespaceAfterIdentifier = false;
+                }
+                else if (angleDepth == 0)
+                {
+                    if (IsWordChar(c))
+                    {
+                        if (sawWhitespaceAfterIdentifier)
+                        {
+                            return true;
+                        }
+                        seenIdentifier = true;
+                    }
+                    else if (c == '.' || c == ':')
+                    {
+                        seenIdentifier = false;
+                        sawWhitespaceAfterIdentifier = false;
+                    }
+                    else if (char.IsWhiteSpace(c))
+                    {
+                        if (seenIdentifier)
+                        {
+                            sawWhitespaceAfterIdentifier = true;
+                        }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        internal static bool IsInSingleLineComment(ReadOnlySpan<char> source, int pos)
+        {
+            int lineStart = pos;
+            while (lineStart > 0 && source[lineStart - 1] != '\n' && source[lineStart - 1] != '\r')
+            {
+                lineStart--;
+            }
+
+            bool inString = false;
+            for (int i = lineStart; i < pos - 1; i++)
+            {
+                char c = source[i];
+                if (c == '"' && (i == lineStart || source[i - 1] != '\\'))
+                {
+                    inString = !inString;
+                }
+                else if (!inString && c == '/' && source[i + 1] == '/')
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsWordChar(char c)
+        {
+            return char.IsLetterOrDigit(c) || c == '_';
         }
     }
 }
