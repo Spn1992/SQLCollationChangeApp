@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Data;
 using Microsoft.Data.SqlClient;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -941,20 +942,12 @@ namespace CollationModifier.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError($"Restore failed for database: {databaseName} from {backupFile}", ex);
-                // Attempt emergency MULTI_USER reset if batch execution failed
-                try
-                {
-                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
-                }
-                catch (Exception resetEx)
-                {
-                    _logger.LogError($"Emergency MULTI_USER reset failed following restore error on {databaseName}", resetEx);
-                    throw new AggregateException(
-                        $"Failed to restore database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
-                        ex, resetEx);
-                }
-                throw;
+                await ExecuteEmergencyMultiUserResetAsync(
+                    databaseName,
+                    ex,
+                    $"Restore failed for database: {databaseName} from {backupFile}",
+                    "restore",
+                    "restore database");
             }
         }
 
@@ -988,20 +981,12 @@ namespace CollationModifier.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError($"Failed to alter collation for database: {databaseName}", ex);
-                // Attempt to put it back to multi-user if it failed mid-way
-                try
-                {
-                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
-                }
-                catch (Exception resetEx)
-                {
-                    _logger.LogError($"Emergency MULTI_USER reset failed following collation error on {databaseName}", resetEx);
-                    throw new AggregateException(
-                        $"Failed to alter collation for database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
-                        ex, resetEx);
-                }
-                throw;
+                await ExecuteEmergencyMultiUserResetAsync(
+                    databaseName,
+                    ex,
+                    $"Failed to alter collation for database: {databaseName}",
+                    "collation",
+                    "alter collation for database");
             }
         }
 
@@ -1020,6 +1005,29 @@ namespace CollationModifier.Services
                  _logger.LogError($"Failed emergency MULTI_USER reset for database: {databaseName}", ex);
                  throw;
             }
+        }
+
+        private async Task ExecuteEmergencyMultiUserResetAsync(
+            string databaseName,
+            Exception ex,
+            string primaryMessage,
+            string operationContext,
+            string actionDescription)
+        {
+            _logger.LogError(primaryMessage, ex);
+            try
+            {
+                await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+            }
+            catch (Exception resetEx)
+            {
+                _logger.LogError($"Emergency MULTI_USER reset failed following {operationContext} error on {databaseName}", resetEx);
+                throw new AggregateException(
+                    $"Failed to {actionDescription} '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                    ex, resetEx);
+            }
+
+            ExceptionDispatchInfo.Capture(ex).Throw();
         }
 
         private static string EscapeIdentifier(string identifier)

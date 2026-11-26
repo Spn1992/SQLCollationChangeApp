@@ -620,6 +620,32 @@ namespace CollationModifier.Tests
     {
         private const string SuiteClassName = "MainViewModelTests";
 
+        private sealed class EmergencyRecoveryTestDatabaseService : DatabaseService
+        {
+            public int TrySetMultiUserCallCount { get; private set; }
+            public string? LastResetDatabaseName { get; private set; }
+            public CancellationToken LastResetCancellationToken { get; private set; }
+            public Exception? ResetExceptionToThrow { get; set; }
+
+            public EmergencyRecoveryTestDatabaseService(LoggerService logger) : base(logger)
+            {
+            }
+
+            public override Task TrySetMultiUserAsync(string databaseName, CancellationToken cancellationToken = default)
+            {
+                TrySetMultiUserCallCount++;
+                LastResetDatabaseName = databaseName;
+                LastResetCancellationToken = cancellationToken;
+
+                if (ResetExceptionToThrow != null)
+                {
+                    throw ResetExceptionToThrow;
+                }
+
+                return Task.CompletedTask;
+            }
+        }
+
         public static Task<int> RunAllTestsAsync() => RunTestsAsync();
 
         public static async Task<int> ExecuteAsyncTestAsync(string name, Func<Task> testAction)
@@ -2008,6 +2034,151 @@ namespace CollationModifier.Tests
                 Assert(caughtAggEx!.InnerExceptions.Count == 2, $"AggregateException should contain 2 inner exceptions (primary and reset failure), got {caughtAggEx.InnerExceptions.Count}.");
                 Assert(caughtAggEx.Message.Contains("emergency MULTI_USER reset failed"), $"AggregateException message should mention emergency reset failure, got: '{caughtAggEx.Message}'");
                 Assert(caughtAggEx.Message.Contains("Failed to restore database 'TestDB'"), $"AggregateException message should mention restore database failure, got: '{caughtAggEx.Message}'");
+            });
+
+            await RunAsyncTest("DatabaseService_RestoreDatabaseAsync_PreservesStackTrace_WhenEmergencyResetSucceeds", async () =>
+            {
+                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"restore_recovery_test_{Guid.NewGuid():N}.log");
+                try
+                {
+                    using var logger = new LoggerService(logPath);
+                    var dbService = new EmergencyRecoveryTestDatabaseService(logger);
+                    using var cancelledCts = new CancellationTokenSource();
+                    cancelledCts.Cancel();
+
+                    Exception? caughtEx = null;
+                    try
+                    {
+                        await dbService.RestoreDatabaseAsync("TestDB", "/tmp/nonexistent.bak", null, cancelledCts.Token);
+                    }
+                    catch (Exception ex)
+                    {
+                        caughtEx = ex;
+                    }
+
+                    logger.Flush();
+
+                    Assert(caughtEx != null, "RestoreDatabaseAsync must rethrow primary exception when emergency reset succeeds.");
+                    Assert(!(caughtEx is AggregateException), $"Expected unwrapped primary exception when reset succeeds, got {caughtEx!.GetType().Name}.");
+                    Assert(dbService.TrySetMultiUserCallCount == 1, $"Expected TrySetMultiUserAsync to be called once, got {dbService.TrySetMultiUserCallCount}.");
+                    Assert(dbService.LastResetDatabaseName == "TestDB", $"Expected reset database name 'TestDB', got '{dbService.LastResetDatabaseName}'.");
+                    Assert(dbService.LastResetCancellationToken == CancellationToken.None, "Emergency MULTI_USER reset must use CancellationToken.None.");
+                    Assert(!string.IsNullOrWhiteSpace(caughtEx.StackTrace), "Rethrown exception must retain a non-empty stack trace.");
+
+                    string stackTrace = caughtEx.StackTrace!;
+                    int originIdx = stackTrace.IndexOf("SqlConnection", StringComparison.Ordinal);
+                    int helperIdx = stackTrace.IndexOf("ExecuteEmergencyMultiUserResetAsync", StringComparison.Ordinal);
+                    Assert(originIdx >= 0, $"Rethrown exception stack trace must preserve original throw site frames, got:\n{stackTrace}");
+                    Assert(stackTrace.Contains(nameof(DatabaseService.RestoreDatabaseAsync)), $"Rethrown exception stack trace must preserve RestoreDatabaseAsync frame, got:\n{stackTrace}");
+                    Assert(helperIdx < 0 || originIdx < helperIdx, $"Original throw frame must precede recovery helper rethrow frame in stack trace, got:\n{stackTrace}");
+
+                    string logContent = System.IO.File.ReadAllText(logPath);
+                    Assert(logContent.Contains("Restore failed for database: TestDB from /tmp/nonexistent.bak"), $"Expected primary restore error log entry, got:\n{logContent}");
+                }
+                finally
+                {
+                    if (System.IO.File.Exists(logPath))
+                    {
+                        System.IO.File.Delete(logPath);
+                    }
+                }
+            });
+
+            await RunAsyncTest("DatabaseService_AlterCollationAsync_PreservesStackTrace_WhenEmergencyResetSucceeds_AndSkipsResetOnFormatError", async () =>
+            {
+                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"alter_recovery_test_{Guid.NewGuid():N}.log");
+                try
+                {
+                    using var logger = new LoggerService(logPath);
+                    var dbService = new EmergencyRecoveryTestDatabaseService(logger);
+
+                    // 1. Invalid collation format must throw ArgumentException before try without invoking emergency reset
+                    bool threwArgumentEx = false;
+                    try
+                    {
+                        await dbService.AlterCollationAsync("TestDB", "Invalid-Collation;DROP");
+                    }
+                    catch (ArgumentException)
+                    {
+                        threwArgumentEx = true;
+                    }
+                    Assert(threwArgumentEx, "AlterCollationAsync must throw ArgumentException for invalid collation format.");
+                    Assert(dbService.TrySetMultiUserCallCount == 0, "Invalid collation format must not trigger TrySetMultiUserAsync.");
+
+                    // 2. SQL failure with successful emergency reset must preserve original exception and stack trace
+                    Exception? caughtEx = null;
+                    try
+                    {
+                        await dbService.AlterCollationAsync("TestDB", "Latin1_General_100_CI_AS");
+                    }
+                    catch (Exception ex)
+                    {
+                        caughtEx = ex;
+                    }
+
+                    Assert(caughtEx != null, "AlterCollationAsync must rethrow primary exception when emergency reset succeeds.");
+                    Assert(!(caughtEx is AggregateException), $"Expected unwrapped primary exception when reset succeeds, got {caughtEx!.GetType().Name}.");
+                    Assert(dbService.TrySetMultiUserCallCount == 1, $"Expected TrySetMultiUserAsync to be called once, got {dbService.TrySetMultiUserCallCount}.");
+                    Assert(dbService.LastResetDatabaseName == "TestDB", $"Expected reset database name 'TestDB', got '{dbService.LastResetDatabaseName}'.");
+                    Assert(dbService.LastResetCancellationToken == CancellationToken.None, "Emergency MULTI_USER reset must use CancellationToken.None.");
+                    Assert(!string.IsNullOrWhiteSpace(caughtEx.StackTrace), "Rethrown exception must retain a non-empty stack trace.");
+
+                    string stackTrace = caughtEx.StackTrace!;
+                    int originIdx = stackTrace.IndexOf("SqlConnection", StringComparison.Ordinal);
+                    int helperIdx = stackTrace.IndexOf("ExecuteEmergencyMultiUserResetAsync", StringComparison.Ordinal);
+                    Assert(originIdx >= 0, $"Rethrown exception stack trace must preserve original throw site frames, got:\n{stackTrace}");
+                    Assert(stackTrace.Contains(nameof(DatabaseService.AlterCollationAsync)), $"Rethrown exception stack trace must preserve AlterCollationAsync frame, got:\n{stackTrace}");
+                    Assert(helperIdx < 0 || originIdx < helperIdx, $"Original throw frame must precede recovery helper rethrow frame in stack trace, got:\n{stackTrace}");
+
+                    // 3. Double failure formats AggregateException and logs consistently with ErrorFormattingHelper lock detection
+                    var simulatedResetEx = new InvalidOperationException("Simulated reset failure");
+                    dbService.ResetExceptionToThrow = simulatedResetEx;
+
+                    AggregateException? alterAggEx = null;
+                    try
+                    {
+                        await dbService.AlterCollationAsync("TestDB", "Latin1_General_100_CI_AS");
+                    }
+                    catch (AggregateException aggEx)
+                    {
+                        alterAggEx = aggEx;
+                    }
+
+                    Assert(alterAggEx != null, "Expected AggregateException when AlterCollationAsync and reset both fail.");
+                    Assert(alterAggEx!.InnerExceptions.Count == 2 && ReferenceEquals(alterAggEx.InnerExceptions[1], simulatedResetEx), "Expected primary and simulated reset exceptions as inner exceptions.");
+                    Assert(alterAggEx.Message.Contains("Failed to alter collation for database 'TestDB'") && alterAggEx.Message.Contains("and emergency MULTI_USER reset failed: Simulated reset failure"),
+                        $"Unexpected AlterCollationAsync AggregateException message: '{alterAggEx.Message}'");
+                    Assert(ErrorFormattingHelper.IsSingleUserLockState(alterAggEx), "ErrorFormattingHelper.IsSingleUserLockState must detect AlterCollationAsync AggregateException.");
+
+                    AggregateException? restoreAggEx = null;
+                    try
+                    {
+                        await dbService.RestoreDatabaseAsync("TestDB", "/tmp/nonexistent.bak");
+                    }
+                    catch (AggregateException aggEx)
+                    {
+                        restoreAggEx = aggEx;
+                    }
+
+                    Assert(restoreAggEx != null, "Expected AggregateException when RestoreDatabaseAsync and reset both fail.");
+                    Assert(restoreAggEx!.InnerExceptions.Count == 2 && ReferenceEquals(restoreAggEx.InnerExceptions[1], simulatedResetEx), "Expected primary and simulated reset exceptions as inner exceptions.");
+                    Assert(restoreAggEx.Message.Contains("Failed to restore database 'TestDB'") && restoreAggEx.Message.Contains("and emergency MULTI_USER reset failed: Simulated reset failure"),
+                        $"Unexpected RestoreDatabaseAsync AggregateException message: '{restoreAggEx.Message}'");
+                    Assert(ErrorFormattingHelper.IsSingleUserLockState(restoreAggEx), "ErrorFormattingHelper.IsSingleUserLockState must detect RestoreDatabaseAsync AggregateException.");
+
+                    logger.Flush();
+                    string logContent = System.IO.File.ReadAllText(logPath);
+                    Assert(logContent.Contains("Failed to alter collation for database: TestDB"), $"Expected primary collation error log entry, got:\n{logContent}");
+                    Assert(logContent.Contains("Emergency MULTI_USER reset failed following collation error on TestDB"), $"Expected collation reset failure log entry, got:\n{logContent}");
+                    Assert(logContent.Contains("Emergency MULTI_USER reset failed following restore error on TestDB"), $"Expected restore reset failure log entry, got:\n{logContent}");
+                }
+                finally
+                {
+                    if (System.IO.File.Exists(logPath))
+                    {
+                        System.IO.File.Delete(logPath);
+                    }
+                }
             });
 
             await RunAsyncTest("ConnectAsync_PopulatesSupportedCollations_OnSuccessfulConnection", async () =>
