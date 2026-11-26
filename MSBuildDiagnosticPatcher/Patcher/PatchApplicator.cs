@@ -31,7 +31,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            string source = File.ReadAllText(candidate.TargetFilePath);
+            var (source, encoding, _) = PatchGenerator.ReadFileWithEncoding(candidate.TargetFilePath);
+            string newline = PatchGenerator.DetectNewline(source);
 
             // Scope duplicate guard to the target type body when available so multi-class files work cleanly
             string checkRegion = source;
@@ -57,8 +58,21 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return false;
             }
 
-            string updatedSource = source.Insert(insertPos, "\n" + candidate.GeneratedCode + "\n");
-            File.WriteAllText(candidate.TargetFilePath, updatedSource);
+            string normalizedStubs = string.Join(
+                newline + newline,
+                missingEntries
+                    .Select(m => PatchGenerator.NormalizeNewlines(m.GeneratedCode.Trim('\r', '\n'), newline))
+                    .Where(code => !string.IsNullOrWhiteSpace(code)));
+
+            if (string.IsNullOrWhiteSpace(normalizedStubs))
+            {
+                Console.WriteLine($"[INFO] Target file already contains implementation. Skipped: {candidate.TargetFilePath}");
+                candidate.IsApplied = true;
+                return true;
+            }
+
+            string updatedSource = PatchGenerator.SpliceCodeAtInsertionPoint(source, insertPos, normalizedStubs, newline);
+            File.WriteAllText(candidate.TargetFilePath, updatedSource, encoding);
 
             candidate.IsApplied = true;
             Console.WriteLine($"[SUCCESS] Successfully applied patch to '{candidate.TargetFilePath}'.");

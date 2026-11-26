@@ -9,6 +9,14 @@
         Title="Collation Modifier Utility" Height="700" Width="900"
         WindowStartupLocation="CenterScreen">
 
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </Window.Resources>
+
+    <Window.DataContext>
+        <viewmodels:MainViewModel />
+    </Window.DataContext>
+
     <Grid>
         <!-- Main Content Area -->
         <Grid Margin="0,0,0,30">
@@ -183,24 +191,8 @@
                             </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
-                            <Button x:Name="btnRunPreflightCheck"
-                                    Content="Run Pre-flight Check"
-                                    Command="{Binding RunPreflightCheckCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    MinHeight="36"
-                                    Margin="0,0,12,0"
-                                    AutomationProperties.Name="Run Pre-flight Check"
-                                    AutomationProperties.HelpText="Run read-only pre-flight checks for active sessions, permissions, and schema dependencies without modifying the database"
-                                    ToolTip="Run read-only pre-flight checks without modifying the database" />
-                            <Button x:Name="btnProcessCollationChange"
-                                    Content="Process Collation Change"
-                                    Command="{Binding ProcessCommand}"
-                                    Style="{StaticResource PrimaryButton}"
-                                    MinHeight="36"
-                                    Margin="0,0,12,0"
-                                    AutomationProperties.Name="Process Collation Change"
-                                    AutomationProperties.DescribedBy="{Binding ElementName=lblWarning}"
-                                    AutomationProperties.HelpText="Changes only the database default collation while leaving existing user columns unchanged, and sets the database to SINGLE_USER mode briefly which may drop active connections" />
+                            <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0"
+                                    AutomationProperties.HelpText="{Binding ElementName=lblWarning, Path=Text, FallbackValue='Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections.'}" />
                             <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
                                     MinHeight="36"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
