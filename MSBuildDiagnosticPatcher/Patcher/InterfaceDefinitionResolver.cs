@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace MSBuildDiagnosticPatcher.Patcher
@@ -20,9 +21,20 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
     public class InterfaceDefinitionResolver
     {
-        private static readonly Regex Cs0535Regex = new Regex(
-            @"^'(?<class>[^']+)'\s+does not implement interface member\s+'(?<interface>[^.]+)\.(?<member>[^'(]+)(?:\((?<params>.*)\))?'",
+        private static readonly Regex Cs0535OuterRegex = new Regex(
+            @"^'(?<class>[^']+)'\s+does not implement interface member\s+'(?<memberSpec>[^']+)'",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+        private static readonly HashSet<string> MemberLeadingModifiers = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "public", "protected", "internal", "private",
+            "new", "unsafe", "virtual", "abstract", "static"
+        };
+
+        private static readonly HashSet<string> ParameterModifiers = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ref", "out", "in", "params", "this", "scoped", "readonly"
+        };
 
         private readonly object _cacheLock = new object();
         private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
@@ -43,18 +55,65 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         public static (string ClassName, string InterfaceName, string MemberName, string ExpectedParamTypes)? ParseCs0535Message(string message)
         {
-            var match = Cs0535Regex.Match(message.Trim());
+            var match = Cs0535OuterRegex.Match(message.Trim());
             if (!match.Success)
             {
                 return null;
             }
 
-            return (
-                match.Groups["class"].Value.Trim(),
-                match.Groups["interface"].Value.Trim(),
-                match.Groups["member"].Value.Trim(),
-                match.Groups["params"].Success ? match.Groups["params"].Value.Trim() : string.Empty
-            );
+            string className = match.Groups["class"].Value.Trim();
+            string memberSpec = match.Groups["memberSpec"].Value.Trim();
+
+            // Split memberSpec into head (Interface.Member) and optional (params) at angle depth 0
+            int angleDepth = 0;
+            int openParen = -1;
+            for (int i = 0; i < memberSpec.Length; i++)
+            {
+                char c = memberSpec[i];
+                if (c == '<') angleDepth++;
+                else if (c == '>' && angleDepth > 0) angleDepth--;
+                else if (c == '(' && angleDepth == 0)
+                {
+                    openParen = i;
+                    break;
+                }
+            }
+
+            string head;
+            string expectedParams = string.Empty;
+            if (openParen >= 0 && memberSpec.EndsWith(")", StringComparison.Ordinal))
+            {
+                head = memberSpec.Substring(0, openParen).Trim();
+                expectedParams = memberSpec.Substring(openParen + 1, memberSpec.Length - openParen - 2).Trim();
+            }
+            else
+            {
+                head = memberSpec;
+            }
+
+            // Find last '.' at angle depth 0 separating InterfaceName and MemberName
+            angleDepth = 0;
+            int lastDot = -1;
+            for (int i = 0; i < head.Length; i++)
+            {
+                char c = head[i];
+                if (c == '<') angleDepth++;
+                else if (c == '>' && angleDepth > 0) angleDepth--;
+                else if (c == '.' && angleDepth == 0)
+                {
+                    lastDot = i;
+                }
+            }
+
+            if (lastDot <= 0 || lastDot >= head.Length - 1)
+            {
+                return null;
+            }
+
+            string interfaceName = head.Substring(0, lastDot).Trim();
+            string memberName = head.Substring(lastDot + 1).Trim();
+
+            return (className, interfaceName, memberName, expectedParams);
         }
 
         public InterfaceMemberInfo? ResolveInterfaceMember(
@@ -65,29 +124,55 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string? projectRoot = null)
         {
             string? interfaceFile = FindInterfaceFile(interfaceName, contextFilePath, projectRoot);
-            if (interfaceFile == null)
+            if (interfaceFile != null)
             {
-                // Fallback: construct signature directly from diagnostic error if interface file not found
-                return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes);
+                string? content = GetOrReadFileContent(interfaceFile);
+                if (content != null)
+                {
+                    var memberInfo = ExtractMemberFromInterfaceSource(content, interfaceName, memberName, expectedParamTypes);
+                    if (memberInfo != null)
+                    {
+                        memberInfo.InterfaceFilePath = interfaceFile;
+                        return memberInfo;
+                    }
+                }
             }
 
-            string? content = GetOrReadFileContent(interfaceFile);
-            if (content == null)
+            // Check contextFilePath when the file declares the interface alongside the implementing type
+            if (!string.IsNullOrWhiteSpace(contextFilePath))
             {
-                return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
+                string? contextContent = GetOrReadFileContent(contextFilePath);
+                if (contextContent != null && ContainsInterfaceDeclaration(contextContent, interfaceName))
+                {
+                    var contextMember = ExtractMemberFromInterfaceSource(contextContent, interfaceName, memberName, expectedParamTypes);
+                    if (contextMember != null)
+                    {
+                        contextMember.InterfaceFilePath = contextFilePath;
+                        return contextMember;
+                    }
+                }
             }
 
-            var bodyOffsets = GetOrComputeInterfaceBodyOffsets(interfaceFile, interfaceName, content);
-            ReadOnlySpan<char> bodySpan = content.AsSpan(bodyOffsets.Start, bodyOffsets.Length);
-
-            var memberInfo = ExtractMemberFromInterfaceBody(bodySpan, interfaceName, memberName, expectedParamTypes);
-            if (memberInfo != null)
-            {
-                memberInfo.InterfaceFilePath = interfaceFile;
-                return memberInfo;
-            }
-
+            // Fallback: construct signature directly from diagnostic error if interface definition is not found
             return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
+        }
+
+        private static bool ContainsInterfaceDeclaration(string sourceCode, string interfaceName)
+        {
+            string shortName = GetShortInterfaceName(interfaceName);
+            if (string.IsNullOrEmpty(shortName))
+            {
+                return false;
+            }
+
+            string masked = CSharpLexer.MaskCommentsAndLiterals(sourceCode);
+            return Regex.IsMatch(masked, $@"\binterface\s+@?{Regex.Escape(shortName)}\b");
+        }
+
+        private static string GetShortInterfaceName(string interfaceName)
+        {
+            var segments = CSharpLexer.SplitQualifiedTypeSegments(interfaceName);
+            return segments.Count > 0 ? segments[segments.Count - 1].TrimStart('@') : CSharpLexer.StripGenericArity(interfaceName).TrimStart('@');
         }
 
         private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
@@ -139,7 +224,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
         public string? FindInterfaceFile(string interfaceName, string contextFilePath, string? projectRoot)
         {
             string root = string.IsNullOrWhiteSpace(projectRoot) ? Directory.GetCurrentDirectory() : projectRoot;
-            string cacheKey = $"{interfaceName}|{contextFilePath}|{root}";
+            string shortName = GetShortInterfaceName(interfaceName);
+            string cacheKey = $"{shortName}|{contextFilePath}|{root}";
 
             lock (_cacheLock)
             {
@@ -149,7 +235,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            string? resolvedPath = ResolveInterfaceFilePathInternal(interfaceName, contextFilePath, root);
+            string? resolvedPath = ResolveInterfaceFilePathInternal(shortName, contextFilePath, root);
 
             lock (_cacheLock)
             {
@@ -159,9 +245,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return resolvedPath;
         }
 
-        private string? ResolveInterfaceFilePathInternal(string interfaceName, string contextFilePath, string root)
+        private string? ResolveInterfaceFilePathInternal(string shortInterfaceName, string contextFilePath, string root)
         {
-            string fileName = $"{interfaceName}.cs";
+            string fileName = $"{shortInterfaceName}.cs";
 
             // 1. Same directory as context file
             string? dir = Path.GetDirectoryName(contextFilePath);
@@ -221,149 +307,538 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string memberName,
             string expectedParamTypes)
         {
-            if (string.IsNullOrEmpty(sourceCode) || string.IsNullOrWhiteSpace(memberName))
+            if (string.IsNullOrWhiteSpace(sourceCode) || string.IsNullOrWhiteSpace(memberName))
             {
                 return null;
             }
 
-            var bodyOffsets = FindInterfaceBodyOffsets(sourceCode.AsSpan(), interfaceName);
-            ReadOnlySpan<char> bodySpan = sourceCode.AsSpan(bodyOffsets.Start, bodyOffsets.Length);
-            return ExtractMemberFromInterfaceBody(bodySpan, interfaceName, memberName, expectedParamTypes);
+            var scanned = CSharpLexer.Scan(sourceCode);
+            var (bodyStripped, bodyMasked, typeParamMap) = ExtractInterfaceBodySlices(scanned, interfaceName);
+
+            var declarations = SplitInterfaceDeclarations(bodyStripped, bodyMasked);
+            string targetBaseMemberName = CSharpLexer.StripGenericArity(memberName).TrimStart('@');
+
+            InterfaceMemberInfo? bestMethodMatch = null;
+
+            foreach (var (declStripped, declMasked) in declarations)
+            {
+                if (TryParseMethodDeclaration(declStripped, declMasked, interfaceName, targetBaseMemberName, typeParamMap, out var methodInfo))
+                {
+                    if (MatchesParameterTypes(methodInfo.ParameterList, expectedParamTypes))
+                    {
+                        return methodInfo;
+                    }
+                    bestMethodMatch ??= methodInfo;
+                }
+            }
+
+            if (bestMethodMatch != null)
+            {
+                return bestMethodMatch;
+            }
+
+            foreach (var (declStripped, declMasked) in declarations)
+            {
+                if (TryParsePropertyDeclaration(declStripped, declMasked, interfaceName, targetBaseMemberName, typeParamMap, out var propInfo))
+                {
+                    return propInfo;
+                }
+            }
+
+            return null;
         }
 
-        private static InterfaceMemberInfo? ExtractMemberFromInterfaceBody(
-            ReadOnlySpan<char> bodySpan,
-            string interfaceName,
-            string memberName,
-            string expectedParamTypes)
+        private static List<(string Stripped, string Masked)> SplitInterfaceDeclarations(string bodyStripped, string bodyMasked)
         {
-            if (bodySpan.IsEmpty || string.IsNullOrWhiteSpace(memberName))
+            var list = new List<(string, string)>();
+            int braceDepth = 0;
+            int parenDepth = 0;
+            int bracketDepth = 0;
+            int start = 0;
+
+            for (int i = 0; i < bodyMasked.Length; i++)
             {
-                return null;
+                char c = bodyMasked[i];
+                switch (c)
+                {
+                    case '(':
+                        parenDepth++;
+                        break;
+                    case ')':
+                        if (parenDepth > 0) parenDepth--;
+                        break;
+                    case '[':
+                        bracketDepth++;
+                        break;
+                    case ']':
+                        if (bracketDepth > 0) bracketDepth--;
+                        break;
+                    case '{':
+                        braceDepth++;
+                        break;
+                    case '}':
+                        if (braceDepth > 0)
+                        {
+                            braceDepth--;
+                            if (braceDepth == 0 && parenDepth == 0 && bracketDepth == 0)
+                            {
+                                AddSliceIfNonEmpty(list, bodyStripped, bodyMasked, start, i + 1);
+                                start = i + 1;
+                            }
+                        }
+                        break;
+                    case ';':
+                        if (braceDepth == 0 && parenDepth == 0 && bracketDepth == 0)
+                        {
+                            AddSliceIfNonEmpty(list, bodyStripped, bodyMasked, start, i + 1);
+                            start = i + 1;
+                        }
+                        break;
+                }
             }
 
-            ReadOnlySpan<char> targetName = memberName.AsSpan();
-            InterfaceMemberInfo? bestMethodMatch = null;
-            InterfaceMemberInfo? propertyMatch = null;
-            int searchStart = 0;
-
-            while (searchStart < bodySpan.Length)
+            if (start < bodyMasked.Length)
             {
-                int relIdx = bodySpan.Slice(searchStart).IndexOf(targetName, StringComparison.Ordinal);
-                if (relIdx < 0)
-                {
-                    break;
-                }
+                AddSliceIfNonEmpty(list, bodyStripped, bodyMasked, start, bodyMasked.Length);
+            }
 
-                int nameIdx = searchStart + relIdx;
-                searchStart = nameIdx + 1;
+            return list;
+        }
 
-                // Member declaration name must be preceded by whitespace
-                if (nameIdx == 0 || !char.IsWhiteSpace(bodySpan[nameIdx - 1]))
+        private static void AddSliceIfNonEmpty(
+            List<(string, string)> list,
+            string stripped,
+            string masked,
+            int start,
+            int endExclusive)
+        {
+            while (start < endExclusive && char.IsWhiteSpace(masked[start])) start++;
+            while (endExclusive > start && char.IsWhiteSpace(masked[endExclusive - 1])) endExclusive--;
+
+            if (endExclusive > start)
+            {
+                list.Add((stripped.Substring(start, endExclusive - start), masked.Substring(start, endExclusive - start)));
+            }
+        }
+
+        private static int SkipAttributesAndMemberModifiers(string declMasked, out bool isEvent)
+        {
+            isEvent = false;
+            int pos = 0;
+            int len = declMasked.Length;
+
+            while (pos < len)
+            {
+                pos = CSharpLexer.SkipWhitespace(declMasked, pos, len);
+                if (pos >= len) break;
+
+                if (declMasked[pos] == '[')
                 {
+                    pos = CSharpLexer.SkipBalanced(declMasked, pos, len, '[', ']');
                     continue;
                 }
 
-                int afterName = nameIdx + targetName.Length;
-                while (afterName < bodySpan.Length && char.IsWhiteSpace(bodySpan[afterName]))
+                if (CSharpLexer.IsIdentifierStart(declMasked[pos]))
                 {
-                    afterName++;
+                    int wordEnd = CSharpLexer.ReadWord(declMasked, pos, len);
+                    string word = declMasked.Substring(pos, wordEnd - pos);
+
+                    if (word == "event")
+                    {
+                        isEvent = true;
+                        return wordEnd;
+                    }
+
+                    if (MemberLeadingModifiers.Contains(word))
+                    {
+                        pos = wordEnd;
+                        continue;
+                    }
                 }
 
-                if (afterName >= bodySpan.Length)
+                break;
+            }
+
+            return pos;
+        }
+
+        private static bool TryParseMethodDeclaration(
+            string declStripped,
+            string declMasked,
+            string interfaceName,
+            string targetBaseMemberName,
+            Dictionary<string, string>? typeParamMap,
+            out InterfaceMemberInfo info)
+        {
+            info = null!;
+            if (!declMasked.EndsWith(";", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            int pos = SkipAttributesAndMemberModifiers(declMasked, out bool isEvent);
+            if (isEvent || pos >= declMasked.Length - 1)
+            {
+                return false;
+            }
+
+            // Exclude default expression-bodied end if '=>' exists at top level
+            int sigEnd = FindTopLevelArrowOrEnd(declMasked, pos, declMasked.Length - 1);
+
+            // Collect all top-level (...) groups in [pos .. sigEnd)
+            var parenGroups = new List<(int Open, int Close)>();
+            int angleDepth = 0;
+            int bracketDepth = 0;
+            int parenDepth = 0;
+            int currentOpenParen = -1;
+
+            for (int i = pos; i < sigEnd; i++)
+            {
+                char c = declMasked[i];
+                switch (c)
                 {
-                    break;
-                }
-
-                char delimiter = bodySpan[afterName];
-                if (delimiter == '(')
-                {
-                    int paramStart = afterName + 1;
-                    int closeParenRel = bodySpan.Slice(paramStart).IndexOf(')');
-                    if (closeParenRel < 0)
-                    {
-                        continue;
-                    }
-
-                    int closeParen = paramStart + closeParenRel;
-                    int afterCloseParen = closeParen + 1;
-                    while (afterCloseParen < bodySpan.Length && char.IsWhiteSpace(bodySpan[afterCloseParen]))
-                    {
-                        afterCloseParen++;
-                    }
-
-                    // Require a terminating semicolon token so default interface implementations are ignored
-                    if (afterCloseParen >= bodySpan.Length || bodySpan[afterCloseParen] != ';')
-                    {
-                        continue;
-                    }
-
-                    if (!TryExtractReturnTypeSpan(bodySpan, nameIdx, out ReadOnlySpan<char> returnTypeSpan))
-                    {
-                        continue;
-                    }
-
-                    string returnType = NormalizeReturnType(returnTypeSpan);
-                    string paramList = bodySpan.Slice(paramStart, closeParenRel).Trim().ToString();
-
-                    var info = new InterfaceMemberInfo
-                    {
-                        InterfaceName = interfaceName,
-                        MemberName = memberName,
-                        ReturnType = returnType,
-                        ParameterList = paramList,
-                        IsProperty = false,
-                        FullSignature = $"{returnType} {memberName}({paramList})"
-                    };
-
-                    // Check parameter type matching
-                    if (MatchesParameterTypes(paramList, expectedParamTypes))
-                    {
-                        return info;
-                    }
-
-                    bestMethodMatch ??= info;
-                    searchStart = afterCloseParen + 1;
-                }
-                else if (delimiter == '{' && propertyMatch == null)
-                {
-                    int accessStart = afterName + 1;
-                    int closeBraceRel = bodySpan.Slice(accessStart).IndexOf('}');
-                    if (closeBraceRel < 0)
-                    {
-                        continue;
-                    }
-
-                    if (!TryExtractReturnTypeSpan(bodySpan, nameIdx, out ReadOnlySpan<char> propReturnSpan))
-                    {
-                        continue;
-                    }
-
-                    string access = bodySpan.Slice(accessStart, closeBraceRel).Trim().ToString();
-                    bool hasGetter = access.Contains("get", StringComparison.Ordinal);
-                    bool hasSetter = access.Contains("set", StringComparison.Ordinal);
-                    bool hasInit = access.Contains("init", StringComparison.Ordinal);
-                    if (!hasGetter && !hasSetter && !hasInit)
-                    {
-                        continue;
-                    }
-
-                    string returnType = NormalizeReturnType(propReturnSpan);
-                    propertyMatch = new InterfaceMemberInfo
-                    {
-                        InterfaceName = interfaceName,
-                        MemberName = memberName,
-                        ReturnType = returnType,
-                        IsProperty = true,
-                        HasGetter = hasGetter,
-                        HasSetter = hasSetter,
-                        FullSignature = $"{returnType} {memberName} {{ {access} }}"
-                    };
-                    searchStart = accessStart + closeBraceRel + 1;
+                    case '<':
+                        if (parenDepth == 0 && bracketDepth == 0) angleDepth++;
+                        break;
+                    case '>':
+                        if (parenDepth == 0 && bracketDepth == 0 && angleDepth > 0) angleDepth--;
+                        break;
+                    case '[':
+                        if (parenDepth == 0) bracketDepth++;
+                        break;
+                    case ']':
+                        if (parenDepth == 0 && bracketDepth > 0) bracketDepth--;
+                        break;
+                    case '(':
+                        if (parenDepth == 0 && bracketDepth == 0 && angleDepth == 0)
+                        {
+                            currentOpenParen = i;
+                        }
+                        parenDepth++;
+                        break;
+                    case ')':
+                        if (parenDepth > 0)
+                        {
+                            parenDepth--;
+                            if (parenDepth == 0 && bracketDepth == 0 && angleDepth == 0 && currentOpenParen >= 0)
+                            {
+                                parenGroups.Add((currentOpenParen, i));
+                                currentOpenParen = -1;
+                            }
+                        }
+                        break;
+                    case '{':
+                    case '}':
+                        if (parenDepth == 0 && bracketDepth == 0 && angleDepth == 0)
+                        {
+                            return false;
+                        }
+                        break;
                 }
             }
 
-            return bestMethodMatch ?? propertyMatch;
+            if (parenGroups.Count == 0)
+            {
+                return false;
+            }
+
+            // Find the parameter list (...) — normally the last top-level (...) unless a 'where T : new()' constraint follows it
+            int paramGroupIdx = parenGroups.Count - 1;
+            while (paramGroupIdx > 0)
+            {
+                int prevClose = parenGroups[paramGroupIdx - 1].Close;
+                int thisOpen = parenGroups[paramGroupIdx].Open;
+                string between = declMasked.Substring(prevClose + 1, thisOpen - prevClose - 1);
+                if (Regex.IsMatch(between, @"\bwhere\b"))
+                {
+                    paramGroupIdx--;
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            var (openParen, closeParen) = parenGroups[paramGroupIdx];
+
+            // Verify trailing tokens after closeParen are only whitespace or 'where' constraints
+            string trailing = declMasked.Substring(closeParen + 1, sigEnd - closeParen - 1).Trim();
+            if (trailing.Length > 0 && !trailing.StartsWith("where", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            // Walk backward before openParen for optional generic <T> and method identifier
+            int cursor = TrimRightIndex(declMasked, pos, openParen);
+            string methodTypeParams = string.Empty;
+
+            if (cursor > pos && declMasked[cursor - 1] == '>')
+            {
+                int ltIdx = FindMatchingOpenAngle(declMasked, pos, cursor - 1);
+                if (ltIdx > pos)
+                {
+                    methodTypeParams = CSharpLexer.CollapseWhitespacePreservingLiterals(
+                        declStripped.Substring(ltIdx, cursor - ltIdx));
+                    cursor = TrimRightIndex(declMasked, pos, ltIdx);
+                }
+            }
+
+            int nameStart = ReadIdentifierBackward(declMasked, pos, cursor);
+            if (nameStart < 0 || nameStart >= cursor)
+            {
+                return false;
+            }
+
+            string parsedName = declStripped.Substring(nameStart, cursor - nameStart).Trim();
+            string cleanParsedName = parsedName.TrimStart('@');
+            if (!cleanParsedName.Equals(targetBaseMemberName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string rawReturnType = declStripped.Substring(pos, nameStart - pos);
+            string returnType = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            if (string.IsNullOrWhiteSpace(returnType) || !IsBalancedTypeTokens(returnType))
+            {
+                return false;
+            }
+
+            string rawParams = declStripped.Substring(openParen + 1, closeParen - openParen - 1);
+            string paramList = CSharpLexer.CollapseWhitespacePreservingLiterals(rawParams);
+
+            if (typeParamMap != null && typeParamMap.Count > 0)
+            {
+                returnType = SubstituteTypeParameters(returnType, typeParamMap);
+                paramList = SubstituteTypeParameters(paramList, typeParamMap);
+            }
+
+            string emittedMemberName = string.IsNullOrEmpty(methodTypeParams)
+                ? parsedName
+                : $"{parsedName}{methodTypeParams}";
+
+            info = new InterfaceMemberInfo
+            {
+                InterfaceName = interfaceName,
+                MemberName = emittedMemberName,
+                ReturnType = returnType,
+                ParameterList = paramList,
+                IsProperty = false,
+                FullSignature = $"{returnType} {emittedMemberName}({paramList})"
+            };
+            return true;
+        }
+
+        private static bool TryParsePropertyDeclaration(
+            string declStripped,
+            string declMasked,
+            string interfaceName,
+            string targetBaseMemberName,
+            Dictionary<string, string>? typeParamMap,
+            out InterfaceMemberInfo info)
+        {
+            info = null!;
+            if (!declMasked.EndsWith("}", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            int pos = SkipAttributesAndMemberModifiers(declMasked, out bool isEvent);
+            if (isEvent || pos >= declMasked.Length - 1)
+            {
+                return false;
+            }
+
+            // Locate top-level '{' of property accessors
+            int angleDepth = 0;
+            int bracketDepth = 0;
+            int parenDepth = 0;
+            int openBrace = -1;
+
+            for (int i = pos; i < declMasked.Length; i++)
+            {
+                char c = declMasked[i];
+                switch (c)
+                {
+                    case '<':
+                        if (parenDepth == 0 && bracketDepth == 0) angleDepth++;
+                        break;
+                    case '>':
+                        if (parenDepth == 0 && bracketDepth == 0 && angleDepth > 0) angleDepth--;
+                        break;
+                    case '[':
+                        if (parenDepth == 0) bracketDepth++;
+                        break;
+                    case ']':
+                        if (parenDepth == 0 && bracketDepth > 0) bracketDepth--;
+                        break;
+                    case '(':
+                        parenDepth++;
+                        break;
+                    case ')':
+                        if (parenDepth > 0) parenDepth--;
+                        break;
+                    case '{':
+                        if (angleDepth == 0 && bracketDepth == 0 && parenDepth == 0)
+                        {
+                            openBrace = i;
+                        }
+                        break;
+                }
+                if (openBrace >= 0) break;
+            }
+
+            if (openBrace <= pos)
+            {
+                return false;
+            }
+
+            int closeBrace = CSharpLexer.FindMatchingBrace(declMasked, openBrace);
+            if (closeBrace != declMasked.Length - 1)
+            {
+                return false;
+            }
+
+            int cursor = TrimRightIndex(declMasked, pos, openBrace);
+            int nameStart = ReadIdentifierBackward(declMasked, pos, cursor);
+            if (nameStart < 0 || nameStart >= cursor)
+            {
+                return false;
+            }
+
+            string parsedName = declStripped.Substring(nameStart, cursor - nameStart).Trim();
+            string cleanParsedName = parsedName.TrimStart('@');
+            if (!cleanParsedName.Equals(targetBaseMemberName, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string rawReturnType = declStripped.Substring(pos, nameStart - pos);
+            string returnType = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            if (string.IsNullOrWhiteSpace(returnType) || !IsBalancedTypeTokens(returnType))
+            {
+                return false;
+            }
+
+            string access = CSharpLexer.CollapseWhitespacePreservingLiterals(
+                declStripped.Substring(openBrace + 1, closeBrace - openBrace - 1));
+
+            if (typeParamMap != null && typeParamMap.Count > 0)
+            {
+                returnType = SubstituteTypeParameters(returnType, typeParamMap);
+            }
+
+            info = new InterfaceMemberInfo
+            {
+                InterfaceName = interfaceName,
+                MemberName = parsedName,
+                ReturnType = returnType,
+                IsProperty = true,
+                HasGetter = Regex.IsMatch(access, @"\bget\b"),
+                HasSetter = Regex.IsMatch(access, @"\bset\b"),
+                FullSignature = $"{returnType} {parsedName} {{ {access} }}"
+            };
+            return true;
+        }
+
+        private static bool IsBalancedTypeTokens(string typeText)
+        {
+            int angle = 0;
+            int bracket = 0;
+            int paren = 0;
+
+            for (int i = 0; i < typeText.Length; i++)
+            {
+                switch (typeText[i])
+                {
+                    case '<': angle++; break;
+                    case '>':
+                        angle--;
+                        if (angle < 0) return false;
+                        break;
+                    case '[': bracket++; break;
+                    case ']':
+                        bracket--;
+                        if (bracket < 0) return false;
+                        break;
+                    case '(': paren++; break;
+                    case ')':
+                        paren--;
+                        if (paren < 0) return false;
+                        break;
+                    case ';':
+                    case '{':
+                    case '}':
+                        return false;
+                }
+            }
+
+            return angle == 0 && bracket == 0 && paren == 0;
+        }
+
+        private static int FindTopLevelArrowOrEnd(string masked, int start, int end)
+        {
+            int paren = 0;
+            int bracket = 0;
+            int angle = 0;
+
+            for (int i = start; i < end - 1; i++)
+            {
+                char c = masked[i];
+                if (c == '(') paren++;
+                else if (c == ')' && paren > 0) paren--;
+                else if (c == '[') bracket++;
+                else if (c == ']' && bracket > 0) bracket--;
+                else if (c == '<' && paren == 0) angle++;
+                else if (c == '>' && paren == 0 && angle > 0) angle--;
+                else if (c == '=' && masked[i + 1] == '>' && paren == 0 && bracket == 0 && angle == 0)
+                {
+                    return i;
+                }
+            }
+
+            return end;
+        }
+
+        private static int TrimRightIndex(string text, int minIndex, int endExclusive)
+        {
+            while (endExclusive > minIndex && char.IsWhiteSpace(text[endExclusive - 1]))
+            {
+                endExclusive--;
+            }
+            return endExclusive;
+        }
+
+        private static int FindMatchingOpenAngle(string masked, int minIndex, int closeAngleIndex)
+        {
+            int depth = 0;
+            for (int i = closeAngleIndex; i >= minIndex; i--)
+            {
+                if (masked[i] == '>') depth++;
+                else if (masked[i] == '<')
+                {
+                    depth--;
+                    if (depth == 0) return i;
+                }
+            }
+            return -1;
+        }
+
+        private static int ReadIdentifierBackward(string masked, int minIndex, int endExclusive)
+        {
+            int i = endExclusive;
+            while (i > minIndex && (char.IsLetterOrDigit(masked[i - 1]) || masked[i - 1] == '_'))
+            {
+                i--;
+            }
+            if (i == endExclusive)
+            {
+                return -1;
+            }
+            if (i > minIndex && masked[i - 1] == '@')
+            {
+                i--;
+            }
+            return CSharpLexer.IsIdentifierStart(masked[i]) ? i : -1;
         }
 
         private static bool MatchesParameterTypes(string actualParamList, string expectedParamTypes)
@@ -373,30 +848,188 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return true;
             }
 
-            var expectedTypes = expectedParamTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
-            var actualParams = actualParamList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var expectedTypes = CSharpLexer.SplitTopLevelCommas(expectedParamTypes);
+            var actualParams = CSharpLexer.SplitTopLevelCommas(actualParamList);
 
-            if (expectedTypes.Length != actualParams.Length)
+            if (expectedTypes.Count != actualParams.Count)
             {
                 return false;
             }
 
-            for (int i = 0; i < expectedTypes.Length; i++)
+            for (int i = 0; i < expectedTypes.Count; i++)
             {
-                string expType = CleanTypeName(expectedTypes[i]);
-                string actParam = actualParams[i].Trim();
-                // actual parameter includes type and name (e.g. "string databaseName" or "CancellationToken cancellationToken = default")
-                string actType = actParam.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries)[0];
-                actType = CleanTypeName(actType);
+                string expNorm = NormalizeTypeForComparison(expectedTypes[i]);
+                string actRawType = ExtractParameterType(actualParams[i]);
+                string actNorm = NormalizeTypeForComparison(actRawType);
 
-                if (!expType.Equals(actType, StringComparison.OrdinalIgnoreCase) &&
-                    !actParam.Contains(expType, StringComparison.OrdinalIgnoreCase))
+                if (!expNorm.Equals(actNorm, StringComparison.OrdinalIgnoreCase) &&
+                    !actualParams[i].Contains(CleanTypeName(expectedTypes[i]), StringComparison.OrdinalIgnoreCase))
                 {
                     return false;
                 }
             }
 
             return true;
+        }
+
+        internal static string ExtractParameterType(string paramDecl)
+        {
+            if (string.IsNullOrWhiteSpace(paramDecl))
+            {
+                return string.Empty;
+            }
+
+            string masked = CSharpLexer.MaskCommentsAndLiterals(paramDecl);
+
+            // 1. Strip default value '= ...' at top level
+            int angle = 0;
+            int bracket = 0;
+            int paren = 0;
+            int eqIdx = -1;
+
+            for (int i = 0; i < masked.Length; i++)
+            {
+                char c = masked[i];
+                if (c == '<') angle++;
+                else if (c == '>' && angle > 0) angle--;
+                else if (c == '[') bracket++;
+                else if (c == ']' && bracket > 0) bracket--;
+                else if (c == '(') paren++;
+                else if (c == ')' && paren > 0) paren--;
+                else if (c == '=' && angle == 0 && bracket == 0 && paren == 0)
+                {
+                    eqIdx = i;
+                    break;
+                }
+            }
+
+            int end = eqIdx >= 0 ? eqIdx : paramDecl.Length;
+            int pos = 0;
+
+            // 2. Skip leading parameter attributes [...] and modifiers (ref, out, in, params, this, scoped)
+            while (pos < end)
+            {
+                pos = CSharpLexer.SkipWhitespace(masked, pos, end);
+                if (pos >= end) break;
+
+                if (masked[pos] == '[')
+                {
+                    pos = CSharpLexer.SkipBalanced(masked, pos, end, '[', ']');
+                    continue;
+                }
+
+                if (CSharpLexer.IsIdentifierStart(masked[pos]))
+                {
+                    int wEnd = CSharpLexer.ReadWord(masked, pos, end);
+                    string word = masked.Substring(pos, wEnd - pos);
+                    if (ParameterModifiers.Contains(word))
+                    {
+                        pos = wEnd;
+                        continue;
+                    }
+                }
+
+                break;
+            }
+
+            // 3. Remove trailing parameter identifier if followed by nothing else
+            int trimmedEnd = TrimRightIndex(masked, pos, end);
+            int paramNameStart = ReadIdentifierBackward(masked, pos, trimmedEnd);
+            if (paramNameStart > pos)
+            {
+                return paramDecl.Substring(pos, paramNameStart - pos).Trim();
+            }
+
+            return paramDecl.Substring(pos, trimmedEnd - pos).Trim();
+        }
+
+        private static string NormalizeTypeForComparison(string typeText)
+        {
+            string s = CleanTypeName(typeText);
+            if (string.IsNullOrEmpty(s))
+            {
+                return string.Empty;
+            }
+
+            // Strip parameter modifiers if present in expected CS0535 type
+            foreach (var mod in ParameterModifiers)
+            {
+                if (s.StartsWith(mod + " ", StringComparison.Ordinal))
+                {
+                    s = s.Substring(mod.Length + 1).TrimStart();
+                }
+            }
+
+            // Normalize tuple element names recursively: (string Host, int Port)[] -> (string,int)[]
+            s = StripTupleElementNames(s);
+
+            // Remove all whitespace and '?' nullability markers for canonical comparison
+            var sb = new StringBuilder(s.Length);
+            foreach (char c in s)
+            {
+                if (!char.IsWhiteSpace(c) && c != '?')
+                {
+                    sb.Append(c);
+                }
+            }
+
+            return sb.ToString();
+        }
+
+        private static string StripTupleElementNames(string typeText)
+        {
+            int openParen = typeText.IndexOf('(');
+            if (openParen < 0)
+            {
+                return typeText;
+            }
+
+            var sb = new StringBuilder(typeText.Length);
+            int i = 0;
+            while (i < typeText.Length)
+            {
+                if (typeText[i] == '(')
+                {
+                    int closeParen = CSharpLexer.SkipBalanced(typeText, i, typeText.Length, '(', ')') - 1;
+                    if (closeParen > i && closeParen < typeText.Length && typeText[closeParen] == ')')
+                    {
+                        string inner = typeText.Substring(i + 1, closeParen - i - 1);
+                        var elements = CSharpLexer.SplitTopLevelCommas(inner);
+                        var normalizedElements = new List<string>(elements.Count);
+                        foreach (var elem in elements)
+                        {
+                            string elemType = ExtractTupleElementType(elem);
+                            normalizedElements.Add(StripTupleElementNames(CleanTypeName(elemType)));
+                        }
+                        sb.Append('(').Append(string.Join(",", normalizedElements)).Append(')');
+                        i = closeParen + 1;
+                        continue;
+                    }
+                }
+
+                sb.Append(typeText[i]);
+                i++;
+            }
+
+            return sb.ToString();
+        }
+
+        private static string ExtractTupleElementType(string elem)
+        {
+            string trimmed = elem.Trim();
+            if (string.IsNullOrEmpty(trimmed)) return trimmed;
+
+            int nameStart = ReadIdentifierBackward(trimmed, 0, trimmed.Length);
+            if (nameStart > 0)
+            {
+                string before = trimmed.Substring(0, nameStart).Trim();
+                // Ensure 'before' is a non-empty valid type (e.g. "string" in "string Host", or "(int, int)" in "(int, int) Pair")
+                if (before.Length > 0 && IsBalancedTypeTokens(before))
+                {
+                    return before;
+                }
+            }
+            return trimmed;
         }
 
         private static string CleanTypeName(string typeName)
@@ -413,16 +1046,15 @@ namespace MSBuildDiagnosticPatcher.Patcher
             bool isAsync = memberName.EndsWith("Async", StringComparison.OrdinalIgnoreCase);
             string returnType = isAsync ? "Task" : "void";
 
-            // Reconstruct parameter names from expected types
+            // Reconstruct parameter names from expected types using balanced comma splitting
             var paramsWithNames = new List<string>();
             if (!string.IsNullOrWhiteSpace(expectedParamTypes))
             {
-                var types = expectedParamTypes.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+                var types = CSharpLexer.SplitTopLevelCommas(expectedParamTypes);
                 int pNum = 1;
                 foreach (var t in types)
                 {
                     string cleanType = t.Trim();
-                    string pName = cleanType.ToLowerInvariant();
                     if (cleanType.Equals("CancellationToken", StringComparison.OrdinalIgnoreCase))
                     {
                         paramsWithNames.Add("CancellationToken cancellationToken = default");
@@ -447,468 +1079,127 @@ namespace MSBuildDiagnosticPatcher.Patcher
             };
         }
 
-        private static (int Start, int Length) FindInterfaceBodyOffsets(ReadOnlySpan<char> source, string interfaceName)
+        private static (string BodyStripped, string BodyMasked, Dictionary<string, string>? TypeParamMap) ExtractInterfaceBodySlices(
+            ScannedSource scanned,
+            string interfaceName)
         {
-            if (source.IsEmpty || string.IsNullOrWhiteSpace(interfaceName))
+            string shortName = GetShortInterfaceName(interfaceName);
+            string stripped = scanned.CommentStripped;
+            string masked = scanned.CommentsAndLiteralsMasked;
+
+            if (string.IsNullOrEmpty(shortName))
             {
-                return (0, source.Length);
+                return (stripped, masked, null);
             }
 
-            ReadOnlySpan<char> keyword = "interface".AsSpan();
-            ReadOnlySpan<char> targetInterface = interfaceName.AsSpan();
-            int searchPos = 0;
-            int ifaceDeclIndex = -1;
-
-            while (searchPos < source.Length)
+            var ifaceMatch = Regex.Match(masked, $@"\binterface\s+@?{Regex.Escape(shortName)}\b");
+            if (!ifaceMatch.Success)
             {
-                int rel = source.Slice(searchPos).IndexOf(keyword, StringComparison.Ordinal);
-                if (rel < 0)
-                {
-                    break;
-                }
-
-                int kwStart = searchPos + rel;
-                int kwEnd = kwStart + keyword.Length;
-                searchPos = kwEnd;
-
-                if (kwStart > 0 && IsWordChar(source[kwStart - 1]))
-                {
-                    continue;
-                }
-
-                if (kwEnd >= source.Length || !char.IsWhiteSpace(source[kwEnd]))
-                {
-                    continue;
-                }
-
-                int nameStart = kwEnd;
-                while (nameStart < source.Length && char.IsWhiteSpace(source[nameStart]))
-                {
-                    nameStart++;
-                }
-
-                if (nameStart + targetInterface.Length > source.Length ||
-                    !source.Slice(nameStart, targetInterface.Length).Equals(targetInterface, StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                int nameEnd = nameStart + targetInterface.Length;
-                if (nameEnd < source.Length && IsWordChar(source[nameEnd]))
-                {
-                    continue;
-                }
-
-                if (IsInSingleLineComment(source, kwStart))
-                {
-                    continue;
-                }
-
-                ifaceDeclIndex = nameEnd;
-                break;
+                return (stripped, masked, null);
             }
 
-            if (ifaceDeclIndex < 0)
-            {
-                return (0, source.Length);
-            }
+            int afterName = ifaceMatch.Index + ifaceMatch.Length;
+            afterName = CSharpLexer.SkipWhitespace(masked, afterName, masked.Length);
 
-            int openBraceRel = source.Slice(ifaceDeclIndex).IndexOf('{');
-            if (openBraceRel < 0)
+            List<string>? declaredTypeParams = null;
+            if (afterName < masked.Length && masked[afterName] == '<')
             {
-                return (0, source.Length);
-            }
-
-            int openBrace = ifaceDeclIndex + openBraceRel;
-            int bodyStart = openBrace + 1;
-            int depth = 1;
-
-            for (int i = bodyStart; i < source.Length; i++)
-            {
-                char c = source[i];
-                if (c == '{')
+                int gtEnd = CSharpLexer.SkipBalanced(masked, afterName, masked.Length, '<', '>');
+                if (gtEnd > afterName + 1)
                 {
-                    depth++;
-                }
-                else if (c == '}')
-                {
-                    depth--;
-                    if (depth == 0)
+                    string rawParams = stripped.Substring(afterName + 1, gtEnd - afterName - 2);
+                    declaredTypeParams = new List<string>();
+                    foreach (var tp in CSharpLexer.SplitTopLevelCommas(rawParams))
                     {
-                        return (bodyStart, i - bodyStart);
+                        // Strip variance modifiers 'in' / 'out'
+                        string cleanTp = Regex.Replace(tp.Trim(), @"^(?:in|out)\s+", "");
+                        if (cleanTp.Length > 0) declaredTypeParams.Add(cleanTp);
                     }
                 }
             }
 
-            return (bodyStart, source.Length - bodyStart);
-        }
-
-        internal static bool TryExtractReturnTypeSpan(
-            ReadOnlySpan<char> source,
-            int memberNameIndex,
-            out ReadOnlySpan<char> returnTypeSpan)
-        {
-            returnTypeSpan = default;
-
-            int i = memberNameIndex - 1;
-            while (i >= 0 && (source[i] == ' ' || source[i] == '\t'))
-            {
-                i--;
-            }
-
-            if (i < 0 || source[i] == '\n' || source[i] == '\r')
-            {
-                return false;
-            }
-
-            int returnEnd = i + 1;
+            // Find opening '{' of interface body at angle/paren/bracket depth 0
             int angleDepth = 0;
             int parenDepth = 0;
-            bool hasIdentifier = false;
+            int bracketDepth = 0;
+            int openBrace = -1;
 
-            while (i >= 0)
+            for (int i = afterName; i < masked.Length; i++)
             {
-                char c = source[i];
-
-                if (c == '\n' || c == '\r')
+                char c = masked[i];
+                if (c == '<') angleDepth++;
+                else if (c == '>' && angleDepth > 0) angleDepth--;
+                else if (c == '(') parenDepth++;
+                else if (c == ')' && parenDepth > 0) parenDepth--;
+                else if (c == '[') bracketDepth++;
+                else if (c == ']' && bracketDepth > 0) bracketDepth--;
+                else if (c == '{' && angleDepth == 0 && parenDepth == 0 && bracketDepth == 0)
                 {
-                    if (angleDepth == 0)
-                    {
-                        break;
-                    }
-                    i--;
-                    continue;
-                }
-
-                if (c == ' ' || c == '\t')
-                {
-                    i--;
-                    continue;
-                }
-
-                if (c == '>')
-                {
-                    // Reject '=>' or '->' arrow tokens
-                    if (i > 0 && (source[i - 1] == '=' || source[i - 1] == '-'))
-                    {
-                        break;
-                    }
-                    angleDepth++;
-                    i--;
-                    continue;
-                }
-
-                if (c == '<')
-                {
-                    if (angleDepth == 0)
-                    {
-                        break;
-                    }
-                    angleDepth--;
-                    i--;
-                    continue;
-                }
-
-                if (c == ')' && angleDepth > 0)
-                {
-                    parenDepth++;
-                    i--;
-                    continue;
-                }
-
-                if (c == '(' && angleDepth > 0)
-                {
-                    if (parenDepth == 0)
-                    {
-                        break;
-                    }
-                    parenDepth--;
-                    i--;
-                    continue;
-                }
-
-                if (c == ']')
-                {
-                    int k = i - 1;
-                    while (k >= 0 && (source[k] == ' ' || source[k] == '\t' || source[k] == ','))
-                    {
-                        k--;
-                    }
-                    if (k >= 0 && source[k] == '[')
-                    {
-                        i = k - 1;
-                        continue;
-                    }
+                    openBrace = i;
                     break;
                 }
-
-                if (IsWordChar(c))
-                {
-                    hasIdentifier = true;
-                    i--;
-                    continue;
-                }
-
-                if (c == '?' || c == '.')
-                {
-                    i--;
-                    continue;
-                }
-
-                if (c == ':' && i > 0 && source[i - 1] == ':')
-                {
-                    i -= 2;
-                    continue;
-                }
-
-                if (c == ',' && (angleDepth > 0 || parenDepth > 0))
-                {
-                    i--;
-                    continue;
-                }
-
-                break;
             }
 
-            if (!hasIdentifier || angleDepth != 0 || parenDepth != 0)
+            if (openBrace < 0)
             {
-                return false;
+                return (stripped, masked, null);
             }
 
-            int returnStart = i + 1;
-            if (IsInSingleLineComment(source, returnStart))
+            var typeParamMap = BuildInterfaceTypeArgumentMap(interfaceName, declaredTypeParams);
+
+            int closeBrace = CSharpLexer.FindMatchingBrace(masked, openBrace);
+            if (closeBrace > openBrace)
             {
-                return false;
+                int len = closeBrace - openBrace - 1;
+                return (stripped.Substring(openBrace + 1, len), masked.Substring(openBrace + 1, len), typeParamMap);
             }
 
-            ReadOnlySpan<char> candidate = source.Slice(returnStart, returnEnd - returnStart).Trim();
-            candidate = StripLeadingModifiers(candidate);
-            if (candidate.IsEmpty || !ContainsIdentifierStart(candidate) || IsNonTypeKeyword(candidate))
-            {
-                return false;
-            }
-
-            if (HasMultipleTopLevelWords(candidate))
-            {
-                return false;
-            }
-
-            returnTypeSpan = candidate;
-            return true;
+            return (stripped.Substring(openBrace + 1), masked.Substring(openBrace + 1), typeParamMap);
         }
 
-        private static string NormalizeReturnType(ReadOnlySpan<char> returnTypeSpan)
+        private static Dictionary<string, string>? BuildInterfaceTypeArgumentMap(
+            string interfaceName,
+            List<string>? declaredTypeParams)
         {
-            if (returnTypeSpan.IndexOfAny('\r', '\n') < 0)
+            if (declaredTypeParams == null || declaredTypeParams.Count == 0)
             {
-                return returnTypeSpan.ToString();
+                return null;
             }
 
-            var sb = new System.Text.StringBuilder(returnTypeSpan.Length);
-            bool inWhitespace = false;
-            for (int i = 0; i < returnTypeSpan.Length; i++)
+            // Extract last top-level <...> on interfaceName if present
+            int lt = interfaceName.IndexOf('<');
+            int gt = interfaceName.LastIndexOf('>');
+            if (lt < 0 || gt <= lt)
             {
-                char c = returnTypeSpan[i];
-                if (char.IsWhiteSpace(c))
+                return null;
+            }
+
+            var suppliedArgs = CSharpLexer.SplitTopLevelCommas(interfaceName.Substring(lt + 1, gt - lt - 1));
+            if (suppliedArgs.Count != declaredTypeParams.Count)
+            {
+                return null;
+            }
+
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            for (int i = 0; i < declaredTypeParams.Count; i++)
+            {
+                if (!declaredTypeParams[i].Equals(suppliedArgs[i], StringComparison.Ordinal))
                 {
-                    inWhitespace = true;
-                }
-                else
-                {
-                    if (inWhitespace && sb.Length > 0)
-                    {
-                        char prev = sb[sb.Length - 1];
-                        if (prev != '<' && prev != '(' && prev != '.' &&
-                            c != '>' && c != ')' && c != ',' && c != '?' && c != '[')
-                        {
-                            sb.Append(' ');
-                        }
-                    }
-                    sb.Append(c);
-                    inWhitespace = false;
+                    map[declaredTypeParams[i]] = suppliedArgs[i];
                 }
             }
 
-            return sb.ToString();
+            return map.Count > 0 ? map : null;
         }
 
-        private static ReadOnlySpan<char> StripLeadingModifiers(ReadOnlySpan<char> span)
+        private static string SubstituteTypeParameters(string text, Dictionary<string, string> typeParamMap)
         {
-            while (!span.IsEmpty)
+            string result = text;
+            foreach (var kvp in typeParamMap)
             {
-                int wordLen = 0;
-                while (wordLen < span.Length && IsWordChar(span[wordLen]))
-                {
-                    wordLen++;
-                }
-
-                if (wordLen == 0 || wordLen >= span.Length || !char.IsWhiteSpace(span[wordLen]))
-                {
-                    break;
-                }
-
-                ReadOnlySpan<char> word = span.Slice(0, wordLen);
-                if (!IsModifierKeyword(word))
-                {
-                    break;
-                }
-
-                span = span.Slice(wordLen).TrimStart();
+                result = Regex.Replace(result, $@"\b{Regex.Escape(kvp.Key)}\b", kvp.Value);
             }
-
-            return span;
-        }
-
-        private static bool IsModifierKeyword(ReadOnlySpan<char> word)
-        {
-            return word.Equals("public", StringComparison.Ordinal) ||
-                   word.Equals("protected", StringComparison.Ordinal) ||
-                   word.Equals("internal", StringComparison.Ordinal) ||
-                   word.Equals("private", StringComparison.Ordinal) ||
-                   word.Equals("virtual", StringComparison.Ordinal) ||
-                   word.Equals("override", StringComparison.Ordinal) ||
-                   word.Equals("abstract", StringComparison.Ordinal) ||
-                   word.Equals("async", StringComparison.Ordinal) ||
-                   word.Equals("static", StringComparison.Ordinal) ||
-                   word.Equals("sealed", StringComparison.Ordinal) ||
-                   word.Equals("new", StringComparison.Ordinal) ||
-                   word.Equals("partial", StringComparison.Ordinal) ||
-                   word.Equals("unsafe", StringComparison.Ordinal) ||
-                   word.Equals("extern", StringComparison.Ordinal) ||
-                   word.Equals("ref", StringComparison.Ordinal) ||
-                   word.Equals("readonly", StringComparison.Ordinal) ||
-                   word.Equals("scoped", StringComparison.Ordinal) ||
-                   word.Equals("required", StringComparison.Ordinal);
-        }
-
-        private static bool IsNonTypeKeyword(ReadOnlySpan<char> word)
-        {
-            if (IsModifierKeyword(word))
-            {
-                return true;
-            }
-
-            return word.Equals("return", StringComparison.Ordinal) ||
-                   word.Equals("await", StringComparison.Ordinal) ||
-                   word.Equals("throw", StringComparison.Ordinal) ||
-                   word.Equals("yield", StringComparison.Ordinal) ||
-                   word.Equals("else", StringComparison.Ordinal) ||
-                   word.Equals("case", StringComparison.Ordinal) ||
-                   word.Equals("goto", StringComparison.Ordinal) ||
-                   word.Equals("if", StringComparison.Ordinal) ||
-                   word.Equals("while", StringComparison.Ordinal) ||
-                   word.Equals("for", StringComparison.Ordinal) ||
-                   word.Equals("foreach", StringComparison.Ordinal) ||
-                   word.Equals("switch", StringComparison.Ordinal) ||
-                   word.Equals("using", StringComparison.Ordinal) ||
-                   word.Equals("lock", StringComparison.Ordinal) ||
-                   word.Equals("catch", StringComparison.Ordinal) ||
-                   word.Equals("when", StringComparison.Ordinal) ||
-                   word.Equals("nameof", StringComparison.Ordinal) ||
-                   word.Equals("typeof", StringComparison.Ordinal) ||
-                   word.Equals("sizeof", StringComparison.Ordinal) ||
-                   word.Equals("default", StringComparison.Ordinal) ||
-                   word.Equals("base", StringComparison.Ordinal) ||
-                   word.Equals("this", StringComparison.Ordinal) ||
-                   word.Equals("var", StringComparison.Ordinal) ||
-                   word.Equals("class", StringComparison.Ordinal) ||
-                   word.Equals("struct", StringComparison.Ordinal) ||
-                   word.Equals("interface", StringComparison.Ordinal) ||
-                   word.Equals("enum", StringComparison.Ordinal) ||
-                   word.Equals("record", StringComparison.Ordinal) ||
-                   word.Equals("delegate", StringComparison.Ordinal) ||
-                   word.Equals("namespace", StringComparison.Ordinal) ||
-                   word.Equals("event", StringComparison.Ordinal);
-        }
-
-        private static bool ContainsIdentifierStart(ReadOnlySpan<char> span)
-        {
-            for (int i = 0; i < span.Length; i++)
-            {
-                char c = span[i];
-                if (char.IsLetter(c) || c == '_')
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static bool HasMultipleTopLevelWords(ReadOnlySpan<char> candidate)
-        {
-            int angleDepth = 0;
-            bool seenIdentifier = false;
-            bool sawWhitespaceAfterIdentifier = false;
-
-            for (int i = 0; i < candidate.Length; i++)
-            {
-                char c = candidate[i];
-                if (c == '<')
-                {
-                    angleDepth++;
-                    sawWhitespaceAfterIdentifier = false;
-                }
-                else if (c == '>')
-                {
-                    angleDepth--;
-                    sawWhitespaceAfterIdentifier = false;
-                }
-                else if (angleDepth == 0)
-                {
-                    if (IsWordChar(c))
-                    {
-                        if (sawWhitespaceAfterIdentifier)
-                        {
-                            return true;
-                        }
-                        seenIdentifier = true;
-                    }
-                    else if (c == '.' || c == ':')
-                    {
-                        seenIdentifier = false;
-                        sawWhitespaceAfterIdentifier = false;
-                    }
-                    else if (char.IsWhiteSpace(c))
-                    {
-                        if (seenIdentifier)
-                        {
-                            sawWhitespaceAfterIdentifier = true;
-                        }
-                    }
-                }
-            }
-
-            return false;
-        }
-
-        internal static bool IsInSingleLineComment(ReadOnlySpan<char> source, int pos)
-        {
-            int lineStart = pos;
-            while (lineStart > 0 && source[lineStart - 1] != '\n' && source[lineStart - 1] != '\r')
-            {
-                lineStart--;
-            }
-
-            bool inString = false;
-            for (int i = lineStart; i < pos - 1; i++)
-            {
-                char c = source[i];
-                if (c == '"' && (i == lineStart || source[i - 1] != '\\'))
-                {
-                    inString = !inString;
-                }
-                else if (!inString && c == '/' && source[i + 1] == '/')
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsWordChar(char c)
-        {
-            return char.IsLetterOrDigit(c) || c == '_';
+            return result;
         }
     }
 }
