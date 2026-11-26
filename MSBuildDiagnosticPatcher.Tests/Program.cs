@@ -85,12 +85,15 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("ReportGenerator_GenerateMarkdownReport_ProducesFormattedMarkdown", Test_ReportGenerator_Markdown);
             RunTest("ReportGenerator_GenerateMarkdownReport_ReplacesLineBreaksInTableCellsAndKeepsDetails", Test_ReportGenerator_Markdown_MultilineTableCellsAndDetails);
             RunTest("ReportGenerator_GenerateJsonReport_ProducesValidJson", Test_ReportGenerator_Json);
+            RunTest("ReportGenerator_PrintConsoleSummary_FiltersErrorsAndSkipsWhenNoErrors", Test_ReportGenerator_PrintConsoleSummary);
 
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
 
             // 8. Program.Main Exit Code & Unresolved Error Count Tests
             RunTest("DiagnosticReport_UnresolvedErrorCount_Calculation", Test_DiagnosticReport_UnresolvedErrorCount_Calculation);
+            RunTest("DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations", Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations);
+            RunTest("DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations", Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations);
             RunTest("Program_Main_ReturnsExitCode0_ForCleanBuildLog", Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog);
             RunTest("Program_Main_ReturnsZero_WhenNoErrorsOrFailures", Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures);
             RunTest("Program_Main_ReturnsZero_WhenWarningsOnly", Test_Program_Main_ReturnsZero_WhenWarningsOnly);
@@ -1525,6 +1528,67 @@ public class DemoService : IDemoService
 
             Assert(json.Contains("\"CS0535\""), "Expected CS0535 in json");
             Assert(json.Contains("\"SourceLogPath\""), "Expected SourceLogPath in json");
+            Assert(!json.Contains("\"SeverityCounts\""), "Expected GetSeverityCounts method not to add JSON properties");
+        }
+
+        static void Test_ReportGenerator_PrintConsoleSummary()
+        {
+            var reporter = new ReportGenerator();
+            TextWriter originalOut = Console.Out;
+            try
+            {
+                var nonErrorReport = new DiagnosticReport
+                {
+                    SourceLogPath = "/tmp/warnings.log",
+                    ParseDuration = TimeSpan.FromMilliseconds(8.0),
+                    Diagnostics = new List<CompilerDiagnostic>
+                    {
+                        new CompilerDiagnostic { Code = "CS0168", Severity = DiagnosticSeverity.Warning, FilePath = "A.cs", LineNumber = 10, ColumnNumber = 4, Message = "Unused var" },
+                        new CompilerDiagnostic { Code = "MSB1001", Severity = DiagnosticSeverity.Info, FilePath = "B.cs", LineNumber = 1, ColumnNumber = 1, Message = "Info msg" }
+                    }
+                };
+
+                using (var swNoErrors = new StringWriter())
+                {
+                    Console.SetOut(swNoErrors);
+                    reporter.PrintConsoleSummary(nonErrorReport);
+                    string output = swNoErrors.ToString();
+                    Assert(output.Contains("Compiler Errors:  0"), "Expected 0 compiler errors");
+                    Assert(output.Contains("Compiler Warnings:1"), "Expected 1 compiler warning (Info excluded)");
+                    Assert(!output.Contains("[Compiler Errors]"), "Expected [Compiler Errors] section to be omitted when no errors exist");
+                }
+
+                string mdNoErrors = reporter.GenerateMarkdownReport(nonErrorReport);
+                Assert(mdNoErrors.Contains("- **Roslyn Errors**: `0`"), "Expected Markdown to report 0 Roslyn Errors");
+                Assert(mdNoErrors.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown to report 1 Roslyn Warning (Info excluded)");
+
+                nonErrorReport.Diagnostics.Add(new CompilerDiagnostic
+                {
+                    Code = "CS0535",
+                    Severity = DiagnosticSeverity.Error,
+                    FilePath = "C.cs",
+                    LineNumber = 22,
+                    ColumnNumber = 8,
+                    Message = "Missing interface member"
+                });
+
+                using (var swWithErrors = new StringWriter())
+                {
+                    Console.SetOut(swWithErrors);
+                    reporter.PrintConsoleSummary(nonErrorReport);
+                    string output = swWithErrors.ToString();
+                    Assert(output.Contains("Compiler Errors:  1"), "Expected 1 compiler error");
+                    Assert(output.Contains("Compiler Warnings:1"), "Expected 1 compiler warning");
+                    Assert(output.Contains("[Compiler Errors]"), "Expected [Compiler Errors] section when errors exist");
+                    Assert(output.Contains("[CS0535] C.cs(22,8): Missing interface member"), "Expected error line in console output");
+                    Assert(!output.Contains("[CS0168]"), "Expected warning not to be printed under [Compiler Errors]");
+                    Assert(!output.Contains("[MSB1001]"), "Expected info diagnostic not to be printed under [Compiler Errors]");
+                }
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
         }
 
         // 7. End-to-End Workflow Test
@@ -1603,6 +1667,90 @@ public class Greeter : IGreeter
 
             report.CandidatePatches[1].IsApplied = true;
             Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
+        }
+
+        static void Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations()
+        {
+            var report = new DiagnosticReport
+            {
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" }
+                }
+            };
+
+            Assert(report.ErrorCount == 1, $"Expected initial ErrorCount 1, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected initial WarningCount 1, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1002" });
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after adding Info, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1 after adding Info, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0219" });
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0103" });
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2 after adding Error, got {report.ErrorCount}");
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after adding Warning, got {report.WarningCount}");
+
+            report.Diagnostics[2].Severity = DiagnosticSeverity.Warning;
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after mutating Error to Warning, got {report.ErrorCount}");
+            Assert(report.WarningCount == 3, $"Expected WarningCount 3 after mutating Error to Warning, got {report.WarningCount}");
+
+            report.Diagnostics.RemoveAt(1);
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after RemoveAt, got {report.WarningCount}");
+
+            report.Diagnostics.Clear();
+            Assert(report.ErrorCount == 0, $"Expected ErrorCount 0 after Clear, got {report.ErrorCount}");
+            Assert(report.WarningCount == 0, $"Expected WarningCount 0 after Clear, got {report.WarningCount}");
+        }
+
+        static void Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations()
+        {
+            var diagnostics = new List<CompilerDiagnostic>(128);
+            for (int i = 0; i < 50; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" });
+            }
+            for (int i = 0; i < 40; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" });
+            }
+            for (int i = 0; i < 30; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" });
+            }
+
+            var report = new DiagnosticReport { Diagnostics = diagnostics };
+
+            // Warm up JIT tiers before measuring current-thread heap allocations
+            int warmupTotal = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                warmupTotal += report.ErrorCount + report.WarningCount;
+            }
+
+            long beforeError = GC.GetAllocatedBytesForCurrentThread();
+            int errorSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                errorSum += report.ErrorCount;
+            }
+            long errorAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeError;
+
+            long beforeWarning = GC.GetAllocatedBytesForCurrentThread();
+            int warningSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                warningSum += report.WarningCount;
+            }
+            long warningAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeWarning;
+
+            GC.KeepAlive(warmupTotal);
+            Assert(errorSum == 50 * 50, $"Expected errorSum 2500, got {errorSum}");
+            Assert(warningSum == 50 * 40, $"Expected warningSum 2000, got {warningSum}");
+            Assert(errorAllocated == 0, $"Expected 0 bytes allocated reading ErrorCount, got {errorAllocated}");
+            Assert(warningAllocated == 0, $"Expected 0 bytes allocated reading WarningCount, got {warningAllocated}");
         }
 
         static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
