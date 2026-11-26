@@ -255,6 +255,71 @@ namespace CollationModifier.Tests
 
     public class SynchronousSynchronizationContext : SynchronizationContext
     {
+        private readonly List<Exception> _unhandledExceptions = new List<Exception>();
+        private readonly object _lock = new object();
+
+        public IReadOnlyList<Exception> UnhandledExceptions
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _unhandledExceptions.ToArray();
+                }
+            }
+        }
+
+        public bool HasUnhandledExceptions
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _unhandledExceptions.Count > 0;
+                }
+            }
+        }
+
+        public void ThrowIfUnhandledExceptions()
+        {
+            List<Exception> snapshot;
+            lock (_lock)
+            {
+                if (_unhandledExceptions.Count == 0)
+                {
+                    return;
+                }
+
+                snapshot = new List<Exception>(_unhandledExceptions);
+                _unhandledExceptions.Clear();
+            }
+
+            if (snapshot.Count == 1)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(snapshot[0]).Throw();
+            }
+
+            throw new AggregateException("Unhandled exception(s) occurred on SynchronizationContext.", snapshot);
+        }
+
+        public Exception CombineWithUnhandledExceptions(Exception primaryException)
+        {
+            List<Exception> snapshot;
+            lock (_lock)
+            {
+                if (_unhandledExceptions.Count == 0)
+                {
+                    return primaryException;
+                }
+
+                snapshot = new List<Exception>(_unhandledExceptions.Count + 1) { primaryException };
+                snapshot.AddRange(_unhandledExceptions);
+                _unhandledExceptions.Clear();
+            }
+
+            return new AggregateException("Test failed with additional unhandled SynchronizationContext exception(s).", snapshot);
+        }
+
         public override void Post(SendOrPostCallback d, object? state)
         {
             var prev = Current;
@@ -262,6 +327,13 @@ namespace CollationModifier.Tests
             {
                 SetSynchronizationContext(this);
                 d(state);
+            }
+            catch (Exception ex)
+            {
+                lock (_lock)
+                {
+                    _unhandledExceptions.Add(ex);
+                }
             }
             finally
             {
@@ -291,9 +363,61 @@ namespace CollationModifier.Tests
 
     public static class MainViewModelTestsRunner
     {
-        public static Task RunAllTestsAsync() => RunTestsAsync();
+        private const string SuiteClassName = "MainViewModelTests";
 
-        public static async Task RunTestsAsync()
+        public static Task<int> RunAllTestsAsync() => RunTestsAsync();
+
+        public static async Task<int> ExecuteAsyncTestAsync(string name, Func<Task> testAction)
+        {
+            var syncContext = new SynchronousSynchronizationContext();
+            var prevContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(syncContext);
+            try
+            {
+                await testAction();
+                syncContext.ThrowIfUnhandledExceptions();
+                Console.WriteLine($"  [PASS] {name}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Exception failure = syncContext.CombineWithUnhandledExceptions(ex);
+                string qualifiedName = name.Contains('.') ? name : $"{SuiteClassName}.{name}";
+                Console.WriteLine($"  [FAIL] {qualifiedName} - {failure}");
+                return 1;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(prevContext);
+            }
+        }
+
+        public static int ExecuteSyncTest(string name, Action testAction)
+        {
+            var syncContext = new SynchronousSynchronizationContext();
+            var prevContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(syncContext);
+            try
+            {
+                testAction();
+                syncContext.ThrowIfUnhandledExceptions();
+                Console.WriteLine($"  [PASS] {name}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Exception failure = syncContext.CombineWithUnhandledExceptions(ex);
+                string qualifiedName = name.Contains('.') ? name : $"{SuiteClassName}.{name}";
+                Console.WriteLine($"  [FAIL] {qualifiedName} - {failure}");
+                return 1;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(prevContext);
+            }
+        }
+
+        public static async Task<int> RunTestsAsync()
         {
             SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
             int failed = 0;
@@ -3596,38 +3720,16 @@ namespace CollationModifier.Tests
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
-            if (failed > 0)
-            {
-                throw new InvalidOperationException($"MainViewModel tests failed with {failed} failures.");
-            }
+            return failed;
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
             {
-                try
-                {
-                    SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
-                    await testAction();
-                    Console.WriteLine($"  [PASS] {name}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    failed++;
-                }
+                failed += await ExecuteAsyncTestAsync(name, testAction);
             }
 
             void RunSyncTest(string name, Action testAction)
             {
-                try
-                {
-                    testAction();
-                    Console.WriteLine($"  [PASS] {name}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    failed++;
-                }
+                failed += ExecuteSyncTest(name, testAction);
             }
 
             void Assert(bool condition, string message)
