@@ -712,9 +712,6 @@ namespace CollationModifier.Services
             return report;
         }
 
-        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken)
-            => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
-
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
@@ -752,11 +749,6 @@ namespace CollationModifier.Services
                 throw;
             }
         }
-
-
-
-        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken)
-            => RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
 
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
@@ -901,7 +893,8 @@ namespace CollationModifier.Services
         private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
-            string query = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase)
+            bool isSingleUser = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase);
+            string query = isSingleUser
                 ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
