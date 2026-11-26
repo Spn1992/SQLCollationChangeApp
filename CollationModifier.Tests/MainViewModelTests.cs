@@ -36,7 +36,11 @@ namespace CollationModifier.Tests
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
-        public Func<string, string, string, CancellationToken, Task>? OnPreflightCheck { get; set; }
+        public int PreflightCheckCount { get; private set; }
+        public string? LastPreflightDatabase { get; private set; }
+        public string? LastPreflightBackupDirectory { get; private set; }
+        public string? LastPreflightTargetCollation { get; private set; }
+        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Func<CancellationToken, Task>? OnGetDatabases { get; set; }
@@ -165,11 +169,11 @@ namespace CollationModifier.Tests
             return Task.FromResult((total, retained));
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
+        public async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             if (OnPreflightCheck != null)
             {
-                await OnPreflightCheck(databaseName, backupDirectory, targetCollation, cancellationToken);
+                await OnPreflightCheck(cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
             PreflightCheckCount++;
@@ -485,7 +489,7 @@ namespace CollationModifier.Tests
             return base.PreflightCheckAsync(databaseName, backupDirectory, targetCollation, cancellationToken);
         }
 
-        protected override async Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        protected internal override async Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken = default)
         {
             OpenConnectionTokens.Add(cancellationToken);
             if (OnOpenConnection != null)
