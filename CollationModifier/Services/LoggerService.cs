@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
@@ -10,31 +11,26 @@ namespace CollationModifier.Services
         private readonly string _logFilePath;
         private readonly Channel<string> _logChannel;
         private readonly Task _processQueueTask;
+        private int _flushAttempted;
         private bool _disposed;
 
         public string LogFilePath => _logFilePath;
 
-        public LoggerService() : this(null)
+        internal bool IsDisposed => _disposed;
+
+        public LoggerService() : this(null, null)
         {
         }
 
-        public LoggerService(string? customLogFilePath)
+        public LoggerService(string? customLogFilePath) : this(customLogFilePath, null)
+        {
+        }
+
+        internal LoggerService(string? customLogFilePath, Func<ChannelReader<string>, Task>? queueProcessor)
         {
             if (!string.IsNullOrWhiteSpace(customLogFilePath))
             {
                 _logFilePath = customLogFilePath;
-                try
-                {
-                    var directory = Path.GetDirectoryName(_logFilePath);
-                    if (!string.IsNullOrEmpty(directory))
-                    {
-                        Directory.CreateDirectory(directory);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Failed to create log directory: {ex.Message}");
-                }
             }
             else
             {
@@ -42,13 +38,12 @@ namespace CollationModifier.Services
                 {
                     var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
                     var appDirectory = Path.Combine(appDataPath, "CollationModifier");
-                    Directory.CreateDirectory(appDirectory);
                     _logFilePath = Path.Combine(appDirectory, $"log_{DateTime.Now:yyyyMMdd}.txt");
                 }
                 catch (Exception ex)
                 {
                     _logFilePath = $"log_{DateTime.Now:yyyyMMdd}.txt";
-                    System.Diagnostics.Debug.WriteLine($"Failed to create app log directory: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"Failed to resolve app log directory: {ex.Message}");
                 }
             }
 
@@ -58,7 +53,9 @@ namespace CollationModifier.Services
                 SingleWriter = false
             };
             _logChannel = Channel.CreateUnbounded<string>(options);
-            _processQueueTask = Task.Run(ProcessQueueAsync);
+            _processQueueTask = Task.Run(() => queueProcessor != null
+                ? queueProcessor(_logChannel.Reader)
+                : ProcessQueueAsync());
         }
 
         public void LogInfo(string message)
@@ -213,9 +210,21 @@ namespace CollationModifier.Services
 
         public void Flush(TimeSpan timeout)
         {
+            if (_processQueueTask.IsCompleted)
+            {
+                _logChannel.Writer.TryComplete();
+                return;
+            }
+
             try
             {
                 _logChannel.Writer.TryComplete();
+
+                if (_processQueueTask.IsCompleted || Interlocked.Exchange(ref _flushAttempted, 1) != 0)
+                {
+                    return;
+                }
+
                 _processQueueTask.Wait(timeout);
             }
             catch (Exception ex)
