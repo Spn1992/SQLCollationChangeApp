@@ -176,6 +176,7 @@ namespace CollationModifier.ViewModels
                 if (SetProperty(ref _selectedAuthenticationType, value))
                 {
                     OnPropertyChanged(nameof(IsSqlServerAuth));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                     if (!string.IsNullOrEmpty(previous) && previous != value)
                     {
                         if (value == "SQL Server Authentication")
