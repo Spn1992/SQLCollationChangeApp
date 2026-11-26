@@ -18,103 +18,37 @@ namespace CollationModifier.Tests
 
             try
             {
-                await GlobalExceptionHandlerTests.RunAllTestsAsync();
+                failed += await GlobalExceptionHandlerTests.RunAllTestsAsync();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: GlobalExceptionHandlerTests - {ex}");
+                Console.WriteLine($"FAIL: {nameof(GlobalExceptionHandlerTests)}.{nameof(GlobalExceptionHandlerTests.RunAllTestsAsync)} - {ex}");
                 failed++;
             }
 
             try
             {
-                await MainViewModelTestsRunner.RunAllTestsAsync();
-                Console.WriteLine("PASS: MainViewModelTestsRunner");
+                int mainVmFailed = await MainViewModelTestsRunner.RunAllTestsAsync();
+                if (mainVmFailed == 0)
+                {
+                    Console.WriteLine("PASS: MainViewModelTestsRunner");
+                }
+                failed += mainVmFailed;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                Console.WriteLine($"FAIL: {nameof(MainViewModelTestsRunner)}.{nameof(MainViewModelTestsRunner.RunAllTestsAsync)} - {ex}");
                 failed++;
             }
 
             Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
-            try
-            {
-                await TestHighFrequencyConcurrentLoggingWithoutDataLoss();
-                Console.WriteLine("PASS: TestHighFrequencyConcurrentLoggingWithoutDataLoss");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestHighFrequencyConcurrentLoggingWithoutDataLoss - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestFlushOnDispose();
-                Console.WriteLine("PASS: TestFlushOnDispose");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestFlushOnDispose - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestFileAccessExceptionHandling();
-                Console.WriteLine("PASS: TestFileAccessExceptionHandling");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestFileAccessExceptionHandling - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestEmptyChannelDisposalWithoutError();
-                Console.WriteLine("PASS: TestEmptyChannelDisposalWithoutError");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestEmptyChannelDisposalWithoutError - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestDrainAndFlushQueueAsyncDuringStandardOperation();
-                Console.WriteLine("PASS: TestDrainAndFlushQueueAsyncDuringStandardOperation");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestDrainAndFlushQueueAsyncDuringStandardOperation - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestDrainAndFlushQueueAsyncShutdownDraining();
-                Console.WriteLine("PASS: TestDrainAndFlushQueueAsyncShutdownDraining");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestDrainAndFlushQueueAsyncShutdownDraining - {ex}");
-                failed++;
-            }
-
-
-            try
-            {
-                TestLogFilePathProperty();
-                Console.WriteLine("PASS: TestLogFilePathProperty");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
-                failed++;
-            }
+            failed += await RunProgramAsyncTest(nameof(TestHighFrequencyConcurrentLoggingWithoutDataLoss), TestHighFrequencyConcurrentLoggingWithoutDataLoss);
+            failed += await RunProgramAsyncTest(nameof(TestFlushOnDispose), TestFlushOnDispose);
+            failed += await RunProgramAsyncTest(nameof(TestFileAccessExceptionHandling), TestFileAccessExceptionHandling);
+            failed += await RunProgramAsyncTest(nameof(TestEmptyChannelDisposalWithoutError), TestEmptyChannelDisposalWithoutError);
+            failed += await RunProgramAsyncTest(nameof(TestDrainAndFlushQueueAsyncDuringStandardOperation), TestDrainAndFlushQueueAsyncDuringStandardOperation);
+            failed += await RunProgramAsyncTest(nameof(TestDrainAndFlushQueueAsyncShutdownDraining), TestDrainAndFlushQueueAsyncShutdownDraining);
+            failed += RunProgramSyncTest(nameof(TestLogFilePathProperty), TestLogFilePathProperty);
 
             try
             {
@@ -150,38 +84,14 @@ namespace CollationModifier.Tests
             }
 
             Console.WriteLine("\n=== Running DatabaseService MapDatabaseInfo Unit Tests ===");
-            try
-            {
-                TestMapDatabaseInfo_FieldExtraction();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_FieldExtraction");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_FieldExtraction - {ex}");
-                failed++;
-            }
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_FieldExtraction), TestMapDatabaseInfo_FieldExtraction);
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_NullFieldFallbacks), TestMapDatabaseInfo_NullFieldFallbacks);
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_NullArgumentValidation), TestMapDatabaseInfo_NullArgumentValidation);
 
-            try
-            {
-                TestMapDatabaseInfo_NullFieldFallbacks();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_NullFieldFallbacks");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullFieldFallbacks - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                TestMapDatabaseInfo_NullArgumentValidation();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_NullArgumentValidation");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullArgumentValidation - {ex}");
-                failed++;
-            }
+            Console.WriteLine("\n=== Running Test Runner Isolation & SynchronizationContext Hardening Tests ===");
+            failed += await RunProgramAsyncTest(nameof(TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests), TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests);
+            failed += await RunProgramAsyncTest(nameof(TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions), TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions);
+            failed += await RunProgramAsyncTest(nameof(TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace), TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace);
 
             if (failed == 0)
             {
@@ -191,6 +101,36 @@ namespace CollationModifier.Tests
             else
             {
                 Console.WriteLine($"\nTEST SUITE FAILED with {failed} failures.");
+                return 1;
+            }
+        }
+
+        private static async Task<int> RunProgramAsyncTest(string methodName, Func<Task> testAction)
+        {
+            try
+            {
+                await testAction();
+                Console.WriteLine($"PASS: {methodName}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: {nameof(Program)}.{methodName} - {ex}");
+                return 1;
+            }
+        }
+
+        private static int RunProgramSyncTest(string methodName, Action testAction)
+        {
+            try
+            {
+                testAction();
+                Console.WriteLine($"PASS: {methodName}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: {nameof(Program)}.{methodName} - {ex}");
                 return 1;
             }
         }
@@ -576,6 +516,126 @@ namespace CollationModifier.Tests
             }
 
             Assert(threw, "Expected ArgumentNullException when record is null.");
+        }
+
+        static async Task TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests()
+        {
+            const string firstMethod = "Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes";
+            var originalOut = Console.Out;
+            using var captured = new StringWriter();
+            int failures;
+            try
+            {
+                Console.SetOut(captured);
+                failures = await GlobalExceptionHandlerTests.RunAllTestsAsync(methodName =>
+                {
+                    if (methodName == firstMethod)
+                    {
+                        throw new InvalidOperationException("Simulated failure in first GlobalExceptionHandlerTests method");
+                    }
+                });
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string log = captured.ToString();
+            Assert(failures == 1, $"Expected exactly 1 failure when first test fails, got {failures}.");
+            Assert(log.Contains($"[FAIL] GlobalExceptionHandlerTests.{firstMethod} - System.InvalidOperationException: Simulated failure in first GlobalExceptionHandlerTests method"),
+                "Expected failure output to include GlobalExceptionHandlerTests.<TestMethod> and exception message.");
+            Assert(log.Contains("at CollationModifier.Tests."), "Expected failure output to include stack trace.");
+
+            int passCount = log.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                .Count(l => l.TrimStart().StartsWith("PASS: ", StringComparison.Ordinal));
+            Assert(passCount == 6, $"Expected remaining 6 tests to execute and pass, got {passCount} PASS lines.");
+        }
+
+        static async Task TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions()
+        {
+            var originalOut = Console.Out;
+            using var captured = new StringWriter();
+            int postedFailures;
+            int asyncVoidFailures;
+            bool subsequentTestRan = false;
+
+            try
+            {
+                Console.SetOut(captured);
+
+                // 1. Direct SynchronizationContext.Post unhandled exception
+                postedFailures = MainViewModelTestsRunner.ExecuteSyncTest("PostedUnhandledCallbackTest", () =>
+                {
+                    System.Threading.SynchronizationContext.Current!.Post(_ =>
+                    {
+                        throw new InvalidOperationException("Unhandled exception from SynchronizationContext.Post");
+                    }, null);
+                });
+
+                // 2. async void unhandled exception across await boundary
+                asyncVoidFailures = await MainViewModelTestsRunner.ExecuteAsyncTestAsync("AsyncVoidUnhandledCrashTest", async () =>
+                {
+                    TriggerFaultingAsyncVoid();
+                    await Task.Delay(20);
+                });
+
+                // 3. Verify subsequent test still runs normally without host abort
+                int passResult = MainViewModelTestsRunner.ExecuteSyncTest("SubsequentHealthyTest", () =>
+                {
+                    subsequentTestRan = true;
+                });
+                Assert(passResult == 0, "Expected subsequent healthy test to return 0 failures.");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string log = captured.ToString();
+            Assert(postedFailures == 1, $"Expected 1 failure for posted callback exception, got {postedFailures}.");
+            Assert(asyncVoidFailures == 1, $"Expected 1 failure for async void exception, got {asyncVoidFailures}.");
+            Assert(subsequentTestRan, "Expected subsequent test to run after SynchronizationContext unhandled exceptions.");
+            Assert(log.Contains("[FAIL] MainViewModelTests.PostedUnhandledCallbackTest - System.InvalidOperationException: Unhandled exception from SynchronizationContext.Post"),
+                "Expected MainViewModelTests.PostedUnhandledCallbackTest failure entry.");
+            Assert(log.Contains("[FAIL] MainViewModelTests.AsyncVoidUnhandledCrashTest - System.InvalidOperationException: Unhandled async void crash after yield"),
+                "Expected MainViewModelTests.AsyncVoidUnhandledCrashTest failure entry.");
+            Assert(log.Contains("TriggerFaultingAsyncVoid"), "Expected original async void stack frame to be preserved.");
+        }
+
+        private static async void TriggerFaultingAsyncVoid()
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("Unhandled async void crash after yield");
+        }
+
+        static async Task TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace()
+        {
+            var originalOut = Console.Out;
+            using var captured = new StringWriter();
+            int failures;
+            try
+            {
+                Console.SetOut(captured);
+                failures = await MainViewModelTestsRunner.ExecuteAsyncTestAsync("SampleFailingViewModelTest", async () =>
+                {
+                    await Task.Yield();
+                    throw new InvalidOperationException("Assertion failed: Expected Ready\nActual: Busy");
+                });
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string log = captured.ToString();
+            Assert(failures == 1, $"Expected integer failure count 1, got {failures}.");
+            int failLines = log.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                .Count(l => l.TrimStart().StartsWith("[FAIL]", StringComparison.Ordinal));
+            Assert(failLines == 1, $"Expected exactly 1 [FAIL] line without duplicate wrapper entry, got {failLines}.");
+            Assert(log.Contains("[FAIL] MainViewModelTests.SampleFailingViewModelTest - System.InvalidOperationException: Assertion failed: Expected Ready"),
+                "Expected ClassName.MethodName failure header.");
+            Assert(log.Contains("Actual: Busy"), "Expected multiline failure message preserved.");
+            Assert(log.Contains("at CollationModifier.Tests.Program"), "Expected stack trace preserved.");
         }
 
         private sealed class MockDataRecord : IDataRecord

@@ -566,6 +566,7 @@ namespace CollationModifier.ViewModels
 
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
+            bool alterPhaseStarted = false;
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
@@ -602,6 +603,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
+                alterPhaseStarted = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 SetStatus("Collation changed successfully!");
@@ -621,13 +623,7 @@ namespace CollationModifier.ViewModels
                 {
                     try
                     {
-                        var restoreProgress = new Progress<int>(percent =>
-                        {
-                            ProgressPercent = percent;
-                            IsIndeterminateProgress = false;
-                            StatusMessage = $"Restoring database... {percent}%";
-                        });
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                        await RestoreDatabaseRollbackAsync(backupFile);
                     }
                     catch (Exception rex)
                     {
@@ -636,7 +632,7 @@ namespace CollationModifier.ViewModels
                     }
                 }
 
-                if (SelectedDatabase != null)
+                if (alterPhaseStarted && SelectedDatabase != null)
                 {
                     try
                     {
@@ -676,13 +672,7 @@ namespace CollationModifier.ViewModels
                 {
                     try
                     {
-                        var restoreProgress = new Progress<int>(percent =>
-                        {
-                            ProgressPercent = percent;
-                            IsIndeterminateProgress = false;
-                            StatusMessage = $"Restoring database... {percent}%";
-                        });
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                        await RestoreDatabaseRollbackAsync(backupFile);
                         var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: null, restoreAttempted: true);
                         SetStatus(statusText, toolTipText, detailedError);
                     }
@@ -707,6 +697,23 @@ namespace CollationModifier.ViewModels
                 IsIndeterminateProgress = true;
                 IsBusy = false;
             }
+        }
+
+        private async Task RestoreDatabaseRollbackAsync(string backupFile)
+        {
+            if (SelectedDatabase == null)
+            {
+                throw new InvalidOperationException("SelectedDatabase cannot be null when performing database rollback restore.");
+            }
+
+            var restoreProgress = new Progress<int>(percent =>
+            {
+                ProgressPercent = percent;
+                IsIndeterminateProgress = false;
+                StatusMessage = $"Restoring database... {percent}%";
+            });
+
+            await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
         }
 
         #endregion
