@@ -3541,11 +3541,50 @@ namespace CollationModifier.Tests
                 var primaryEx = new Exception("Table schema alter failed");
                 var restoreEx = new Exception("Connection reset failed during emergency MULTI_USER reset");
 
-                var (status, toolTip, detailed) = ErrorFormattingHelper.FormatProcessError(primaryEx, "C:\\backup.bak", restoreEx, true);
+                var (status, toolTip, detailed) = ErrorFormattingHelper.FormatProcessError(primaryEx, "C:\\backup.bak", restoreEx);
 
                 Assert(status.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "Status text should contain SINGLE_USER lock warning.");
                 Assert(toolTip.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "ToolTip text should contain SINGLE_USER lock warning.");
                 Assert(detailed.Contains("WARNING: Database remains locked in SINGLE_USER mode."), "Detailed text should contain SINGLE_USER lock warning.");
+            });
+
+            RunSyncTest("ErrorFormattingHelper_FormatProcessError_PreservesActiveBranchesWithoutRestoreAttempted", () =>
+            {
+                var method = typeof(ErrorFormattingHelper).GetMethod(nameof(ErrorFormattingHelper.FormatProcessError));
+                Assert(method != null, "FormatProcessError method should exist.");
+                var parameters = method!.GetParameters();
+                Assert(parameters.Length == 3, $"FormatProcessError should have 3 parameters after removing restoreAttempted, got {parameters.Length}.");
+                Assert(!parameters.Any(p => p.Name == "restoreAttempted"), "FormatProcessError must not declare dead restoreAttempted parameter.");
+
+                // 1. Pre-backup failure (including cancellation before backup when TrySetMultiUserAsync fails)
+                var cancelEx = new OperationCanceledException("The operation was canceled.");
+                var resetEx = new Exception("Emergency MULTI_USER reset failed");
+                var (preBackupStatus, preBackupToolTip, preBackupDetailed) = ErrorFormattingHelper.FormatProcessError(cancelEx, null, resetEx);
+                Assert(preBackupStatus == "Process failed before backup: The operation was canceled.. WARNING: Database remains locked in SINGLE_USER mode.",
+                    $"Unexpected pre-backup cancellation recovery status: '{preBackupStatus}'");
+                Assert(preBackupToolTip == preBackupStatus, "Pre-backup tooltip should match status.");
+                Assert(preBackupDetailed.Contains("Process failed before backup: The operation was canceled.") &&
+                       preBackupDetailed.Contains("WARNING: Database remains locked in SINGLE_USER mode."),
+                    $"Unexpected pre-backup detailed text: '{preBackupDetailed}'");
+
+                // 2. Restore success when backupFile != null, restoreEx == null, and not locked
+                var alterEx = new Exception("Alter collation syntax error");
+                var (restoredStatus, restoredToolTip, restoredDetailed) = ErrorFormattingHelper.FormatProcessError(alterEx, "C:\\backup.bak");
+                Assert(restoredStatus == "Process failed: Alter collation syntax error. Database restored to MULTI_USER mode successfully.",
+                    $"Unexpected restore success status: '{restoredStatus}'");
+                Assert(restoredToolTip == restoredStatus, "Restore success tooltip should match status.");
+                Assert(restoredDetailed.Contains("Database was restored to MULTI_USER mode successfully from backup: C:\\backup.bak"),
+                    $"Unexpected restore success detailed text: '{restoredDetailed}'");
+
+                // 3. SINGLE_USER lock warning selected over restore message when backupFile != null and restoreEx == null
+                var lockedPrimaryEx = new Exception("Failed while database remained in SINGLE_USER mode");
+                var (lockedStatus, lockedToolTip, lockedDetailed) = ErrorFormattingHelper.FormatProcessError(lockedPrimaryEx, "C:\\backup.bak", restoreEx: null);
+                Assert(lockedStatus == "Process failed: Failed while database remained in SINGLE_USER mode. WARNING: Database remains locked in SINGLE_USER mode.",
+                    $"Expected SINGLE_USER lock warning status over restore message, got: '{lockedStatus}'");
+                Assert(lockedToolTip == lockedStatus, "Locked tooltip should match status.");
+                Assert(lockedDetailed.Contains("WARNING: Database remains locked in SINGLE_USER mode.") &&
+                       !lockedDetailed.Contains("Database was restored to MULTI_USER mode successfully"),
+                    $"Expected SINGLE_USER lock warning in detailed text without restore success message, got: '{lockedDetailed}'");
             });
 
             RunSyncTest("CancelCommand_ExposesICommand_AndCanExecuteEvaluatesTrueOnlyWhenIsBusyIsTrue", () =>
