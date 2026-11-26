@@ -651,9 +651,6 @@ namespace CollationModifier.Services
             return report;
         }
 
-        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken)
-            => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
-
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
@@ -681,11 +678,6 @@ namespace CollationModifier.Services
                 throw;
             }
         }
-
-
-
-        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken)
-            => RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
 
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {

@@ -2493,6 +2493,56 @@ namespace CollationModifier.Tests
                 Assert(databasesProp!.PropertyType == typeof(List<DatabaseInfo>), "Databases must be of type List<DatabaseInfo>.");
             });
 
+            RunSyncTest("IDatabaseService_DoesNotExposeObsoleteBackupRestoreShims", () =>
+            {
+                var backupShim = typeof(IDatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(backupShim == null, "IDatabaseService must not expose obsolete three-parameter BackupDatabaseAsync shim.");
+
+                var restoreShim = typeof(IDatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(restoreShim == null, "IDatabaseService must not expose obsolete three-parameter RestoreDatabaseAsync shim.");
+
+                var canonicalBackup = typeof(IDatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalBackup != null, "IDatabaseService must expose canonical four-parameter BackupDatabaseAsync method.");
+                Assert(canonicalBackup!.ReturnType == typeof(Task<string>), "Canonical BackupDatabaseAsync must return Task<string>.");
+
+                var canonicalRestore = typeof(IDatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalRestore != null, "IDatabaseService must expose canonical four-parameter RestoreDatabaseAsync method.");
+                Assert(canonicalRestore!.ReturnType == typeof(Task), "Canonical RestoreDatabaseAsync must return Task.");
+            });
+
+            RunSyncTest("DatabaseService_DoesNotExposeObsoleteBackupRestoreShims", () =>
+            {
+                var backupShim = typeof(DatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(backupShim == null, "DatabaseService must not expose obsolete three-parameter BackupDatabaseAsync shim.");
+
+                var restoreShim = typeof(DatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(restoreShim == null, "DatabaseService must not expose obsolete three-parameter RestoreDatabaseAsync shim.");
+
+                var canonicalBackup = typeof(DatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalBackup != null, "DatabaseService must expose canonical four-parameter BackupDatabaseAsync method.");
+                Assert(canonicalBackup!.ReturnType == typeof(Task<string>), "Canonical BackupDatabaseAsync must return Task<string>.");
+
+                var canonicalRestore = typeof(DatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalRestore != null, "DatabaseService must expose canonical four-parameter RestoreDatabaseAsync method.");
+                Assert(canonicalRestore!.ReturnType == typeof(Task), "Canonical RestoreDatabaseAsync must return Task.");
+            });
+
             await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
             {
                 using var logger = new LoggerService();
