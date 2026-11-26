@@ -924,20 +924,49 @@ namespace CollationModifier.Services
 
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
-            var safeDbName = EscapeIdentifier(databaseName);
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await OpenConnectionAsync(connection, CancellationToken.None);
-                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, CancellationToken.None);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", CancellationToken.None);
-                    var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, CancellationToken.None, new SqlParameter("@BackupFile", backupFile));
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
+                    await OpenConnectionAsync(connection, cancellationToken);
+                    var restoreBatchQuery = BuildRestoreDatabaseBatchSql(databaseName);
+                    await ExecuteNonQueryAsync(connection, restoreBatchQuery, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo($"Restore cancelled for database: {databaseName}");
+                var oce = new OperationCanceledException($"Restore cancelled for database: {databaseName}", ex, cancellationToken);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following restore cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Restore cancelled for database '{databaseName}' ({oce.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        oce, resetEx);
+                }
+                throw oce;
+            }
+            catch (OperationCanceledException oce)
+            {
+                _logger.LogInfo($"Restore cancelled for database: {databaseName}");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following restore cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Restore cancelled for database '{databaseName}' ({oce.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        oce, resetEx);
+                }
+                throw;
             }
             catch (Exception ex)
             {
@@ -962,28 +991,47 @@ namespace CollationModifier.Services
         {
             ValidateCollationFormat(newCollation);
 
-            var safeDbName = EscapeIdentifier(databaseName);
-
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await OpenConnectionAsync(connection, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
-                    var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
-                    await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", cancellationToken);
+                    var collationBatchQuery = BuildAlterCollationBatchSql(databaseName, newCollation);
+                    await ExecuteNonQueryAsync(connection, collationBatchQuery, 3600, cancellationToken);
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
             }
             catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
             {
                 _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
-                throw new OperationCanceledException($"Collation alteration cancelled for database: {databaseName}", ex, cancellationToken);
+                var oce = new OperationCanceledException($"Collation alteration cancelled for database: {databaseName}", ex, cancellationToken);
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following collation cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Collation alteration cancelled for database '{databaseName}' ({oce.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        oce, resetEx);
+                }
+                throw oce;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException oce)
             {
                 _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following collation cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Collation alteration cancelled for database '{databaseName}' ({oce.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        oce, resetEx);
+                }
                 throw;
             }
             catch (Exception ex)
@@ -1022,22 +1070,46 @@ namespace CollationModifier.Services
             }
         }
 
+        internal static string BuildRestoreDatabaseBatchSql(string databaseName)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            return $"USE [master];\n" +
+                   $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\n" +
+                   $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;\n" +
+                   $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
+        }
+
+        internal static string BuildAlterCollationBatchSql(string databaseName, string newCollation)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            return $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;\n" +
+                   $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};\n" +
+                   $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
+        }
+
         private static string EscapeIdentifier(string identifier)
         {
             return identifier.Replace("]", "]]");
         }
 
-        protected virtual Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        internal Func<SqlCommand, CancellationToken, Task<int>>? NonQueryCommandExecutor { get; set; }
+
+        protected internal virtual Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken = default)
         {
             return connection.OpenAsync(cancellationToken);
         }
 
-        protected virtual Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, CancellationToken cancellationToken)
+        protected internal virtual Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, CancellationToken cancellationToken = default)
         {
+            if (NonQueryCommandExecutor != null)
+            {
+                return NonQueryCommandExecutor(command, cancellationToken);
+            }
+
             return command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        protected virtual async Task<int> ExecuteNonQueryAsync(
+        protected internal virtual async Task<int> ExecuteNonQueryAsync(
             SqlConnection connection,
             string commandText,
             int timeoutSeconds = 3600,
@@ -1062,7 +1134,11 @@ namespace CollationModifier.Services
             }
         }
 
-        private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode, CancellationToken cancellationToken = default)
+        protected internal virtual async Task SetDatabaseUserModeAsync(
+            SqlConnection connection,
+            string databaseName,
+            string mode,
+            CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             bool isSingleUser = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase);
@@ -1070,7 +1146,8 @@ namespace CollationModifier.Services
                 ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-            await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
+            var effectiveToken = isSingleUser ? cancellationToken : CancellationToken.None;
+            await ExecuteNonQueryAsync(connection, query, 3600, effectiveToken);
         }
 
         private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)

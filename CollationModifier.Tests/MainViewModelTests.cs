@@ -485,7 +485,7 @@ namespace CollationModifier.Tests
             return base.PreflightCheckAsync(databaseName, backupDirectory, targetCollation, cancellationToken);
         }
 
-        protected override async Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        protected internal override async Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken = default)
         {
             OpenConnectionTokens.Add(cancellationToken);
             if (OnOpenConnection != null)
@@ -496,7 +496,7 @@ namespace CollationModifier.Tests
             cancellationToken.ThrowIfCancellationRequested();
         }
 
-        protected override async Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, CancellationToken cancellationToken)
+        protected internal override async Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, CancellationToken cancellationToken = default)
         {
             ExecutedCommands.Add((command.CommandText, command.CommandTimeout, cancellationToken));
             if (OnExecuteCommandNonQuery != null)
@@ -613,6 +613,39 @@ namespace CollationModifier.Tests
         public override SynchronizationContext CreateCopy()
         {
             return this;
+        }
+    }
+
+    public class SingleBatchTestableDatabaseService : DatabaseService
+    {
+        public List<(string CommandText, int Timeout, CancellationToken Token, SqlParameter[] Params)> ExecutedCommands { get; } = new();
+        public bool ThrowOnFirstExecute { get; set; }
+        public int OpenConnectionCount { get; set; }
+
+        public SingleBatchTestableDatabaseService(LoggerService logger) : base(logger)
+        {
+            SetConnectionString("dummy_server", "Windows Authentication", "", "");
+        }
+
+        protected internal override Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken = default)
+        {
+            OpenConnectionCount++;
+            return Task.CompletedTask;
+        }
+
+        protected internal override Task<int> ExecuteNonQueryAsync(
+            SqlConnection connection,
+            string commandText,
+            int timeoutSeconds = 3600,
+            CancellationToken cancellationToken = default,
+            params SqlParameter[] parameters)
+        {
+            ExecutedCommands.Add((commandText, timeoutSeconds, cancellationToken, parameters));
+            if (ThrowOnFirstExecute && ExecutedCommands.Count == 1)
+            {
+                throw new InvalidOperationException("Simulated SQL execution error on primary command.");
+            }
+            return Task.FromResult(1);
         }
     }
 
@@ -4966,6 +4999,145 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
+            RunSyncTest("DatabaseService_BuildRestoreDatabaseBatchSql_CombinesAllStatementsInOrder", () =>
+            {
+                string sql = DatabaseService.BuildRestoreDatabaseBatchSql("ProductionDB");
+
+                Assert(sql.Contains("USE [master];"), "Restore batch must contain 'USE [master];'");
+                Assert(sql.Contains("ALTER DATABASE [ProductionDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"),
+                    "Restore batch must contain 'ALTER DATABASE [ProductionDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;'");
+                Assert(sql.Contains("RESTORE DATABASE [ProductionDB] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;"),
+                    "Restore batch must contain parameterized 'RESTORE DATABASE [ProductionDB] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;'");
+                Assert(sql.Contains("ALTER DATABASE [ProductionDB] SET MULTI_USER;"),
+                    "Restore batch must contain 'ALTER DATABASE [ProductionDB] SET MULTI_USER;'");
+
+                int idxUseMaster = sql.IndexOf("USE [master];", StringComparison.Ordinal);
+                int idxSingleUser = sql.IndexOf("ALTER DATABASE [ProductionDB] SET SINGLE_USER", StringComparison.Ordinal);
+                int idxRestore = sql.IndexOf("RESTORE DATABASE [ProductionDB]", StringComparison.Ordinal);
+                int idxMultiUser = sql.IndexOf("ALTER DATABASE [ProductionDB] SET MULTI_USER", StringComparison.Ordinal);
+
+                Assert(idxUseMaster >= 0 && idxSingleUser > idxUseMaster && idxRestore > idxSingleUser && idxMultiUser > idxRestore,
+                    "Restore batch statements must be ordered: USE master -> SINGLE_USER -> RESTORE DATABASE -> MULTI_USER.");
+
+                // Escaped identifier test
+                string escapedSql = DatabaseService.BuildRestoreDatabaseBatchSql("Prod]DB");
+                Assert(escapedSql.Contains("[Prod]]DB]"), "Restore batch must properly escape closing square brackets in database names.");
+            });
+
+            RunSyncTest("DatabaseService_BuildAlterCollationBatchSql_CombinesAllStatementsInOrder", () =>
+            {
+                string sql = DatabaseService.BuildAlterCollationBatchSql("ProductionDB", "Latin1_General_CI_AS");
+
+                Assert(sql.Contains("ALTER DATABASE [ProductionDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"),
+                    "Collation batch must contain 'ALTER DATABASE [ProductionDB] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;'");
+                Assert(sql.Contains("ALTER DATABASE [ProductionDB] COLLATE Latin1_General_CI_AS;"),
+                    "Collation batch must contain 'ALTER DATABASE [ProductionDB] COLLATE Latin1_General_CI_AS;'");
+                Assert(sql.Contains("ALTER DATABASE [ProductionDB] SET MULTI_USER;"),
+                    "Collation batch must contain 'ALTER DATABASE [ProductionDB] SET MULTI_USER;'");
+
+                int idxSingleUser = sql.IndexOf("ALTER DATABASE [ProductionDB] SET SINGLE_USER", StringComparison.Ordinal);
+                int idxCollate = sql.IndexOf("ALTER DATABASE [ProductionDB] COLLATE", StringComparison.Ordinal);
+                int idxMultiUser = sql.IndexOf("ALTER DATABASE [ProductionDB] SET MULTI_USER", StringComparison.Ordinal);
+
+                Assert(idxSingleUser >= 0 && idxCollate > idxSingleUser && idxMultiUser > idxCollate,
+                    "Collation batch statements must be ordered: SINGLE_USER -> ALTER DATABASE COLLATE -> MULTI_USER.");
+
+                // Escaped identifier test
+                string escapedSql = DatabaseService.BuildAlterCollationBatchSql("Prod]DB", "Latin1_General_CI_AS");
+                Assert(escapedSql.Contains("[Prod]]DB]"), "Collation batch must properly escape closing square brackets in database names.");
+            });
+
+            await RunAsyncTest("DatabaseService_RestoreDatabaseAsync_ExecutesSingleBatchCommand", async () =>
+            {
+                using var logger = new LoggerService();
+                var testService = new SingleBatchTestableDatabaseService(logger);
+                using var cts = new CancellationTokenSource();
+
+                string dbName = "InventoryDB";
+                string backupPath = @"/var/opt/mssql/backup/inv.bak";
+                await testService.RestoreDatabaseAsync(dbName, backupPath, null, cts.Token);
+
+                Assert(testService.ExecutedCommands.Count == 1,
+                    $"RestoreDatabaseAsync must execute exactly 1 single-batch SqlCommand, but executed {testService.ExecutedCommands.Count}.");
+
+                var executed = testService.ExecutedCommands[0];
+                Assert(executed.Timeout == 3600, $"Restore batch command timeout must be 3600 seconds, got {executed.Timeout}.");
+                Assert(executed.Token == cts.Token, "Restore batch command must accept and propagate cancellation token.");
+                Assert(executed.Params.Length == 1 && executed.Params[0].ParameterName == "@BackupFile" && (string)executed.Params[0].Value! == backupPath,
+                    "Restore batch command must pass @BackupFile parameter with backup file path.");
+                Assert(executed.CommandText.Contains("USE [master];") &&
+                       executed.CommandText.Contains("SET SINGLE_USER") &&
+                       executed.CommandText.Contains("RESTORE DATABASE") &&
+                       executed.CommandText.Contains("SET MULTI_USER"),
+                    "Restore batch command text must combine USE master, SINGLE_USER, RESTORE DATABASE, and MULTI_USER statements.");
+            });
+
+            await RunAsyncTest("DatabaseService_RestoreDatabaseAsync_ExecutesEmergencyReset_WhenBatchFails", async () =>
+            {
+                using var logger = new LoggerService();
+                var testService = new SingleBatchTestableDatabaseService(logger) { ThrowOnFirstExecute = true };
+
+                bool caughtPrimaryException = false;
+                try
+                {
+                    await testService.RestoreDatabaseAsync("InventoryDB", @"/var/opt/mssql/backup/inv.bak");
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("Simulated SQL execution error"))
+                {
+                    caughtPrimaryException = true;
+                }
+
+                Assert(caughtPrimaryException, "RestoreDatabaseAsync must rethrow primary SQL exception when emergency reset succeeds.");
+                Assert(testService.ExecutedCommands.Count == 2,
+                    $"Expected exactly 2 commands (1 primary batch attempt + 1 emergency MULTI_USER reset), got {testService.ExecutedCommands.Count}.");
+                Assert(testService.ExecutedCommands[1].CommandText.Contains("SET MULTI_USER"),
+                    "Emergency reset must execute MULTI_USER statement following batch execution failure.");
+            });
+
+            await RunAsyncTest("DatabaseService_AlterCollationAsync_ExecutesSingleBatchCommand", async () =>
+            {
+                using var logger = new LoggerService();
+                var testService = new SingleBatchTestableDatabaseService(logger);
+                using var cts = new CancellationTokenSource();
+
+                string dbName = "InventoryDB";
+                string targetCollation = "Latin1_General_CI_AS";
+                await testService.AlterCollationAsync(dbName, targetCollation, cts.Token);
+
+                Assert(testService.ExecutedCommands.Count == 1,
+                    $"AlterCollationAsync must execute exactly 1 single-batch SqlCommand, but executed {testService.ExecutedCommands.Count}.");
+
+                var executed = testService.ExecutedCommands[0];
+                Assert(executed.Timeout == 3600, $"AlterCollation command timeout must be 3600 seconds, got {executed.Timeout}.");
+                Assert(executed.Token == cts.Token, "AlterCollation command must accept and propagate cancellation token.");
+                Assert(executed.CommandText.Contains("SET SINGLE_USER") &&
+                       executed.CommandText.Contains("COLLATE Latin1_General_CI_AS") &&
+                       executed.CommandText.Contains("SET MULTI_USER"),
+                    "AlterCollation batch command text must combine SINGLE_USER, ALTER DATABASE COLLATE, and MULTI_USER statements.");
+            });
+
+            await RunAsyncTest("DatabaseService_AlterCollationAsync_ExecutesEmergencyReset_WhenBatchFails", async () =>
+            {
+                using var logger = new LoggerService();
+                var testService = new SingleBatchTestableDatabaseService(logger) { ThrowOnFirstExecute = true };
+
+                bool caughtPrimaryException = false;
+                try
+                {
+                    await testService.AlterCollationAsync("InventoryDB", "Latin1_General_CI_AS");
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("Simulated SQL execution error"))
+                {
+                    caughtPrimaryException = true;
+                }
+
+                Assert(caughtPrimaryException, "AlterCollationAsync must rethrow primary SQL exception when emergency reset succeeds.");
+                Assert(testService.ExecutedCommands.Count == 2,
+                    $"Expected exactly 2 commands (1 primary batch attempt + 1 emergency MULTI_USER reset), got {testService.ExecutedCommands.Count}.");
+                Assert(testService.ExecutedCommands[1].CommandText.Contains("SET MULTI_USER"),
+                    "Emergency reset must execute MULTI_USER statement following collation batch failure.");
+            });
+
             string ResolveCollationModifierFilePath(params string[] relativeSegments)
             {
                 var baseCandidates = new[]
@@ -5188,12 +5360,6 @@ namespace CollationModifier.Tests
                 }
             });
 
-            Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
-            if (failed > 0)
-            {
-                throw new InvalidOperationException($"MainViewModel tests failed with {failed} failures.");
-            }
-
             await RunAsyncTest("DatabaseService_ExecuteNonQueryAsync_ForwardsCancellationToken_ToSqlCommand", async () =>
             {
                 using var logger = new LoggerService();
@@ -5328,35 +5494,32 @@ namespace CollationModifier.Tests
                 Assert(dbService.ExecutedCommands[0].CommandText.Contains("BACKUP DATABASE [WorkflowDB]"), "Expected BACKUP DATABASE command.");
                 Assert(dbService.ExecutedCommands[0].CancellationToken == backupCts.Token, "BackupDatabaseAsync must forward cancellationToken to BACKUP DATABASE.");
 
-                // 2. RestoreDatabaseAsync
+                // 2. RestoreDatabaseAsync (single-batch consolidation)
                 dbService.ExecutedCommands.Clear();
                 dbService.RecordedOpenTokens.Clear();
                 using var restoreCts = new CancellationTokenSource();
                 await dbService.RestoreDatabaseAsync("WorkflowDB", backupPath, null, restoreCts.Token);
                 Assert(dbService.RecordedOpenTokens.Single() == restoreCts.Token, "RestoreDatabaseAsync must pass cancellationToken to OpenConnectionAsync.");
-                Assert(dbService.ExecutedCommands.Count == 4, $"Expected 4 restore commands, got {dbService.ExecutedCommands.Count}.");
-                Assert(dbService.ExecutedCommands[0].CommandText == "USE [master];" && dbService.ExecutedCommands[0].CancellationToken == restoreCts.Token,
-                    "RestoreDatabaseAsync must forward cancellationToken to USE [master].");
-                Assert(dbService.ExecutedCommands[1].CommandText.Contains("SET SINGLE_USER") && dbService.ExecutedCommands[1].CancellationToken == restoreCts.Token,
-                    "RestoreDatabaseAsync must forward cancellationToken to SINGLE_USER.");
-                Assert(dbService.ExecutedCommands[2].CommandText.Contains("RESTORE DATABASE [WorkflowDB]") && dbService.ExecutedCommands[2].CancellationToken == restoreCts.Token,
-                    "RestoreDatabaseAsync must forward cancellationToken to RESTORE DATABASE.");
-                Assert(dbService.ExecutedCommands[3].CommandText.Contains("SET MULTI_USER") && dbService.ExecutedCommands[3].CancellationToken == CancellationToken.None,
-                    "RestoreDatabaseAsync must execute MULTI_USER with CancellationToken.None.");
+                Assert(dbService.ExecutedCommands.Count == 1, $"Expected 1 consolidated restore batch command, got {dbService.ExecutedCommands.Count}.");
+                Assert(dbService.ExecutedCommands[0].CommandText.Contains("USE [master];") &&
+                       dbService.ExecutedCommands[0].CommandText.Contains("SET SINGLE_USER") &&
+                       dbService.ExecutedCommands[0].CommandText.Contains("RESTORE DATABASE [WorkflowDB]") &&
+                       dbService.ExecutedCommands[0].CommandText.Contains("SET MULTI_USER") &&
+                       dbService.ExecutedCommands[0].CancellationToken == restoreCts.Token,
+                    "RestoreDatabaseAsync must forward cancellationToken to the consolidated restore batch command.");
 
-                // 3. AlterCollationAsync
+                // 3. AlterCollationAsync (single-batch consolidation)
                 dbService.ExecutedCommands.Clear();
                 dbService.RecordedOpenTokens.Clear();
                 using var alterCts = new CancellationTokenSource();
                 await dbService.AlterCollationAsync("WorkflowDB", "Latin1_General_100_CI_AS", alterCts.Token);
                 Assert(dbService.RecordedOpenTokens.Single() == alterCts.Token, "AlterCollationAsync must pass cancellationToken to OpenConnectionAsync.");
-                Assert(dbService.ExecutedCommands.Count == 3, $"Expected 3 alter commands, got {dbService.ExecutedCommands.Count}.");
-                Assert(dbService.ExecutedCommands[0].CommandText.Contains("SET SINGLE_USER") && dbService.ExecutedCommands[0].CancellationToken == alterCts.Token,
-                    "AlterCollationAsync must forward cancellationToken to SINGLE_USER.");
-                Assert(dbService.ExecutedCommands[1].CommandText.Contains("ALTER DATABASE [WorkflowDB] COLLATE Latin1_General_100_CI_AS") && dbService.ExecutedCommands[1].CancellationToken == alterCts.Token,
-                    "AlterCollationAsync must forward cancellationToken to ALTER DATABASE COLLATE.");
-                Assert(dbService.ExecutedCommands[2].CommandText.Contains("SET MULTI_USER") && dbService.ExecutedCommands[2].CancellationToken == CancellationToken.None,
-                    "AlterCollationAsync must execute MULTI_USER with CancellationToken.None.");
+                Assert(dbService.ExecutedCommands.Count == 1, $"Expected 1 consolidated alter batch command, got {dbService.ExecutedCommands.Count}.");
+                Assert(dbService.ExecutedCommands[0].CommandText.Contains("SET SINGLE_USER") &&
+                       dbService.ExecutedCommands[0].CommandText.Contains("ALTER DATABASE [WorkflowDB] COLLATE Latin1_General_100_CI_AS") &&
+                       dbService.ExecutedCommands[0].CommandText.Contains("SET MULTI_USER") &&
+                       dbService.ExecutedCommands[0].CancellationToken == alterCts.Token,
+                    "AlterCollationAsync must forward cancellationToken to the consolidated alter collation batch command.");
 
                 // 4. TrySetMultiUserAsync ignores cancelled token
                 dbService.ExecutedCommands.Clear();
@@ -5583,10 +5746,10 @@ namespace CollationModifier.Tests
                 Assert(restoreCommands[0].CancellationToken == CancellationToken.None,
                     "Rollback RESTORE DATABASE command must execute with CancellationToken.None.");
 
-                var multiUserCommands = dbService.ExecutedCommands.Where(c => c.CommandText.Contains("SET MULTI_USER")).ToList();
+                var multiUserCommands = dbService.ExecutedCommands.Where(c => c.CommandText.Contains("SET MULTI_USER") && !c.CommandText.Contains("COLLATE")).ToList();
                 Assert(multiUserCommands.Count >= 2, $"Expected emergency MULTI_USER reset commands to execute, got {multiUserCommands.Count}.");
                 Assert(multiUserCommands.All(c => c.CancellationToken == CancellationToken.None),
-                    "All MULTI_USER commands must execute with CancellationToken.None.");
+                    "All emergency MULTI_USER and rollback commands must execute with CancellationToken.None.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
