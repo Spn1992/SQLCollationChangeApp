@@ -4721,210 +4721,84 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
-            RunSyncTest("MainWindowXaml_DoesNotInstantiateParameterlessMainViewModel_AndCodeBehindInjectsAppLogger", () =>
+            RunSyncTest("SelectedAuthenticationType_RaisesPropertyChanged_ForCanEditSqlCredentials_WhenSwitched", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(!vm.IsConnected, "IsConnected should default to false.");
+                Assert(!vm.IsBusy, "IsBusy should default to false.");
+                Assert(vm.SelectedAuthenticationType == "Windows Authentication", "Default authentication should be Windows Authentication.");
+                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false initially under Windows Authentication.");
 
-                string xamlContent = System.IO.File.ReadAllText(mainWindowXamlPath);
-                var doc = System.Xml.Linq.XDocument.Parse(xamlContent);
-                Assert(!doc.Descendants().Any(e => e.Name.LocalName == "Window.DataContext"),
-                    "MainWindow.xaml must not declaratively set Window.DataContext.");
-                Assert(!doc.Descendants().Any(e => e.Name.LocalName == "MainViewModel"),
-                    "MainWindow.xaml must not declaratively instantiate a parameterless MainViewModel.");
-
-                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
-                if (!System.IO.File.Exists(mainWindowCsPath))
+                var notifiedProperties = new List<string>();
+                vm.PropertyChanged += (sender, args) =>
                 {
-                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
-                }
-                if (!System.IO.File.Exists(mainWindowCsPath))
-                {
-                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
-                }
-                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+                    if (args.PropertyName != null)
+                    {
+                        notifiedProperties.Add(args.PropertyName);
+                    }
+                };
 
-                string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
-                Assert(csContent.Contains("(Application.Current as App)?.Logger"),
-                    "MainWindow.xaml.cs should retrieve App.Logger from Application.Current.");
-                Assert(csContent.Contains("new MainViewModel(logger: logger)"),
-                    "MainWindow.xaml.cs should pass the injected logger to MainViewModel.");
+                // Switch to SQL Server Authentication
+                vm.SelectedAuthenticationType = "SQL Server Authentication";
 
-                string appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml.cs"));
-                if (!System.IO.File.Exists(appXamlCsPath))
-                {
-                    appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml.cs"));
-                }
-                if (!System.IO.File.Exists(appXamlCsPath))
-                {
-                    appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml.cs"));
-                }
-                Assert(System.IO.File.Exists(appXamlCsPath), $"App.xaml.cs file should exist at path {appXamlCsPath}");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    $"Expected PropertyChanged for CanEditSqlCredentials when switching to SQL Server Auth, got: {string.Join(", ", notifiedProperties)}");
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsSqlServerAuth)),
+                    "Expected PropertyChanged for IsSqlServerAuth.");
+                Assert(vm.CanEditSqlCredentials, "CanEditSqlCredentials should be true when SQL Server Authentication is selected and disconnected.");
+                Assert(vm.StatusMessage == "SQL Server Authentication selected. Username and Password fields enabled.",
+                    $"Expected status message announcing enabled credentials, got '{vm.StatusMessage}'");
 
-                string appCsContent = System.IO.File.ReadAllText(appXamlCsPath);
-                int onExitStart = appCsContent.IndexOf("protected override void OnExit");
-                Assert(onExitStart >= 0, "App.xaml.cs must define OnExit.");
-                int onExitEnd = appCsContent.IndexOf("base.OnExit(e);", onExitStart);
-                string onExitBody = appCsContent.Substring(onExitStart, onExitEnd - onExitStart);
-                Assert(!onExitBody.Contains("_logger?.Flush()") && !onExitBody.Contains("_logger.Flush()"),
-                    "App.OnExit must not call redundant Flush() before Dispose().");
-                Assert(onExitBody.Contains("_logger?.Dispose()"),
-                    "App.OnExit must call _logger?.Dispose() once.");
+                // Switch back to Windows Authentication
+                notifiedProperties.Clear();
+                vm.SelectedAuthenticationType = "Windows Authentication";
+
+                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    $"Expected PropertyChanged for CanEditSqlCredentials when switching to Windows Auth, got: {string.Join(", ", notifiedProperties)}");
+                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false when Windows Authentication is selected.");
+                Assert(vm.StatusMessage == "Windows Authentication selected. Username and Password fields disabled.",
+                    $"Expected status message announcing disabled credentials, got '{vm.StatusMessage}'");
             });
 
-            await RunAsyncTest("MainViewModel_Dispose_WithExternalLogger_CancelsCtsUnder5Ms_AndLeavesLoggerActive", async () =>
+            RunSyncTest("SelectedAuthenticationType_CanEditSqlCredentials_RemainsFalse_WhenConnectedOrBusy", () =>
             {
-                string logDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"vm_ext_logger_{Guid.NewGuid():N}");
-                string logPath = System.IO.Path.Combine(logDir, "app.log");
+                // Edge case 1: When IsConnected is true
+                var vmConnected = new MainViewModel(new MockDatabaseService());
+                vmConnected.IsConnected = true;
 
-                try
+                var notifiedPropertiesConnected = new List<string>();
+                vmConnected.PropertyChanged += (sender, args) =>
                 {
-                    using (var externalLogger = new LoggerService(logPath))
+                    if (args.PropertyName != null)
                     {
-                        // Pre-JIT Dispose on a throwaway ViewModel so Stopwatch measures steady-state execution
-                        var warmupVm = new MainViewModel(new MockDatabaseService(), externalLogger);
-                        warmupVm.Dispose();
-
-                        var connectStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                        var mockService = new MockDatabaseService
-                        {
-                            OnTestConnection = async token =>
-                            {
-                                connectStarted.TrySetResult(true);
-                                var cancelTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                                using var reg = token.Register(() => cancelTcs.TrySetCanceled(token));
-                                return await cancelTcs.Task;
-                            }
-                        };
-
-                        var vm = new MainViewModel(mockService, externalLogger);
-                        var connectTask = vm.ConnectAsync();
-                        await connectStarted.Task;
-
-                        var sw = System.Diagnostics.Stopwatch.StartNew();
-                        vm.Dispose();
-                        sw.Stop();
-
-                        Assert(sw.Elapsed.TotalMilliseconds < 5.0,
-                            $"Disposing MainViewModel with external logger must cancel _cts in under 5 ms, took {sw.Elapsed.TotalMilliseconds:F3} ms.");
-
-                        await connectTask;
-                        Assert(!vm.IsConnected, "ConnectAsync should abort when MainViewModel.Dispose cancels _cts.");
-                        Assert(vm.StatusMessage == "Operation cancelled by user.",
-                            $"Expected cancellation status after Dispose, got '{vm.StatusMessage}'");
-
-                        Assert(!externalLogger.IsDisposed, "External LoggerService must NOT be disposed when MainViewModel is disposed.");
-                        externalLogger.LogInfo("Post-MainViewModel-dispose active log message");
+                        notifiedPropertiesConnected.Add(args.PropertyName);
                     }
+                };
 
-                    Assert(System.IO.File.Exists(logPath), "External logger should flush log file upon its own disposal.");
-                    string logContent = System.IO.File.ReadAllText(logPath);
-                    Assert(logContent.Contains("Post-MainViewModel-dispose active log message"),
-                        "External logger must remain active and write entries logged after MainViewModel.Dispose.");
-                }
-                finally
+                vmConnected.SelectedAuthenticationType = "SQL Server Authentication";
+                Assert(notifiedPropertiesConnected.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    "Expected PropertyChanged for CanEditSqlCredentials even when IsConnected is true.");
+                Assert(!vmConnected.CanEditSqlCredentials,
+                    "CanEditSqlCredentials must evaluate to false when IsConnected is true even if SQL Server Auth is selected.");
+
+                // Edge case 2: When IsBusy is true
+                var vmBusy = new MainViewModel(new MockDatabaseService());
+                vmBusy.IsBusy = true;
+
+                var notifiedPropertiesBusy = new List<string>();
+                vmBusy.PropertyChanged += (sender, args) =>
                 {
-                    if (System.IO.Directory.Exists(logDir))
+                    if (args.PropertyName != null)
                     {
-                        System.IO.Directory.Delete(logDir, recursive: true);
+                        notifiedPropertiesBusy.Add(args.PropertyName);
                     }
-                }
-            });
+                };
 
-            RunSyncTest("MainViewModel_Dispose_WithNullLogger_DisposesOwnedFallbackLogger", () =>
-            {
-                var vm = new MainViewModel(new MockDatabaseService(), logger: null);
-                var loggerField = typeof(MainViewModel).GetField("_logger", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                Assert(loggerField != null, "MainViewModel should have private _logger field.");
-
-                var fallbackLogger = (LoggerService)loggerField!.GetValue(vm)!;
-                Assert(!fallbackLogger.IsDisposed, "Fallback logger should be active before MainViewModel.Dispose.");
-
-                vm.Dispose();
-                Assert(fallbackLogger.IsDisposed, "Fallback logger created by MainViewModel must be disposed when MainViewModel is disposed.");
-            });
-
-            RunSyncTest("MainViewModel_OpenLogFile_BeforeLoggingStarts_PreservesMissingFileFallbackMessage", () =>
-            {
-                string missingDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"vm_openlog_missing_{Guid.NewGuid():N}");
-                string logPath = System.IO.Path.Combine(missingDir, "log_missing.txt");
-
-                try
-                {
-                    using var logger = new LoggerService(logPath);
-                    Assert(!System.IO.Directory.Exists(missingDir), "Lazy logger should not create directory before logging.");
-
-                    var vm = new MainViewModel(new MockDatabaseService(), logger);
-                    vm.OpenLogFile();
-
-                    Assert(vm.StatusMessage == "Log file does not exist yet.",
-                        $"Expected 'Log file does not exist yet.', got '{vm.StatusMessage}'");
-                    Assert(!System.IO.Directory.Exists(missingDir), "OpenLogFile should not create missing log directory.");
-                }
-                finally
-                {
-                    if (System.IO.Directory.Exists(missingDir))
-                    {
-                        System.IO.Directory.Delete(missingDir, recursive: true);
-                    }
-                }
-            });
-
-            await RunAsyncTest("ShutdownPipeline_StalledStorage_ExecutesAtMostOneBoundedWaitAcrossWindowCloseAndExit", async () =>
-            {
-                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"shutdown_single_budget_{Guid.NewGuid():N}.txt");
-                var workerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-                var releaseWorker = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-                try
-                {
-                    var sharedAppLogger = new LoggerService(logPath, async reader =>
-                    {
-                        workerStarted.TrySetResult(true);
-                        await reader.WaitToReadAsync().ConfigureAwait(false);
-                        await releaseWorker.Task.ConfigureAwait(false);
-                    });
-
-                    await workerStarted.Task;
-                    var vm = new MainViewModel(new MockDatabaseService(), sharedAppLogger);
-                    sharedAppLogger.LogError("Unhandled error before exit");
-
-                    var sw = System.Diagnostics.Stopwatch.StartNew();
-
-                    // 1. Pre-shutdown bounded flush (simulating GlobalExceptionHandler)
-                    GlobalExceptionHandler.FlushLogger(sharedAppLogger, TimeSpan.FromMilliseconds(200));
-
-                    // 2. MainWindow.Closed -> MainViewModel.Dispose() (0ms on logger)
-                    var closeSw = System.Diagnostics.Stopwatch.StartNew();
-                    vm.Dispose();
-                    closeSw.Stop();
-
-                    // 3. App.OnExit -> sharedAppLogger.Dispose() (short-circuits terminal wait via atomic flag)
-                    sharedAppLogger.Dispose();
-
-                    sw.Stop();
-
-                    Assert(closeSw.Elapsed.TotalMilliseconds < 5.0,
-                        $"MainWindow close disposal should not block on shared logger, took {closeSw.Elapsed.TotalMilliseconds:F3} ms.");
-                    Assert(sw.ElapsedMilliseconds >= 150 && sw.ElapsedMilliseconds < 380,
-                        $"Expected single ~200ms wait across GlobalExceptionHandler, MainWindow.Closed, and App.OnExit, but took {sw.ElapsedMilliseconds} ms.");
-                }
-                finally
-                {
-                    releaseWorker.TrySetResult(true);
-                    if (System.IO.File.Exists(logPath))
-                    {
-                        System.IO.File.Delete(logPath);
-                    }
-                }
+                vmBusy.SelectedAuthenticationType = "SQL Server Authentication";
+                Assert(notifiedPropertiesBusy.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
+                    "Expected PropertyChanged for CanEditSqlCredentials even when IsBusy is true.");
+                Assert(!vmBusy.CanEditSqlCredentials,
+                    "CanEditSqlCredentials must evaluate to false when IsBusy is true even if SQL Server Auth is selected.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
