@@ -3,12 +3,15 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using MSBuildDiagnosticPatcher.Models;
 
 namespace MSBuildDiagnosticPatcher.Reporting
 {
     public class ReportGenerator
     {
+        private static readonly Regex LineBreakRegex = new Regex(@"\r\n|\r|\n", RegexOptions.Compiled);
+
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
         {
             WriteIndented = true,
@@ -17,14 +20,15 @@ namespace MSBuildDiagnosticPatcher.Reporting
 
         public string GenerateMarkdownReport(DiagnosticReport report)
         {
+            var (errorCount, warningCount) = report.GetSeverityCounts();
             var sb = new StringBuilder();
             sb.AppendLine("# MSBuild Log Diagnostic Report");
             sb.AppendLine();
             sb.AppendLine($"- **Source Log**: `{report.SourceLogPath}`");
             sb.AppendLine($"- **Generated At**: `{report.GeneratedAt:yyyy-MM-dd HH:mm:ss} UTC`");
             sb.AppendLine($"- **Parse Duration**: `{report.ParseDuration.TotalMilliseconds:F1} ms`");
-            sb.AppendLine($"- **Roslyn Errors**: `{report.ErrorCount}`");
-            sb.AppendLine($"- **Roslyn Warnings**: `{report.WarningCount}`");
+            sb.AppendLine($"- **Roslyn Errors**: `{errorCount}`");
+            sb.AppendLine($"- **Roslyn Warnings**: `{warningCount}`");
             sb.AppendLine($"- **Failed Tests**: `{report.FailureCount}`");
             sb.AppendLine($"- **Candidate Patches**: `{report.PatchCount}`");
             sb.AppendLine();
@@ -44,7 +48,7 @@ namespace MSBuildDiagnosticPatcher.Reporting
                 {
                     string file = Path.GetFileName(diag.FilePath);
                     string loc = diag.LineNumber > 0 ? $"{diag.LineNumber}:{diag.ColumnNumber}" : "-";
-                    string cleanMsg = diag.Message.Replace("|", "\\|");
+                    string cleanMsg = FormatMarkdownTableCell(diag.Message);
                     sb.AppendLine($"| `{diag.Code}` | `{diag.Severity}` | `{file}` | `{loc}` | {cleanMsg} |");
                 }
             }
@@ -63,9 +67,12 @@ namespace MSBuildDiagnosticPatcher.Reporting
                 sb.AppendLine("| :--- | :--- | :--- |");
                 foreach (var tf in report.TestFailures)
                 {
-                    string method = string.IsNullOrWhiteSpace(tf.TestMethod) ? "-" : $"`{tf.TestMethod}`";
-                    string cleanMsg = tf.AssertionFailureMessage.Replace("|", "\\|");
-                    sb.AppendLine($"| `{tf.TestClass}` | {method} | {cleanMsg} |");
+                    string cleanClass = FormatMarkdownTableCell(tf.TestClass);
+                    string method = string.IsNullOrWhiteSpace(tf.TestMethod)
+                        ? "-"
+                        : $"`{FormatMarkdownTableCell(tf.TestMethod)}`";
+                    string cleanMsg = FormatMarkdownTableCell(tf.AssertionFailureMessage);
+                    sb.AppendLine($"| `{cleanClass}` | {method} | {cleanMsg} |");
                 }
 
                 sb.AppendLine();
@@ -123,25 +130,41 @@ namespace MSBuildDiagnosticPatcher.Reporting
             return JsonSerializer.Serialize(report, JsonOptions);
         }
 
+        private static string FormatMarkdownTableCell(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            string singleLine = LineBreakRegex.Replace(value, " ");
+            return singleLine.Replace("|", "\\|").Trim();
+        }
+
         public void PrintConsoleSummary(DiagnosticReport report)
         {
+            var (errorCount, warningCount) = report.GetSeverityCounts();
+
             Console.WriteLine("=================================================");
             Console.WriteLine(" MSBuild Log Diagnostic & Patch Generator Report");
             Console.WriteLine("=================================================");
             Console.WriteLine($" Source Log:       {report.SourceLogPath}");
             Console.WriteLine($" Parse Duration:   {report.ParseDuration.TotalMilliseconds:F1} ms");
-            Console.WriteLine($" Compiler Errors:  {report.ErrorCount}");
-            Console.WriteLine($" Compiler Warnings:{report.WarningCount}");
+            Console.WriteLine($" Compiler Errors:  {errorCount}");
+            Console.WriteLine($" Compiler Warnings:{warningCount}");
             Console.WriteLine($" Test Failures:    {report.FailureCount}");
             Console.WriteLine($" Patches Created:  {report.PatchCount}");
             Console.WriteLine("-------------------------------------------------");
 
-            if (report.ErrorCount > 0)
+            if (errorCount > 0)
             {
                 Console.WriteLine("\n[Compiler Errors]");
-                foreach (var err in report.Diagnostics.FindAll(d => d.Severity == DiagnosticSeverity.Error))
+                foreach (var err in report.Diagnostics)
                 {
-                    Console.WriteLine($"  [{err.Code}] {err.FilePath}({err.LineNumber},{err.ColumnNumber}): {err.Message}");
+                    if (err.Severity == DiagnosticSeverity.Error)
+                    {
+                        Console.WriteLine($"  [{err.Code}] {err.FilePath}({err.LineNumber},{err.ColumnNumber}): {err.Message}");
+                    }
                 }
             }
 
