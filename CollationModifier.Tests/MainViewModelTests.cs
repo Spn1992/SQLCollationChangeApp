@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -619,6 +620,24 @@ namespace CollationModifier.Tests
     public static class MainViewModelTestsRunner
     {
         private const string SuiteClassName = "MainViewModelTests";
+
+        internal static string ResolveCollationModifierFilePath(string fileName)
+        {
+            string resolvedPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", fileName));
+            if (!File.Exists(resolvedPath))
+            {
+                resolvedPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "CollationModifier", fileName));
+            }
+            if (!File.Exists(resolvedPath))
+            {
+                resolvedPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", fileName));
+            }
+            if (!File.Exists(resolvedPath))
+            {
+                throw new InvalidOperationException($"Assertion failed: {fileName} file should exist at path {resolvedPath}");
+            }
+            return resolvedPath;
+        }
 
         public static Task<int> RunAllTestsAsync() => RunTestsAsync();
 
@@ -1262,16 +1281,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_RefreshDatabasesButton_LayoutAndAccessibility_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -2365,16 +2375,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_FocusVisualStyle_ImplicitStyles_Configured", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
 
@@ -2392,16 +2393,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_ComboBoxStyle_EditableFocusIndicatorAndAdorner_Configured", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string appXamlContent = System.IO.File.ReadAllText(appXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(appXamlContent);
@@ -2494,30 +2486,12 @@ namespace CollationModifier.Tests
 
             RunSyncTest("ErrorDetailsWindowXaml_CopyStatus_UsesAccessibleStatusSuccessBrush", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string appContent = System.IO.File.ReadAllText(appXamlPath);
                 Assert(appContent.Contains("x:Key=\"StatusSuccessBrush\" Color=\"#047857\""), "App.xaml should define StatusSuccessBrush with #047857");
 
-                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+                string errorDetailsXamlPath = ResolveCollationModifierFilePath("ErrorDetailsWindow.xaml");
 
                 string errorDetailsContent = System.IO.File.ReadAllText(errorDetailsXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(errorDetailsContent);
@@ -2554,16 +2528,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_InputRestingBorderBrush_HighContrastConfiguration", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
 
@@ -2585,16 +2550,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_DisabledInputStyleTriggers_Configured", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -2637,16 +2593,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -2710,27 +2657,9 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_MetadataEmptyState_BindingsTriggersAndContrast_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 var xName = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
                 var mainDoc = System.Xml.Linq.XDocument.Parse(System.IO.File.ReadAllText(mainWindowXamlPath));
@@ -2851,16 +2780,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainViewModel_SelectedDatabase_MetadataAccessibleNames_EvaluatesCompositeStrings", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -2967,16 +2887,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_StatusBarTextBlock_ConfiguredWithPoliteLiveSetting", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
@@ -2994,16 +2905,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_StatusBar_UsesConstrainedGridWithTextTrimming", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
@@ -3070,16 +2972,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_ButtonControlTemplates_IncorporateFocusVisualBorderAndTrigger", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
 
@@ -3642,16 +3535,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_ComboBox_VirtualizationSetters_Configured", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
 
@@ -3664,16 +3548,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_ComboBoxStyle_Virtualization_Configured", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
 
@@ -3686,16 +3561,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_TargetCollationInput_VirtualizationProperties_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
@@ -3710,16 +3576,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_TargetCollationInput_Virtualization_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
@@ -3731,16 +3588,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_TargetCollationInput_AutomationPropertiesForwarding_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string xamlContent = System.IO.File.ReadAllText(mainWindowXamlPath);
                 Assert(xamlContent.Contains("x:Name=\"TargetCollationInput\""), "MainWindow.xaml should define TargetCollationInput ComboBox");
@@ -3753,16 +3601,7 @@ namespace CollationModifier.Tests
                 Assert(comboBox != null, "TargetCollationInput ComboBox element should exist in MainWindow.xaml");
                 Assert(comboBox!.Attribute("Loaded")?.Value == "TargetCollationInput_Loaded", "TargetCollationInput must declare Loaded='TargetCollationInput_Loaded'");
 
-                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
-                if (!System.IO.File.Exists(mainWindowCsPath))
-                {
-                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
-                }
-                if (!System.IO.File.Exists(mainWindowCsPath))
-                {
-                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
-                }
-                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+                string mainWindowCsPath = ResolveCollationModifierFilePath("MainWindow.xaml.cs");
 
                 string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
                 Assert(csContent.Contains("TargetCollationInput_Loaded"), "MainWindow.xaml.cs should implement TargetCollationInput_Loaded method");
@@ -3861,16 +3700,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_HeadingLevelStyles_DeclaredAndConfigured", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -3900,16 +3730,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_HeadingLevels_ConfiguredCorrectly", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -3950,16 +3771,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("ErrorDetailsWindowXaml_DialogHeader_ExposesHeadingLevel1", () =>
             {
-                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+                string errorDetailsXamlPath = ResolveCollationModifierFilePath("ErrorDetailsWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -3973,16 +3785,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("AppXaml_SuccessForegroundBrush_HighContrastConfiguration", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
                 string content = System.IO.File.ReadAllText(appXamlPath);
                 Assert(content.Contains("x:Key=\"SuccessForegroundBrush\" Color=\"#15803D\""),
@@ -4018,27 +3821,9 @@ namespace CollationModifier.Tests
 
             RunSyncTest("DisconnectedOverlay_SharedBrushes_NoContainerOpacity_AndHighContrast", () =>
             {
-                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
-                }
-                if (!System.IO.File.Exists(appXamlPath))
-                {
-                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
-                }
-                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+                string appXamlPath = ResolveCollationModifierFilePath("App.xaml");
 
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string appContent = System.IO.File.ReadAllText(appXamlPath);
                 var appDoc = System.Xml.Linq.XDocument.Parse(appContent);
@@ -4120,16 +3905,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_NoLocalBorderBrushOverride", () =>
             {
-                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+                string errorDetailsXamlPath = ResolveCollationModifierFilePath("ErrorDetailsWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4167,16 +3943,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("ErrorDetailsWindowXaml_CopiedStatusLabel_UsesSuccessForegroundBrush", () =>
             {
-                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+                string errorDetailsXamlPath = ResolveCollationModifierFilePath("ErrorDetailsWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4193,16 +3960,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_StatusBarBorder_PlacedAfterMainContentGridInVisualTree", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
@@ -4236,16 +3994,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_OverlayAndOperationsPanel_LiveSetting_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
 
@@ -4286,16 +4035,7 @@ namespace CollationModifier.Tests
                     $"Database Operations StackPanel must bind Visibility to IsConnected via BooleanToVisibilityConverter, got '{opsVisibility}'");
 
                 // Verify TargetCollationInput_Loaded calls ApplyTemplate before checking Template and calling Template.FindName
-                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
-                if (!System.IO.File.Exists(mainWindowCsPath))
-                {
-                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
-                }
-                if (!System.IO.File.Exists(mainWindowCsPath))
-                {
-                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
-                }
-                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+                string mainWindowCsPath = ResolveCollationModifierFilePath("MainWindow.xaml.cs");
 
                 string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
                 int loadedMethodIndex = csContent.IndexOf("TargetCollationInput_Loaded");
@@ -4321,16 +4061,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_DashboardOperationsPanel_WrappedInScrollViewer", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4639,16 +4370,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_TargetConfiguration_StackedVertically_AndFullWidthBackupDirectory", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4822,16 +4544,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_ConnectionPanel_CancelButton_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4866,16 +4579,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("ErrorDetailsWindowXaml_ActionButtons_AutomationProperties_Configured", () =>
             {
-                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(errorDetailsXamlPath))
-                {
-                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
+                string errorDetailsXamlPath = ResolveCollationModifierFilePath("ErrorDetailsWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4910,16 +4614,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_ErrorDetailsButton_AutomationProperties_Configured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4941,16 +4636,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainWindowXaml_ConnectionPanel_ConnectButton_DefaultConfigured", () =>
             {
-                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
-                }
-                if (!System.IO.File.Exists(mainWindowXamlPath))
-                {
-                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
-                }
-                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+                string mainWindowXamlPath = ResolveCollationModifierFilePath("MainWindow.xaml");
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
@@ -4966,26 +4652,43 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
-            string ResolveCollationModifierFilePath(params string[] relativeSegments)
+            RunSyncTest("ResolveCollationModifierFilePath_ResolvesExistingFiles_AndThrowsForMissingFile", () =>
             {
-                var baseCandidates = new[]
+                string[] existingFiles = new[]
                 {
-                    System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier"),
-                    System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier"),
-                    System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier")
+                    "App.xaml",
+                    "App.xaml.cs",
+                    "MainWindow.xaml",
+                    "MainWindow.xaml.cs",
+                    "ErrorDetailsWindow.xaml"
                 };
 
-                foreach (var baseDir in baseCandidates)
+                foreach (string fileName in existingFiles)
                 {
-                    string candidate = System.IO.Path.GetFullPath(System.IO.Path.Combine(new[] { baseDir }.Concat(relativeSegments).ToArray()));
-                    if (System.IO.File.Exists(candidate))
-                    {
-                        return candidate;
-                    }
+                    string resolvedPath = MainViewModelTestsRunner.ResolveCollationModifierFilePath(fileName);
+                    Assert(!string.IsNullOrWhiteSpace(resolvedPath), $"Resolved path for {fileName} should not be empty.");
+                    Assert(Path.IsPathRooted(resolvedPath), $"Resolved path for {fileName} should be rooted: {resolvedPath}");
+                    Assert(resolvedPath == Path.GetFullPath(resolvedPath), $"Resolved path for {fileName} should be normalized: {resolvedPath}");
+                    Assert(File.Exists(resolvedPath), $"Resolved file {fileName} should exist on disk at {resolvedPath}");
+                    Assert(string.Equals(Path.GetFileName(resolvedPath), fileName, StringComparison.Ordinal), $"Resolved file name should match {fileName}, got {Path.GetFileName(resolvedPath)}");
                 }
 
-                return System.IO.Path.GetFullPath(System.IO.Path.Combine(new[] { baseCandidates[0] }.Concat(relativeSegments).ToArray()));
-            }
+                string missingFileName = $"MissingFile_{Guid.NewGuid():N}.xaml";
+                string expectedLastCandidate = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", missingFileName));
+                InvalidOperationException? caughtException = null;
+                try
+                {
+                    MainViewModelTestsRunner.ResolveCollationModifierFilePath(missingFileName);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    caughtException = ex;
+                }
+
+                Assert(caughtException != null, "ResolveCollationModifierFilePath must throw InvalidOperationException when target file does not exist.");
+                Assert(caughtException!.Message == $"Assertion failed: {missingFileName} file should exist at path {expectedLastCandidate}",
+                    $"Unexpected exception message: '{caughtException.Message}'");
+            });
 
             RunSyncTest("CollationModifierCsproj_MultiTargetsNet80AndNet80Windows_WithEnableWindowsTargeting", () =>
             {
@@ -5101,7 +4804,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("MainViewModel_PreprocessorGuards_IncludeWindowsForRequeryAndModalDialogs", () =>
             {
-                string vmPath = ResolveCollationModifierFilePath("ViewModels", "MainViewModel.cs");
+                string vmPath = ResolveCollationModifierFilePath(Path.Combine("ViewModels", "MainViewModel.cs"));
                 Assert(System.IO.File.Exists(vmPath), $"MainViewModel.cs should exist at {vmPath}");
 
                 string code = System.IO.File.ReadAllText(vmPath);
@@ -5119,7 +4822,7 @@ namespace CollationModifier.Tests
 
             RunSyncTest("RelayCommand_CanExecuteChanged_IncludesWindowsInPreprocessorGuards", () =>
             {
-                string rcPath = ResolveCollationModifierFilePath("ViewModels", "RelayCommand.cs");
+                string rcPath = ResolveCollationModifierFilePath(Path.Combine("ViewModels", "RelayCommand.cs"));
                 Assert(System.IO.File.Exists(rcPath), $"RelayCommand.cs should exist at {rcPath}");
 
                 string code = System.IO.File.ReadAllText(rcPath);
@@ -5146,8 +4849,9 @@ namespace CollationModifier.Tests
                     "Headless net8.0 CollationModifier assembly must exclude MainWindow WPF view.");
 
                 // 2. When net8.0-windows output is built on disk, inspect its PE/CLI metadata without loading PresentationCore
-                string winDebugDll = ResolveCollationModifierFilePath("bin", "Debug", "net8.0-windows", "CollationModifier.dll");
-                string winReleaseDll = ResolveCollationModifierFilePath("bin", "Release", "net8.0-windows", "CollationModifier.dll");
+                string collationModifierDir = Path.GetDirectoryName(ResolveCollationModifierFilePath("CollationModifier.csproj"))!;
+                string winDebugDll = Path.Combine(collationModifierDir, "bin", "Debug", "net8.0-windows", "CollationModifier.dll");
+                string winReleaseDll = Path.Combine(collationModifierDir, "bin", "Release", "net8.0-windows", "CollationModifier.dll");
                 string? winDllPath = System.IO.File.Exists(winDebugDll) ? winDebugDll : (System.IO.File.Exists(winReleaseDll) ? winReleaseDll : null);
 
                 if (winDllPath != null)
