@@ -74,7 +74,7 @@ namespace CollationModifier.Tests
             }
             var dbs = await GetDatabasesAsync(cancellationToken);
             var collations = await GetSupportedCollationsAsync(cancellationToken);
-            var backupDir = DefaultBackupDirectoryToReturn ?? await GetDefaultBackupDirectoryAsync(cancellationToken);
+            var backupDir = DefaultBackupDirectoryToReturn;
 
             return new ServerInitializationData
             {
@@ -83,18 +83,6 @@ namespace CollationModifier.Tests
                 SupportedCollations = new List<string>(collations)
             };
         }
-
-        public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
-        {
-            if (OnTestConnection != null)
-            {
-                return await OnTestConnection(cancellationToken);
-            }
-            cancellationToken.ThrowIfCancellationRequested();
-            return true;
-        }
-
-        public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
         public async Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
@@ -284,8 +272,6 @@ namespace CollationModifier.Tests
 
     public class FailingMockDatabaseService : MockDatabaseService
     {
-        public override Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
-
         public override Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default)
         {
             throw new InvalidOperationException("Connection failed: Unable to connect to the specified SQL Server host. Please verify server name and credentials.");
@@ -3095,6 +3081,16 @@ namespace CollationModifier.Tests
                 var method = typeof(IDatabaseService).GetMethod("GetServerInitializationDataAsync", new[] { typeof(CancellationToken) });
                 Assert(method != null, "IDatabaseService must declare GetServerInitializationDataAsync(CancellationToken).");
                 Assert(method!.ReturnType == typeof(Task<ServerInitializationData>), "GetServerInitializationDataAsync must return Task<ServerInitializationData>.");
+
+                var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static;
+                Assert(typeof(IDatabaseService).GetMethods(flags).All(m => m.Name != "TestConnectionAsync"),
+                    "IDatabaseService must not declare TestConnectionAsync.");
+                Assert(typeof(IDatabaseService).GetMethods(flags).All(m => m.Name != "GetDefaultBackupDirectoryAsync"),
+                    "IDatabaseService must not declare GetDefaultBackupDirectoryAsync.");
+                Assert(typeof(DatabaseService).GetMethods(flags).All(m => m.Name != "TestConnectionAsync"),
+                    "DatabaseService must not declare TestConnectionAsync.");
+                Assert(typeof(DatabaseService).GetMethods(flags).All(m => m.Name != "GetDefaultBackupDirectoryAsync"),
+                    "DatabaseService must not declare GetDefaultBackupDirectoryAsync.");
             });
 
             RunSyncTest("ServerInitializationData_DoesNotExposeObsoletePropertyShims", () =>

@@ -9,10 +9,8 @@ namespace CollationModifier.Services
     public interface IDatabaseService
     {
         void SetConnectionString(string server, string authType, string username, string password);
-        Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default);
         Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default);
         Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default);
-        Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default);
         Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default);
         Task<(int UserCharacterColumnCount, int RetainedColumnCount)> GetColumnCollationScopeAsync(string databaseName, string targetCollation = "", CancellationToken cancellationToken = default);
         Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default);

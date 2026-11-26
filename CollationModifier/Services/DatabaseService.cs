@@ -144,31 +144,6 @@ namespace CollationModifier.Services
             _connectionString = newConnectionString;
         }
 
-        public virtual async Task<bool> TestConnectionAsync(CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                using (var connection = new SqlConnection(_connectionString))
-                {
-                    await OpenConnectionAsync(connection, cancellationToken);
-                    return true;
-                }
-            }
-            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
-            {
-                throw new OperationCanceledException("Connection test was cancelled.", ex, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Connection test failed.", ex);
-                return false;
-            }
-        }
-
         public virtual async Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
             var databases = new List<DatabaseInfo>();
@@ -287,47 +262,6 @@ namespace CollationModifier.Services
             }
 
             return collations;
-        }
-
-        public async Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default)
-        {
-            try
-            {
-                using (var connection = new SqlConnection(_connectionString))
-                {
-                    await OpenConnectionAsync(connection, cancellationToken);
-
-                    using (var command = new SqlCommand(DefaultBackupDirectoryQuery, connection))
-                    {
-                        var result = await command.ExecuteScalarAsync(cancellationToken);
-                        if (result != null && result != DBNull.Value)
-                        {
-                            var backupPath = result.ToString()?.Trim();
-                            if (!string.IsNullOrWhiteSpace(backupPath))
-                            {
-                                _logger.LogInfo($"Retrieved SQL Server default backup path: {backupPath}");
-                                return backupPath;
-                            }
-                        }
-                    }
-                }
-            }
-            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogInfo("Retrieving default backup directory was cancelled.");
-                throw new OperationCanceledException("Retrieving default backup directory was cancelled.", ex, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                _logger.LogInfo("Retrieving default backup directory was cancelled.");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError("Failed to retrieve default backup directory from server.", ex);
-            }
-
-            return null;
         }
 
         public virtual async Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default)
