@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -1287,10 +1288,7 @@ public interface IConfigService
 
         static void Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"cache_test_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-
-            try
+            WithTempDirectory("cache_test", tempDir =>
             {
                 string ifaceFile = Path.Combine(tempDir, "ICacheDemoService.cs");
                 File.WriteAllText(ifaceFile, @"
@@ -1316,19 +1314,12 @@ public interface ICacheDemoService
                 var memberB = resolver.ResolveInterfaceMember("ICacheDemoService", "MethodB", "int", contextFile, tempDir);
                 Assert(memberB != null, "Expected MethodB to be resolved from in-memory cache even though file was deleted from disk.");
                 Assert(memberB!.ReturnType == "int", "Expected return type int for MethodB from cache.");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         static void Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"neg_cache_test_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-
-            try
+            WithTempDirectory("neg_cache_test", tempDir =>
             {
                 string contextFile = Path.Combine(tempDir, "SampleClass.cs");
                 var resolver = new InterfaceDefinitionResolver();
@@ -1350,19 +1341,12 @@ public interface ICacheDemoService
                 string? refreshedResult = resolver.FindInterfaceFile("IMissingInterface", contextFile, tempDir);
                 Assert(refreshedResult != null, "Expected non-null after ClearCache re-scans disk.");
                 Assert(Path.GetFullPath(refreshedResult!) == Path.GetFullPath(lateFile), "Expected resolved path to match created file.");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         static void Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"clear_cache_test_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-
-            try
+            WithTempDirectory("clear_cache_test", tempDir =>
             {
                 string ifaceFile = Path.Combine(tempDir, "IMutableInterface.cs");
                 File.WriteAllText(ifaceFile, @"
@@ -1393,11 +1377,7 @@ public interface IMutableInterface
                 resolver.ClearCache();
                 var memberRefreshed = resolver.ResolveInterfaceMember("IMutableInterface", "GetValue", "", contextFile, tempDir);
                 Assert(memberRefreshed != null && memberRefreshed.ReturnType == "int", "Expected refreshed return type 'int' after ClearCache.");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         static void Test_InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments()
@@ -2250,10 +2230,7 @@ public class EmptyService : ISampleService
 
         static void Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"patch_cache_test_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-
-            try
+            WithTempDirectory("patch_cache_test", tempDir =>
             {
                 string ifaceFile = Path.Combine(tempDir, "ISqlWorker.cs");
                 File.WriteAllText(ifaceFile, @"
@@ -2315,11 +2292,7 @@ public class SqlWorker : ISqlWorker
                 var patches2 = generator.GeneratePatches(diagnostics, tempDir);
                 Assert(patches2.Count == 1, "Expected patch generation to succeed from cache after file deletion.");
                 Assert(patches2[0].UnifiedDiff == diff, "Expected identical diff output from cache.");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         static void Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot()
@@ -3215,10 +3188,7 @@ public class SyncService : ISyncService
         // 7. End-to-End Workflow Test
         static void Test_EndToEnd_Workflow()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"e2e_test_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-
-            try
+            WithTempDirectory("e2e_test", tempDir =>
             {
                 string ifaceFile = Path.Combine(tempDir, "IGreeter.cs");
                 File.WriteAllText(ifaceFile, @"
@@ -3258,11 +3228,7 @@ public class Greeter : IGreeter
                 string patchedClass = File.ReadAllText(classFile);
                 Assert(patchedClass.Contains("public virtual string Greet(string name)"), "Expected Greet method in patched source file");
                 Assert(patchedClass.Contains("// Greeter implementation"), "Comments must be preserved");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         // 8. Exit Code & Unresolved Error Count Tests
@@ -3288,6 +3254,90 @@ public class Greeter : IGreeter
 
             report.CandidatePatches[1].IsApplied = true;
             Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
+        }
+
+        static void Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations()
+        {
+            var report = new DiagnosticReport
+            {
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" }
+                }
+            };
+
+            Assert(report.ErrorCount == 1, $"Expected initial ErrorCount 1, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected initial WarningCount 1, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1002" });
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after adding Info, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1 after adding Info, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0219" });
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0103" });
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2 after adding Error, got {report.ErrorCount}");
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after adding Warning, got {report.WarningCount}");
+
+            report.Diagnostics[2].Severity = DiagnosticSeverity.Warning;
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after mutating Error to Warning, got {report.ErrorCount}");
+            Assert(report.WarningCount == 3, $"Expected WarningCount 3 after mutating Error to Warning, got {report.WarningCount}");
+
+            report.Diagnostics.RemoveAt(1);
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after RemoveAt, got {report.WarningCount}");
+
+            report.Diagnostics.Clear();
+            Assert(report.ErrorCount == 0, $"Expected ErrorCount 0 after Clear, got {report.ErrorCount}");
+            Assert(report.WarningCount == 0, $"Expected WarningCount 0 after Clear, got {report.WarningCount}");
+        }
+
+        static void Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations()
+        {
+            var diagnostics = new List<CompilerDiagnostic>(128);
+            for (int i = 0; i < 50; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" });
+            }
+            for (int i = 0; i < 40; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" });
+            }
+            for (int i = 0; i < 30; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" });
+            }
+
+            var report = new DiagnosticReport { Diagnostics = diagnostics };
+
+            // Warm up JIT tiers before measuring current-thread heap allocations
+            int warmupTotal = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                warmupTotal += report.ErrorCount + report.WarningCount;
+            }
+
+            long beforeError = GC.GetAllocatedBytesForCurrentThread();
+            int errorSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                errorSum += report.ErrorCount;
+            }
+            long errorAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeError;
+
+            long beforeWarning = GC.GetAllocatedBytesForCurrentThread();
+            int warningSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                warningSum += report.WarningCount;
+            }
+            long warningAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeWarning;
+
+            GC.KeepAlive(warmupTotal);
+            Assert(errorSum == 50 * 50, $"Expected errorSum 2500, got {errorSum}");
+            Assert(warningSum == 50 * 40, $"Expected warningSum 2000, got {warningSum}");
+            Assert(errorAllocated == 0, $"Expected 0 bytes allocated reading ErrorCount, got {errorAllocated}");
+            Assert(warningAllocated == 0, $"Expected 0 bytes allocated reading WarningCount, got {warningAllocated}");
         }
 
         private static int InvokePatcherMain(string[] args, out string stdout, out string stderr)
@@ -3316,74 +3366,38 @@ public class Greeter : IGreeter
 
         static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_clean_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "clean.log");
-                File.WriteAllText(logFile, "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.23\n");
-                string outputDir = Path.Combine(tempDir, "out");
-
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            int exitCode = RunMainWithLog(
+                "main_test_clean",
+                "clean.log",
+                "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.23\n");
+            Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_zero_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "clean_build.log");
-                string outputDir = Path.Combine(tempDir, "out");
-                File.WriteAllText(logFile, @"
+            int exitCode = RunMainWithLog("exit_zero", "clean_build.log", @"
 Build succeeded.
     0 Warning(s)
     0 Error(s)
 Time Elapsed 00:00:01.23
 ");
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsZero_WhenWarningsOnly()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_warn_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "warning_build.log");
-                string outputDir = Path.Combine(tempDir, "out");
-                File.WriteAllText(logFile, @"
+            int exitCode = RunMainWithLog("exit_warn", "warning_build.log", @"
 ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [CollationModifier.csproj]
 Build succeeded.
     1 Warning(s)
     0 Error(s)
 ");
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 0, $"Expected exit code 0 when only warnings are present, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            Assert(exitCode == 0, $"Expected exit code 0 when only warnings are present, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsExitCode1_WhenBuildErrorsRemainWithoutPatch()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_unpatched_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
+            WithTempDirectory("main_test_unpatched", tempDir =>
             {
                 string classFile = Path.Combine(tempDir, "Greeter.cs");
                 File.WriteAllText(classFile, @"
@@ -3398,110 +3412,55 @@ public class Greeter : IGreeter
 
                 int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir, "-p", tempDir });
                 Assert(exitCode == 1, $"Expected exit code 1 when build errors remain unpatched, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         static void Test_Program_Main_ReturnsOne_WhenCompilerErrorsPresent()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_error_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "error_build.log");
-                string outputDir = Path.Combine(tempDir, "out");
-                File.WriteAllText(logFile, @"
+            int exitCode = RunMainWithLog("exit_error", "error_build.log", @"
 Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]
 Build FAILED.
     1 Error(s)
 ");
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 1, $"Expected exit code 1 for compiler errors, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            Assert(exitCode == 1, $"Expected exit code 1 for compiler errors, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsExitCode1_WhenTestFailuresExist()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_failures_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "test_failure.log");
-                File.WriteAllText(logFile, @"
+            int exitCode = RunMainWithLog("main_test_failures", "test_failure.log", @"
 === Running Unit Tests ===
   [FAIL] GreeterTests.TestGreeting - Expected 'Hello' but was null
   [PASS] GreeterTests.TestConstructor
 Test Suite Summary: 1 Passed, 1 Failed
 ");
-                string outputDir = Path.Combine(tempDir, "out");
-
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 1, $"Expected exit code 1 when test runner failures exist, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            Assert(exitCode == 1, $"Expected exit code 1 when test runner failures exist, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsOne_WhenTestFailuresPresent()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_fail_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "test_failure.log");
-                string outputDir = Path.Combine(tempDir, "out");
-                File.WriteAllText(logFile, @"
+            int exitCode = RunMainWithLog("exit_fail", "test_failure.log", @"
 Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
   Error Message:
    Assertion Failed: Expected status ready
 Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
 ");
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 1, $"Expected exit code 1 for test failures, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            Assert(exitCode == 1, $"Expected exit code 1 for test failures, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_both_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
-            {
-                string logFile = Path.Combine(tempDir, "errors_and_failures.log");
-                string outputDir = Path.Combine(tempDir, "out");
-                File.WriteAllText(logFile, @"
+            int exitCode = RunMainWithLog("exit_both", "errors_and_failures.log", @"
 Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]
 Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [45 ms]
   Error Message:
    Assertion Failed: Expected status ready
 ");
-                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
-                Assert(exitCode == 1, $"Expected exit code 1 for both compiler errors and test failures, got {exitCode}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            Assert(exitCode == 1, $"Expected exit code 1 for both compiler errors and test failures, got {exitCode}");
         }
 
         static void Test_Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_remediated_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
-            try
+            WithTempDirectory("main_test_remediated", tempDir =>
             {
                 string ifaceFile = Path.Combine(tempDir, "IGreeter.cs");
                 File.WriteAllText(ifaceFile, @"
@@ -3558,11 +3517,7 @@ Time Elapsed 00:00:01.42
                 Assert(mdContent.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown report to record 1 Roslyn warning");
                 int greetRows = mdContent.Split(new[] { "IGreeter.Greet(string)" }, StringSplitOptions.None).Length - 1;
                 Assert(greetRows == 1, $"Expected 1 diagnostic row for IGreeter.Greet(string) in Markdown report, got {greetRows}");
-            }
-            finally
-            {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-            }
+            });
         }
 
         static void Test_Program_Main_ReturnsOne_WhenInputFileNotFound()
@@ -3766,6 +3721,36 @@ Time Elapsed 00:00:01.42
         }
 
         private static string FindLauncherCmdPath() => FindLauncherScriptPath("msbuild-patcher.cmd");
+
+        private static void WithTempDirectory(string prefix, Action<string> testAction)
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                testAction(tempDir);
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir))
+                {
+                    Directory.Delete(tempDir, true);
+                }
+            }
+        }
+
+        private static int RunMainWithLog(string prefix, string logFileName, string logContent)
+        {
+            int exitCode = 0;
+            WithTempDirectory(prefix, tempDir =>
+            {
+                string logFile = Path.Combine(tempDir, logFileName);
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, logContent);
+                exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
+            });
+            return exitCode;
+        }
 
         // 10. Lexical C# Scanning, Complex Types, Multi-Type & Build Verification Regression Tests
         static void Test_InterfaceDefinitionResolver_ExtractsMembersWithLineXmlAndBlockComments()

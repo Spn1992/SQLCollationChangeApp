@@ -38,6 +38,9 @@ jobs:
       - name: Build solution
         run: dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
+      - name: Run solution unit tests
+        run: dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
       - name: Restore MSBuildDiagnosticPatcher dependencies
         run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj 2>&1 | tee -a /tmp/build-and-test.log
 

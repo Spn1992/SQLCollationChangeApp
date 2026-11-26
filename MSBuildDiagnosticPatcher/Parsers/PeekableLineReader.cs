@@ -10,6 +10,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
         private readonly TextReader _reader;
         private readonly MSBuildLogParser? _msbuildParser;
         private readonly List<CompilerDiagnostic>? _diagnostics;
+        private readonly HashSet<(string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath)>? _seenDiagnosticKeys;
         private bool _hasPeeked;
         private string _peekRaw;
         private string _peekClean;
@@ -22,6 +23,9 @@ namespace MSBuildDiagnosticPatcher.Parsers
             _reader = reader;
             _msbuildParser = msbuildParser;
             _diagnostics = diagnostics;
+            _seenDiagnosticKeys = (msbuildParser != null && diagnostics != null)
+                ? new HashSet<(string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath)>()
+                : null;
             _hasPeeked = false;
             _peekRaw = string.Empty;
             _peekClean = string.Empty;
@@ -81,10 +85,10 @@ namespace MSBuildDiagnosticPatcher.Parsers
             rawLine = line;
             cleanLine = AnsiCleaner.Clean(line);
 
-            if (_msbuildParser != null && _diagnostics != null && cleanLine.Length > 0)
+            if (_msbuildParser != null && _diagnostics != null && _seenDiagnosticKeys != null && cleanLine.Length > 0)
             {
                 var diag = _msbuildParser.ParseCleanedLine(rawLine, cleanLine);
-                if (diag != null)
+                if (diag != null && _seenDiagnosticKeys.Add(MSBuildLogParser.CreateDiagnosticKey(diag)))
                 {
                     _diagnostics.Add(diag);
                 }
