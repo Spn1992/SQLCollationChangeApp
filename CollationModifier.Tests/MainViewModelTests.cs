@@ -1,4 +1,5 @@
 using CollationModifier.Collections;
+using CollationModifier.Exceptions;
 using CollationModifier.Models;
 using CollationModifier.Services;
 using CollationModifier.ViewModels;
@@ -14,6 +15,17 @@ using Microsoft.Data.SqlClient;
 
 namespace CollationModifier.Tests
 {
+    public sealed class CountingPreflightReport : PreflightReport
+    {
+        public int SummaryCallCount { get; private set; }
+
+        public override string GetDiagnosticSummary()
+        {
+            SummaryCallCount++;
+            return base.GetDiagnosticSummary();
+        }
+    }
+
     public class MockDatabaseService : IDatabaseService
     {
         public List<DatabaseInfo> DatabasesToReturn { get; set; } = new();
@@ -36,7 +48,7 @@ namespace CollationModifier.Tests
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
-        public Func<string, string, string, CancellationToken, Task>? OnPreflightCheck { get; set; }
+        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Func<CancellationToken, Task>? OnGetDatabases { get; set; }
@@ -165,11 +177,16 @@ namespace CollationModifier.Tests
             return Task.FromResult((total, retained));
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
+        public int PreflightCheckCount { get; private set; }
+        public string? LastPreflightDatabase { get; private set; }
+        public string? LastPreflightBackupDirectory { get; private set; }
+        public string? LastPreflightTargetCollation { get; private set; }
+
+        public async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             if (OnPreflightCheck != null)
             {
-                await OnPreflightCheck(databaseName, backupDirectory, targetCollation, cancellationToken);
+                await OnPreflightCheck(cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
             PreflightCheckCount++;
@@ -485,7 +502,7 @@ namespace CollationModifier.Tests
             return base.PreflightCheckAsync(databaseName, backupDirectory, targetCollation, cancellationToken);
         }
 
-        protected override async Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        protected internal override async Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken = default)
         {
             OpenConnectionTokens.Add(cancellationToken);
             if (OnOpenConnection != null)
@@ -5188,12 +5205,6 @@ namespace CollationModifier.Tests
                 }
             });
 
-            Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
-            if (failed > 0)
-            {
-                throw new InvalidOperationException($"MainViewModel tests failed with {failed} failures.");
-            }
-
             await RunAsyncTest("DatabaseService_ExecuteNonQueryAsync_ForwardsCancellationToken_ToSqlCommand", async () =>
             {
                 using var logger = new LoggerService();
@@ -5589,8 +5600,395 @@ namespace CollationModifier.Tests
                     "All MULTI_USER commands must execute with CancellationToken.None.");
             });
 
+            RunSyncTest("DatabaseService_BuildPreflightBatchedQuery_UsesTopWindowCountAndLeftTrimInSingleBatch", () =>
+            {
+                string sql = DatabaseService.BuildPreflightBatchedQuery("EnterpriseDB");
+                int sampleCap = DatabaseService.MaxPreflightSampleRows;
+
+                Assert(sql.Contains("USE [EnterpriseDB];"), "Batched preflight query must switch to escaped database context.");
+
+                string[] catalogViews =
+                {
+                    "FROM sys.dm_exec_sessions",
+                    "FROM sys.sql_modules",
+                    "FROM sys.computed_columns",
+                    "FROM sys.foreign_keys",
+                    "FROM sys.check_constraints"
+                };
+
+                foreach (string viewClause in catalogViews)
+                {
+                    Assert(sql.Contains(viewClause, StringComparison.Ordinal), $"Preflight query must inspect '{viewClause}'.");
+                }
+
+                int topCount = CountOccurrences(sql, $"SELECT TOP ({sampleCap})");
+                Assert(topCount == 5, $"Expected all 5 session/dependency queries to be capped with SELECT TOP ({sampleCap}), found {topCount}.");
+
+                int windowTotalCount = CountOccurrences(sql, "COUNT(*) OVER () AS total_count");
+                Assert(windowTotalCount == 5, $"Expected all 5 session/dependency queries to project COUNT(*) OVER () AS total_count, found {windowTotalCount}.");
+
+                Assert(sql.Contains("LEFT(ISNULL(c.definition", StringComparison.Ordinal), "Computed column definition must be trimmed with LEFT(...) in SQL.");
+                Assert(sql.Contains("LEFT(ISNULL(chk.definition", StringComparison.Ordinal), "Check constraint definition must be trimmed with LEFT(...) in SQL.");
+                Assert(!sql.Contains("ISNULL(c.definition, '') AS expression", StringComparison.Ordinal), "Unbounded c.definition projection must be removed.");
+                Assert(!sql.Contains("ISNULL(chk.definition, '') AS expression", StringComparison.Ordinal), "Unbounded chk.definition projection must be removed.");
+            });
+
+            await RunAsyncTest("DatabaseService_PopulatePreflightReportFromReaderAsync_RecordsExactTotalsAndCapsSamples", async () =>
+            {
+                using var dataSet = new System.Data.DataSet();
+
+                // 1. Permissions
+                var permTable = new System.Data.DataTable();
+                permTable.Columns.Add("permission_name", typeof(string));
+                permTable.Rows.Add("ALTER");
+                permTable.Rows.Add("BACKUP DATABASE");
+                dataSet.Tables.Add(permTable);
+
+                // 2. Active sessions (30 rows returned, total_count = 140)
+                var sessionsTable = new System.Data.DataTable();
+                sessionsTable.Columns.Add("session_id", typeof(short));
+                sessionsTable.Columns.Add("login_name", typeof(string));
+                sessionsTable.Columns.Add("host_name", typeof(string));
+                sessionsTable.Columns.Add("program_name", typeof(string));
+                sessionsTable.Columns.Add("status", typeof(string));
+                sessionsTable.Columns.Add("total_count", typeof(int));
+                for (short i = 1; i <= 30; i++)
+                {
+                    sessionsTable.Rows.Add((short)(50 + i), $"app_user_{i}", $"host_{i}", "AppWorker", "running", 140);
+                }
+                dataSet.Tables.Add(sessionsTable);
+
+                // 3a. Schema-bound modules (10 sample rows, total_count = 2500)
+                var modulesTable = new System.Data.DataTable();
+                modulesTable.Columns.Add("schema_name", typeof(string));
+                modulesTable.Columns.Add("object_name", typeof(string));
+                modulesTable.Columns.Add("object_type", typeof(string));
+                modulesTable.Columns.Add("total_count", typeof(int));
+                for (int i = 1; i <= 10; i++)
+                {
+                    modulesTable.Rows.Add("dbo", $"vw_Bound_{i}", "VIEW", 2500);
+                }
+                dataSet.Tables.Add(modulesTable);
+
+                // 3b. Computed columns (10 sample rows, total_count = 2500)
+                var computedTable = new System.Data.DataTable();
+                computedTable.Columns.Add("schema_name", typeof(string));
+                computedTable.Columns.Add("table_name", typeof(string));
+                computedTable.Columns.Add("column_name", typeof(string));
+                computedTable.Columns.Add("expression", typeof(string));
+                computedTable.Columns.Add("total_count", typeof(int));
+                for (int i = 1; i <= 10; i++)
+                {
+                    computedTable.Rows.Add("dbo", $"Orders_{i}", "NormalizedCode", "([Code]+'X')", 2500);
+                }
+                dataSet.Tables.Add(computedTable);
+
+                // 3c. Foreign keys (10 sample rows, total_count = 2500)
+                var fkTable = new System.Data.DataTable();
+                fkTable.Columns.Add("schema_name", typeof(string));
+                fkTable.Columns.Add("constraint_name", typeof(string));
+                fkTable.Columns.Add("parent_table", typeof(string));
+                fkTable.Columns.Add("referenced_table", typeof(string));
+                fkTable.Columns.Add("total_count", typeof(int));
+                for (int i = 1; i <= 10; i++)
+                {
+                    fkTable.Rows.Add("dbo", $"FK_Orders_Customers_{i}", "Orders", "Customers", 2500);
+                }
+                dataSet.Tables.Add(fkTable);
+
+                // 3d. Check constraints (10 sample rows, total_count = 2500)
+                var chkTable = new System.Data.DataTable();
+                chkTable.Columns.Add("schema_name", typeof(string));
+                chkTable.Columns.Add("constraint_name", typeof(string));
+                chkTable.Columns.Add("table_name", typeof(string));
+                chkTable.Columns.Add("expression", typeof(string));
+                chkTable.Columns.Add("total_count", typeof(int));
+                for (int i = 1; i <= 10; i++)
+                {
+                    chkTable.Rows.Add("dbo", $"CK_Orders_Status_{i}", "Orders", "([Status]<>'')", 2500);
+                }
+                dataSet.Tables.Add(chkTable);
+
+                // 4. Current collation
+                var collationTable = new System.Data.DataTable();
+                collationTable.Columns.Add("collation_name", typeof(string));
+                collationTable.Rows.Add("SQL_Latin1_General_CP1_CI_AS");
+                dataSet.Tables.Add(collationTable);
+
+                // 5. Column collation audit
+                var columnScopeTable = new System.Data.DataTable();
+                columnScopeTable.Columns.Add("user_character_column_count", typeof(int));
+                columnScopeTable.Columns.Add("retained_column_count", typeof(int));
+                columnScopeTable.Rows.Add(42, 18);
+                dataSet.Tables.Add(columnScopeTable);
+
+                var report = new PreflightReport { DatabaseName = "EnterpriseDB" };
+                using var reader = dataSet.CreateDataReader();
+                await DatabaseService.PopulatePreflightReportFromReaderAsync(reader, "EnterpriseDB", "Latin1_General_100_CI_AS", report);
+
+                Assert(report.TotalActiveSessionCount == 140, $"Expected TotalActiveSessionCount 140, got {report.TotalActiveSessionCount}.");
+                Assert(report.ActiveSessions.Count == DatabaseService.MaxPreflightSampleRows,
+                    $"Expected sampled ActiveSessions capped at {DatabaseService.MaxPreflightSampleRows}, got {report.ActiveSessions.Count}.");
+                Assert(report.TotalSchemaDependencyCount == 10000,
+                    $"Expected TotalSchemaDependencyCount 10000 across all 4 dependency categories, got {report.TotalSchemaDependencyCount}.");
+                Assert(report.SchemaDependencies.Count == DatabaseService.MaxPreflightSampleRows,
+                    $"Expected sampled SchemaDependencies capped at {DatabaseService.MaxPreflightSampleRows}, got {report.SchemaDependencies.Count}.");
+                Assert(report.UserCharacterColumnCount == 42 && report.RetainedColumnCount == 18,
+                    "Expected column collation scope counts to be populated from result set 5.");
+            });
+
+            RunSyncTest("PreflightReport_GetDiagnosticSummary_CapsRenderedItemsPrintsOmittedCountsAndPreservesInMemoryTotals", () =>
+            {
+                var inMemoryReport = new PreflightReport { DatabaseName = "InMemoryDB" };
+                inMemoryReport.ActiveSessions.Add(new ActiveSessionInfo { SessionId = 55, LoginName = "sa", HostName = "db01", ProgramName = "SSMS", Status = "sleeping" });
+                inMemoryReport.SchemaDependencies.Add(new SchemaDependencyInfo { SchemaName = "dbo", ObjectName = "vw_Test", ObjectType = "Schema-Bound Object", Details = "Bound view" });
+                Assert(inMemoryReport.TotalActiveSessionCount == 1, "TotalActiveSessionCount must default to ActiveSessions.Count when not explicitly set.");
+                Assert(inMemoryReport.TotalSchemaDependencyCount == 1, "TotalSchemaDependencyCount must default to SchemaDependencies.Count when not explicitly set.");
+
+                var cappedReport = new PreflightReport
+                {
+                    DatabaseName = "LargeSchemaDB",
+                    TotalSchemaDependencyCount = 10000
+                };
+                for (int i = 1; i <= 60; i++)
+                {
+                    cappedReport.ActiveSessions.Add(new ActiveSessionInfo
+                    {
+                        SessionId = 100 + i,
+                        LoginName = $"user_{i}",
+                        HostName = $"host_{i}",
+                        ProgramName = "AppService",
+                        Status = "running"
+                    });
+                }
+                for (int i = 1; i <= 80; i++)
+                {
+                    cappedReport.SchemaDependencies.Add(new SchemaDependencyInfo
+                    {
+                        SchemaName = "dbo",
+                        ObjectName = $"CK_Table_{i}",
+                        ObjectType = "Check Constraint",
+                        Details = new string('x', 500)
+                    });
+                }
+
+                Assert(cappedReport.TotalActiveSessionCount == 60, "TotalActiveSessionCount must stay >= ActiveSessions.Count.");
+                Assert(cappedReport.TotalSchemaDependencyCount == 10000, "TotalSchemaDependencyCount must preserve exact SQL total.");
+
+                string summary = cappedReport.GetDiagnosticSummary();
+                Assert(summary.Contains("[Active User Sessions (60)]"), "Summary header must report exact total active sessions.");
+                Assert(summary.Contains("... (35 additional active session(s) omitted)"), "Summary must report omitted active session count.");
+                Assert(summary.Contains("[Schema Dependencies (10000)]"), "Summary header must report exact total schema dependencies.");
+                Assert(summary.Contains("... (9975 additional schema dependency item(s) omitted)"), "Summary must report omitted schema dependency count.");
+
+                int renderedSessionLines = summary.Split('\n').Count(l => l.TrimStart().StartsWith("- Session ID:", StringComparison.Ordinal));
+                int renderedDependencyLines = summary.Split('\n').Count(l => l.TrimStart().StartsWith("- [Check Constraint]", StringComparison.Ordinal));
+                Assert(renderedSessionLines == PreflightReport.MaxDiagnosticItemsPerSection,
+                    $"Expected {PreflightReport.MaxDiagnosticItemsPerSection} rendered session lines, got {renderedSessionLines}.");
+                Assert(renderedDependencyLines == PreflightReport.MaxDiagnosticItemsPerSection,
+                    $"Expected {PreflightReport.MaxDiagnosticItemsPerSection} rendered dependency lines, got {renderedDependencyLines}.");
+            });
+
+            RunSyncTest("ErrorFormattingHelper_PreflightValidationException_SkipsLockScanAndProducesSingleLineStatusAndSingleReportCopy", () =>
+            {
+                var report = new PreflightReport
+                {
+                    DatabaseName = "LockKeywordDB",
+                    TotalActiveSessionCount = 2,
+                    TotalSchemaDependencyCount = 10000
+                };
+                report.ActiveSessions.Add(new ActiveSessionInfo { SessionId = 61, LoginName = "svc", HostName = "app01", ProgramName = "SINGLE_USER_Monitor", Status = "running" });
+                report.SchemaDependencies.Add(new SchemaDependencyInfo
+                {
+                    SchemaName = "dbo",
+                    ObjectName = "CK_LockNote",
+                    ObjectType = "Check Constraint",
+                    Details = "Expression mentions SINGLE_USER and emergency MULTI_USER reset failed"
+                });
+                report.ValidationErrors.Add("Invalid target collation format: 'Bad!'\r\nSecond line detail");
+
+                var preflightEx = new PreflightValidationException(report);
+                Assert(!preflightEx.Message.Contains("Pre-flight Validation Report for Database", StringComparison.Ordinal),
+                    "PreflightValidationException constructor must not embed full GetDiagnosticSummary() into Exception.Message.");
+                Assert(!ErrorFormattingHelper.IsSingleUserLockState(preflightEx),
+                    "IsSingleUserLockState must skip PreflightValidationException even if report details mention SINGLE_USER.");
+
+                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(preflightEx, backupFile: null);
+
+                Assert(!statusText.Contains('\r') && !statusText.Contains('\n'),
+                    $"StatusText must be single-line, got: '{statusText}'");
+                Assert(!toolTipText.Contains('\r') && !toolTipText.Contains('\n'),
+                    $"ToolTipText must be single-line, got: '{toolTipText}'");
+                Assert(!statusText.Contains("WARNING: Database remains locked in SINGLE_USER mode", StringComparison.Ordinal),
+                    "Preflight failure must never falsely claim the database is locked in SINGLE_USER mode.");
+                Assert(statusText.Contains("2 active sessions", StringComparison.Ordinal) &&
+                       statusText.Contains("10000 schema dependencies", StringComparison.Ordinal) &&
+                       statusText.Contains("1 validation error", StringComparison.Ordinal),
+                    $"StatusText must summarize blocking counts, got: '{statusText}'");
+                Assert(statusText.Contains("Invalid target collation format: 'Bad!' Second line detail", StringComparison.Ordinal),
+                    $"StatusText must include normalized single-line first validation error, got: '{statusText}'");
+
+                int reportOccurrences = CountOccurrences(detailedError, "Pre-flight Validation Report for Database");
+                Assert(reportOccurrences == 1, $"DetailedError must contain the diagnostic report once, found {reportOccurrences} copies.");
+            });
+
+            await RunAsyncTest("ProcessCollationChange_TenThousandDependencies_SingleLineStatusSingleLogAndBoundedAllocations", async () =>
+            {
+                CountingPreflightReport BuildLargeSampledReport()
+                {
+                    var r = new CountingPreflightReport
+                    {
+                        DatabaseName = "TenKDepsDB",
+                        TargetCollation = "Latin1_General_100_CI_AS",
+                        UserCharacterColumnCount = 1200,
+                        RetainedColumnCount = 850,
+                        TotalActiveSessionCount = 3,
+                        TotalSchemaDependencyCount = 10000
+                    };
+
+                    for (int i = 1; i <= 3; i++)
+                    {
+                        r.ActiveSessions.Add(new ActiveSessionInfo
+                        {
+                            SessionId = 70 + i,
+                            LoginName = $"svc_api_{i}",
+                            HostName = $"web-{i}",
+                            ProgramName = "OrderService",
+                            Status = "sleeping"
+                        });
+                    }
+
+                    string trimmedExpr = new string('A', DatabaseService.MaxPreflightDefinitionLength) + "...";
+                    for (int i = 1; i <= DatabaseService.MaxPreflightSampleRows; i++)
+                    {
+                        r.SchemaDependencies.Add(new SchemaDependencyInfo
+                        {
+                            SchemaName = "dbo",
+                            ObjectName = $"Orders.ComputedCol_{i}",
+                            ObjectType = "Computed Column",
+                            Details = $"Computed column expression: {trimmedExpr}"
+                        });
+                    }
+
+                    return r;
+                }
+
+                // Warm up JIT on this code path before measuring thread allocations
+                string warmupLogPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"preflight_warmup_{Guid.NewGuid():N}.log");
+                try
+                {
+                    using var warmupLogger = new LoggerService(warmupLogPath);
+                    var warmupMock = new MockDatabaseService { PreflightReportToReturn = BuildLargeSampledReport() };
+                    using var warmupVm = new MainViewModel(warmupMock, warmupLogger);
+                    var warmupDb = new DatabaseInfo { Name = "TenKDepsDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                    warmupVm.Databases.Add(warmupDb);
+                    warmupVm.SelectedDatabase = warmupDb;
+                    warmupVm.IsConnected = true;
+                    warmupVm.TargetCollation = "Latin1_General_100_CI_AS";
+                    warmupVm.BackupDirectory = "/tmp";
+                    await warmupVm.ProcessCollationChangeAsync();
+                }
+                finally
+                {
+                    if (System.IO.File.Exists(warmupLogPath))
+                    {
+                        System.IO.File.Delete(warmupLogPath);
+                    }
+                }
+
+                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"preflight_10k_{Guid.NewGuid():N}.log");
+                try
+                {
+                    CountingPreflightReport measuredReport = BuildLargeSampledReport();
+                    long allocatedBytes;
+                    string statusMessage;
+                    string? effectiveToolTip;
+                    string? detailedError;
+
+                    using (var logger = new LoggerService(logPath))
+                    {
+                        var mockService = new MockDatabaseService { PreflightReportToReturn = measuredReport };
+                        using var vm = new MainViewModel(mockService, logger);
+                        var db = new DatabaseInfo { Name = "TenKDepsDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                        vm.Databases.Add(db);
+                        vm.SelectedDatabase = db;
+                        vm.IsConnected = true;
+                        vm.TargetCollation = "Latin1_General_100_CI_AS";
+                        vm.BackupDirectory = "/tmp";
+
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        GC.Collect();
+
+                        long beforeBytes = GC.GetAllocatedBytesForCurrentThread();
+                        await vm.ProcessCollationChangeAsync();
+                        long afterBytes = GC.GetAllocatedBytesForCurrentThread();
+                        allocatedBytes = afterBytes - beforeBytes;
+
+                        statusMessage = vm.StatusMessage;
+                        effectiveToolTip = vm.EffectiveStatusToolTip;
+                        detailedError = vm.DetailedError;
+                    }
+
+                    Console.WriteLine($"  [Perf] ProcessCollationChangeAsync preflight failure at 10,000 dependencies allocated {allocatedBytes:N0} bytes.");
+
+                    Assert(measuredReport.SummaryCallCount == 1,
+                        $"Expected GetDiagnosticSummary() to be called exactly once on preflight failure, got {measuredReport.SummaryCallCount}.");
+                    Assert(!statusMessage.Contains('\r') && !statusMessage.Contains('\n'),
+                        $"StatusMessage must stay on 1 line, got: '{statusMessage}'");
+                    Assert(!string.IsNullOrEmpty(effectiveToolTip) && !effectiveToolTip!.Contains('\r') && !effectiveToolTip.Contains('\n'),
+                        $"EffectiveStatusToolTip must stay on 1 line, got: '{effectiveToolTip}'");
+                    Assert(statusMessage.Contains("Process failed before backup", StringComparison.Ordinal) &&
+                           statusMessage.Contains("Pre-flight validation failed for database 'TenKDepsDB'", StringComparison.Ordinal) &&
+                           statusMessage.Contains("3 active sessions, 10000 schema dependencies", StringComparison.Ordinal),
+                        $"StatusMessage must summarize blocking counts on 1 line, got: '{statusMessage}'");
+
+                    Assert(!string.IsNullOrEmpty(detailedError), "DetailedError must be populated on preflight failure.");
+                    Assert(CountOccurrences(detailedError!, "Pre-flight Validation Report for Database") == 1,
+                        "DetailedError must contain exactly 1 bounded diagnostic report copy.");
+                    Assert(detailedError!.Contains("[Schema Dependencies (10000)]", StringComparison.Ordinal) &&
+                           detailedError.Contains("... (9975 additional schema dependency item(s) omitted)", StringComparison.Ordinal),
+                        "DetailedError must report total schema dependencies (10000) and omitted count (9975).");
+
+                    string logContent = System.IO.File.ReadAllText(logPath);
+                    Assert(CountOccurrences(logContent, "[WARN]") == 1,
+                        $"Expected exactly 1 [WARN] entry in LoggerService for preflight failure, found {CountOccurrences(logContent, "[WARN]")}.");
+                    Assert(CountOccurrences(logContent, "[ERROR]") == 0,
+                        $"Expected 0 duplicate [ERROR] entries in LoggerService for preflight failure, found {CountOccurrences(logContent, "[ERROR]")}.");
+                    Assert(CountOccurrences(logContent, "Pre-flight Validation Report for Database") == 1,
+                        "LoggerService must record 1 bounded diagnostic report copy instead of 2 copies.");
+
+                    Assert(allocatedBytes < 262_144,
+                        $"Preflight failure allocations at 10,000 schema dependencies must stay below 256 KB (262,144 bytes), but allocated {allocatedBytes:N0} bytes.");
+                }
+                finally
+                {
+                    if (System.IO.File.Exists(logPath))
+                    {
+                        System.IO.File.Delete(logPath);
+                    }
+                }
+            });
+
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
             return failed;
+
+            static int CountOccurrences(string text, string pattern)
+            {
+                if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(pattern))
+                {
+                    return 0;
+                }
+
+                int count = 0;
+                int index = 0;
+                while ((index = text.IndexOf(pattern, index, StringComparison.Ordinal)) >= 0)
+                {
+                    count++;
+                    index += pattern.Length;
+                }
+                return count;
+            }
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
             {

@@ -7,15 +7,26 @@ namespace CollationModifier.Exceptions
     {
         public PreflightReport Report { get; }
 
-        public PreflightValidationException(string message, PreflightReport report) : base(message)
+        public string? DiagnosticSummary { get; }
+
+        public PreflightValidationException(string message, PreflightReport report)
+            : this(message, report, diagnosticSummary: null)
         {
-            Report = report;
         }
 
         public PreflightValidationException(PreflightReport report)
-            : base($"Pre-flight validation failed for database '{report.DatabaseName}'. Blocking conditions found.\n{report.GetDiagnosticSummary()}")
+            : this(
+                report != null ? report.GetSingleLineFailureSummary() : "Pre-flight validation failed.",
+                report!,
+                diagnosticSummary: null)
+        {
+        }
+
+        internal PreflightValidationException(string message, PreflightReport report, string? diagnosticSummary)
+            : base(message)
         {
             Report = report;
+            DiagnosticSummary = diagnosticSummary;
         }
     }
 }

@@ -588,6 +588,297 @@ namespace CollationModifier.Services
             return (0, 0);
         }
 
+        internal const int MaxPreflightSampleRows = PreflightReport.MaxDiagnosticItemsPerSection;
+        internal const int MaxPreflightDefinitionLength = 200;
+
+        internal static string BuildPreflightBatchedQuery(string safeDbName)
+        {
+            int topLimit = MaxPreflightSampleRows;
+            int maxDefLen = MaxPreflightDefinitionLength;
+            int probeDefLen = maxDefLen + 1;
+
+            return $@"
+                        USE [{safeDbName}];
+
+                        -- 1. Check permissions in target database context
+                        SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')
+                        WHERE permission_name IN ('BACKUP DATABASE', 'BACKUP LOG', 'ALTER');
+
+                        -- 2. Check active user sessions
+                        SELECT TOP ({topLimit})
+                            s.session_id,
+                            ISNULL(s.login_name, N'') AS login_name,
+                            ISNULL(s.host_name, N'') AS host_name,
+                            ISNULL(s.program_name, N'') AS program_name,
+                            ISNULL(s.status, N'') AS status,
+                            COUNT(*) OVER () AS total_count
+                        FROM sys.dm_exec_sessions s
+                        WHERE s.database_id = DB_ID(@DbName)
+                          AND s.session_id <> @@SPID
+                          AND s.is_user_process = 1
+                        ORDER BY s.session_id;
+
+                        -- 3a. Schema-bound views / modules
+                        SELECT TOP ({topLimit})
+                            s.name AS schema_name,
+                            o.name AS object_name,
+                            o.type_desc AS object_type,
+                            COUNT(*) OVER () AS total_count
+                        FROM sys.sql_modules m
+                        JOIN sys.objects o ON m.object_id = o.object_id
+                        JOIN sys.schemas s ON o.schema_id = s.schema_id
+                        WHERE m.is_schema_bound = 1
+                        ORDER BY s.name, o.name;
+
+                        -- 3b. Computed columns
+                        SELECT TOP ({topLimit})
+                            s.name AS schema_name,
+                            t.name AS table_name,
+                            c.name AS column_name,
+                            CASE
+                                WHEN LEN(LEFT(ISNULL(c.definition, N''), {probeDefLen}) + N'.') > {probeDefLen}
+                                    THEN LEFT(ISNULL(c.definition, N''), {maxDefLen}) + N'...'
+                                ELSE LEFT(ISNULL(c.definition, N''), {maxDefLen})
+                            END AS expression,
+                            COUNT(*) OVER () AS total_count
+                        FROM sys.computed_columns c
+                        JOIN sys.tables t ON c.object_id = t.object_id
+                        JOIN sys.schemas s ON t.schema_id = s.schema_id
+                        ORDER BY s.name, t.name, c.name;
+
+                        -- 3c. Foreign Keys
+                        SELECT TOP ({topLimit})
+                            s.name AS schema_name,
+                            fk.name AS constraint_name,
+                            t.name AS parent_table,
+                            rt.name AS referenced_table,
+                            COUNT(*) OVER () AS total_count
+                        FROM sys.foreign_keys fk
+                        JOIN sys.tables t ON fk.parent_object_id = t.object_id
+                        JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
+                        JOIN sys.schemas s ON fk.schema_id = s.schema_id
+                        ORDER BY s.name, fk.name;
+
+                        -- 3d. Check Constraints
+                        SELECT TOP ({topLimit})
+                            s.name AS schema_name,
+                            chk.name AS constraint_name,
+                            t.name AS table_name,
+                            CASE
+                                WHEN LEN(LEFT(ISNULL(chk.definition, N''), {probeDefLen}) + N'.') > {probeDefLen}
+                                    THEN LEFT(ISNULL(chk.definition, N''), {maxDefLen}) + N'...'
+                                ELSE LEFT(ISNULL(chk.definition, N''), {maxDefLen})
+                            END AS expression,
+                            COUNT(*) OVER () AS total_count
+                        FROM sys.check_constraints chk
+                        JOIN sys.tables t ON chk.parent_object_id = t.object_id
+                        JOIN sys.schemas s ON chk.schema_id = s.schema_id
+                        ORDER BY s.name, chk.name;
+
+                        -- 4. Target database collation
+                        SELECT ISNULL(CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(@DbName, 'Collation')), ISNULL((SELECT collation_name FROM sys.databases WHERE name = @DbName), ''));
+
+                        -- 5. User table character column collation audit
+                        SELECT
+                            COUNT(*) AS user_character_column_count,
+                            ISNULL(SUM(CASE WHEN @TargetCollation <> N'' AND c.collation_name COLLATE Latin1_General_CI_AS <> @TargetCollation COLLATE Latin1_General_CI_AS THEN 1 ELSE 0 END), 0) AS retained_column_count
+                        FROM sys.columns c
+                        JOIN sys.tables t ON c.object_id = t.object_id
+                        WHERE t.is_ms_shipped = 0
+                          AND c.is_computed = 0
+                          AND c.collation_name IS NOT NULL;";
+        }
+
+        internal static async Task PopulatePreflightReportFromReaderAsync(
+            System.Data.Common.DbDataReader reader,
+            string databaseName,
+            string? targetCollation,
+            PreflightReport report,
+            CancellationToken cancellationToken = default)
+        {
+            if (reader == null) throw new ArgumentNullException(nameof(reader));
+            if (report == null) throw new ArgumentNullException(nameof(report));
+
+            // 1. Database Permissions
+            var permissions = new List<string>(4);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (!reader.IsDBNull(0))
+                {
+                    permissions.Add(reader.GetString(0));
+                }
+            }
+            EvaluatePermissions(permissions, report);
+
+            // 2. Active User Sessions
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                int totalSessions = 0;
+                int observedSessions = 0;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    observedSessions++;
+                    if (reader.FieldCount > 5 && !reader.IsDBNull(5))
+                    {
+                        totalSessions = Math.Max(totalSessions, Convert.ToInt32(reader.GetValue(5)));
+                    }
+
+                    if (report.ActiveSessions.Count < MaxPreflightSampleRows)
+                    {
+                        report.ActiveSessions.Add(new ActiveSessionInfo
+                        {
+                            SessionId = !reader.IsDBNull(0) ? Convert.ToInt32(reader.GetValue(0)) : 0,
+                            LoginName = !reader.IsDBNull(1) ? reader.GetString(1) : string.Empty,
+                            HostName = !reader.IsDBNull(2) ? reader.GetString(2) : string.Empty,
+                            ProgramName = !reader.IsDBNull(3) ? reader.GetString(3) : string.Empty,
+                            Status = !reader.IsDBNull(4) ? reader.GetString(4) : string.Empty
+                        });
+                    }
+                }
+                report.TotalActiveSessionCount = Math.Max(totalSessions, observedSessions);
+            }
+
+            int totalSchemaDependencies = 0;
+
+            // 3a. Schema-bound views / modules
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                int sectionTotal = 0;
+                int sectionObserved = 0;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    sectionObserved++;
+                    if (reader.FieldCount > 3 && !reader.IsDBNull(3))
+                    {
+                        sectionTotal = Math.Max(sectionTotal, Convert.ToInt32(reader.GetValue(3)));
+                    }
+
+                    if (report.SchemaDependencies.Count < MaxPreflightSampleRows)
+                    {
+                        report.SchemaDependencies.Add(new SchemaDependencyInfo
+                        {
+                            SchemaName = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty,
+                            ObjectName = !reader.IsDBNull(1) ? reader.GetString(1) : string.Empty,
+                            ObjectType = "Schema-Bound Object",
+                            Details = $"Definition is schema-bound ({(!reader.IsDBNull(2) ? reader.GetString(2) : string.Empty)})."
+                        });
+                    }
+                }
+                totalSchemaDependencies += Math.Max(sectionTotal, sectionObserved);
+            }
+
+            // 3b. Computed columns
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                int sectionTotal = 0;
+                int sectionObserved = 0;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    sectionObserved++;
+                    if (reader.FieldCount > 4 && !reader.IsDBNull(4))
+                    {
+                        sectionTotal = Math.Max(sectionTotal, Convert.ToInt32(reader.GetValue(4)));
+                    }
+
+                    if (report.SchemaDependencies.Count < MaxPreflightSampleRows)
+                    {
+                        string tableName = !reader.IsDBNull(1) ? reader.GetString(1) : string.Empty;
+                        string columnName = !reader.IsDBNull(2) ? reader.GetString(2) : string.Empty;
+                        string expression = !reader.IsDBNull(3) ? reader.GetString(3) : string.Empty;
+                        report.SchemaDependencies.Add(new SchemaDependencyInfo
+                        {
+                            SchemaName = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty,
+                            ObjectName = $"{tableName}.{columnName}",
+                            ObjectType = "Computed Column",
+                            Details = $"Computed column expression: {expression}"
+                        });
+                    }
+                }
+                totalSchemaDependencies += Math.Max(sectionTotal, sectionObserved);
+            }
+
+            // 3c. Foreign Keys
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                int sectionTotal = 0;
+                int sectionObserved = 0;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    sectionObserved++;
+                    if (reader.FieldCount > 4 && !reader.IsDBNull(4))
+                    {
+                        sectionTotal = Math.Max(sectionTotal, Convert.ToInt32(reader.GetValue(4)));
+                    }
+
+                    if (report.SchemaDependencies.Count < MaxPreflightSampleRows)
+                    {
+                        string parentTable = !reader.IsDBNull(2) ? reader.GetString(2) : string.Empty;
+                        string referencedTable = !reader.IsDBNull(3) ? reader.GetString(3) : string.Empty;
+                        report.SchemaDependencies.Add(new SchemaDependencyInfo
+                        {
+                            SchemaName = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty,
+                            ObjectName = !reader.IsDBNull(1) ? reader.GetString(1) : string.Empty,
+                            ObjectType = "Foreign Key Constraint",
+                            Details = $"Table '{parentTable}' references '{referencedTable}'."
+                        });
+                    }
+                }
+                totalSchemaDependencies += Math.Max(sectionTotal, sectionObserved);
+            }
+
+            // 3d. Check Constraints
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                int sectionTotal = 0;
+                int sectionObserved = 0;
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    sectionObserved++;
+                    if (reader.FieldCount > 4 && !reader.IsDBNull(4))
+                    {
+                        sectionTotal = Math.Max(sectionTotal, Convert.ToInt32(reader.GetValue(4)));
+                    }
+
+                    if (report.SchemaDependencies.Count < MaxPreflightSampleRows)
+                    {
+                        string tableName = !reader.IsDBNull(2) ? reader.GetString(2) : string.Empty;
+                        string expression = !reader.IsDBNull(3) ? reader.GetString(3) : string.Empty;
+                        report.SchemaDependencies.Add(new SchemaDependencyInfo
+                        {
+                            SchemaName = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty,
+                            ObjectName = !reader.IsDBNull(1) ? reader.GetString(1) : string.Empty,
+                            ObjectType = "Check Constraint",
+                            Details = $"Check constraint on table '{tableName}': {expression}"
+                        });
+                    }
+                }
+                totalSchemaDependencies += Math.Max(sectionTotal, sectionObserved);
+            }
+
+            report.TotalSchemaDependencyCount = Math.Max(totalSchemaDependencies, report.SchemaDependencies.Count);
+
+            // 4. Target database collation
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    string currentCollation = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty;
+                    EvaluateCollation(databaseName, currentCollation, targetCollation, report);
+                }
+            }
+
+            // 5. User table character column collation audit
+            if (await reader.NextResultAsync(cancellationToken))
+            {
+                if (await reader.ReadAsync(cancellationToken))
+                {
+                    int userColumnCount = !reader.IsDBNull(0) ? Convert.ToInt32(reader.GetValue(0)) : 0;
+                    int retainedColumnCount = !reader.IsDBNull(1) ? Convert.ToInt32(reader.GetValue(1)) : 0;
+                    EvaluateColumnCollationCounts(userColumnCount, retainedColumnCount, targetCollation, report);
+                }
+            }
+        }
+
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -677,78 +968,7 @@ namespace CollationModifier.Services
                 {
                     await OpenConnectionAsync(connection, cancellationToken);
 
-                    var batchedQuery = $@"
-                        USE [{safeDbName}];
-
-                        -- 1. Check permissions in target database context
-                        SELECT permission_name FROM fn_my_permissions(NULL, 'DATABASE')
-                        WHERE permission_name IN ('BACKUP DATABASE', 'BACKUP LOG', 'ALTER');
-
-                        -- 2. Check active user sessions
-                        SELECT 
-                            s.session_id,
-                            ISNULL(s.login_name, '') as login_name,
-                            ISNULL(s.host_name, '') as host_name,
-                            ISNULL(s.program_name, '') as program_name,
-                            ISNULL(s.status, '') as status
-                        FROM sys.dm_exec_sessions s
-                        WHERE s.database_id = DB_ID(@DbName)
-                          AND s.session_id <> @@SPID
-                          AND s.is_user_process = 1;
-
-                        -- 3a. Schema-bound views / modules
-                        SELECT 
-                            s.name AS schema_name,
-                            o.name AS object_name,
-                            o.type_desc AS object_type
-                        FROM sys.sql_modules m
-                        JOIN sys.objects o ON m.object_id = o.object_id
-                        JOIN sys.schemas s ON o.schema_id = s.schema_id
-                        WHERE m.is_schema_bound = 1;
-
-                        -- 3b. Computed columns
-                        SELECT 
-                            s.name AS schema_name,
-                            t.name AS table_name,
-                            c.name AS column_name,
-                            ISNULL(c.definition, '') AS expression
-                        FROM sys.computed_columns c
-                        JOIN sys.tables t ON c.object_id = t.object_id
-                        JOIN sys.schemas s ON t.schema_id = s.schema_id;
-
-                        -- 3c. Foreign Keys
-                        SELECT 
-                            s.name AS schema_name,
-                            fk.name AS constraint_name,
-                            t.name AS parent_table,
-                            rt.name AS referenced_table
-                        FROM sys.foreign_keys fk
-                        JOIN sys.tables t ON fk.parent_object_id = t.object_id
-                        JOIN sys.tables rt ON fk.referenced_object_id = rt.object_id
-                        JOIN sys.schemas s ON fk.schema_id = s.schema_id;
-
-                        -- 3d. Check Constraints
-                        SELECT 
-                            s.name AS schema_name,
-                            chk.name AS constraint_name,
-                            t.name AS table_name,
-                            ISNULL(chk.definition, '') AS expression
-                        FROM sys.check_constraints chk
-                        JOIN sys.tables t ON chk.parent_object_id = t.object_id
-                        JOIN sys.schemas s ON chk.schema_id = s.schema_id;
-
-                        -- 4. Target database collation
-                        SELECT ISNULL(CONVERT(NVARCHAR(128), DATABASEPROPERTYEX(@DbName, 'Collation')), ISNULL((SELECT collation_name FROM sys.databases WHERE name = @DbName), ''));
-
-                        -- 5. User table character column collation audit
-                        SELECT
-                            COUNT(*) AS user_character_column_count,
-                            ISNULL(SUM(CASE WHEN @TargetCollation <> N'' AND c.collation_name COLLATE Latin1_General_CI_AS <> @TargetCollation COLLATE Latin1_General_CI_AS THEN 1 ELSE 0 END), 0) AS retained_column_count
-                        FROM sys.columns c
-                        JOIN sys.tables t ON c.object_id = t.object_id
-                        WHERE t.is_ms_shipped = 0
-                          AND c.is_computed = 0
-                          AND c.collation_name IS NOT NULL;";
+                    var batchedQuery = BuildPreflightBatchedQuery(safeDbName);
 
                     using (var command = new SqlCommand(batchedQuery, connection))
                     {
@@ -756,110 +976,7 @@ namespace CollationModifier.Services
                         command.Parameters.AddWithValue("@TargetCollation", targetCollation?.Trim() ?? string.Empty);
                         using (var reader = await command.ExecuteReaderAsync(cancellationToken))
                         {
-                            // 1. Database Permissions
-                            var permissions = new List<string>();
-                            while (await reader.ReadAsync(cancellationToken))
-                            {
-                                permissions.Add(reader.GetString(0));
-                            }
-                            EvaluatePermissions(permissions, report);
-
-                            // 2. Active User Sessions
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                while (await reader.ReadAsync(cancellationToken))
-                                {
-                                    report.ActiveSessions.Add(new ActiveSessionInfo
-                                    {
-                                        SessionId = reader.GetInt16(0),
-                                        LoginName = reader.GetString(1),
-                                        HostName = reader.GetString(2),
-                                        ProgramName = reader.GetString(3),
-                                        Status = reader.GetString(4)
-                                    });
-                                }
-                            }
-
-                            // 3a. Schema-bound views / modules
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                while (await reader.ReadAsync(cancellationToken))
-                                {
-                                    report.SchemaDependencies.Add(new SchemaDependencyInfo
-                                    {
-                                        SchemaName = reader.GetString(0),
-                                        ObjectName = reader.GetString(1),
-                                        ObjectType = "Schema-Bound Object",
-                                        Details = $"Definition is schema-bound ({reader.GetString(2)})."
-                                    });
-                                }
-                            }
-
-                            // 3b. Computed columns
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                while (await reader.ReadAsync(cancellationToken))
-                                {
-                                    report.SchemaDependencies.Add(new SchemaDependencyInfo
-                                    {
-                                        SchemaName = reader.GetString(0),
-                                        ObjectName = $"{reader.GetString(1)}.{reader.GetString(2)}",
-                                        ObjectType = "Computed Column",
-                                        Details = $"Computed column expression: {reader.GetString(3)}"
-                                    });
-                                }
-                            }
-
-                            // 3c. Foreign Keys
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                while (await reader.ReadAsync(cancellationToken))
-                                {
-                                    report.SchemaDependencies.Add(new SchemaDependencyInfo
-                                    {
-                                        SchemaName = reader.GetString(0),
-                                        ObjectName = reader.GetString(1),
-                                        ObjectType = "Foreign Key Constraint",
-                                        Details = $"Table '{reader.GetString(2)}' references '{reader.GetString(3)}'."
-                                    });
-                                }
-                            }
-
-                            // 3d. Check Constraints
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                while (await reader.ReadAsync(cancellationToken))
-                                {
-                                    report.SchemaDependencies.Add(new SchemaDependencyInfo
-                                    {
-                                        SchemaName = reader.GetString(0),
-                                        ObjectName = reader.GetString(1),
-                                        ObjectType = "Check Constraint",
-                                        Details = $"Check constraint on table '{reader.GetString(2)}': {reader.GetString(3)}"
-                                    });
-                                }
-                            }
-
-                            // 4. Target database collation
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                if (await reader.ReadAsync(cancellationToken))
-                                {
-                                    string currentCollation = !reader.IsDBNull(0) ? reader.GetString(0) : string.Empty;
-                                    EvaluateCollation(databaseName, currentCollation, targetCollation, report);
-                                }
-                            }
-
-                            // 5. User table character column collation audit
-                            if (await reader.NextResultAsync(cancellationToken))
-                            {
-                                if (await reader.ReadAsync(cancellationToken))
-                                {
-                                    int userColumnCount = !reader.IsDBNull(0) ? Convert.ToInt32(reader.GetValue(0)) : 0;
-                                    int retainedColumnCount = !reader.IsDBNull(1) ? Convert.ToInt32(reader.GetValue(1)) : 0;
-                                    EvaluateColumnCollationCounts(userColumnCount, retainedColumnCount, targetCollation, report);
-                                }
-                            }
+                            await PopulatePreflightReportFromReaderAsync(reader, databaseName, targetCollation, report, cancellationToken);
                         }
                     }
                 }
@@ -930,11 +1047,11 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await OpenConnectionAsync(connection, CancellationToken.None);
-                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, CancellationToken.None);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", CancellationToken.None);
+                    await OpenConnectionAsync(connection, cancellationToken);
+                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, cancellationToken);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
                     var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, CancellationToken.None, new SqlParameter("@BackupFile", backupFile));
+                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -963,27 +1080,51 @@ namespace CollationModifier.Services
             ValidateCollationFormat(newCollation);
 
             var safeDbName = EscapeIdentifier(databaseName);
+            bool singleUserAttempted = false;
 
             try
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await OpenConnectionAsync(connection, cancellationToken);
+                    singleUserAttempted = true;
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
                     var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
                     await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", cancellationToken);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
             }
             catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
             {
                 _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                if (singleUserAttempted)
+                {
+                    try
+                    {
+                        await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                    }
+                    catch (Exception resetEx)
+                    {
+                        _logger.LogError($"Emergency MULTI_USER reset failed following cancellation on {databaseName}", resetEx);
+                    }
+                }
                 throw new OperationCanceledException($"Collation alteration cancelled for database: {databaseName}", ex, cancellationToken);
             }
             catch (OperationCanceledException)
             {
                 _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                if (singleUserAttempted)
+                {
+                    try
+                    {
+                        await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                    }
+                    catch (Exception resetEx)
+                    {
+                        _logger.LogError($"Emergency MULTI_USER reset failed following cancellation on {databaseName}", resetEx);
+                    }
+                }
                 throw;
             }
             catch (Exception ex)
@@ -1027,7 +1168,11 @@ namespace CollationModifier.Services
             return identifier.Replace("]", "]]");
         }
 
-        protected virtual Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        internal Func<SqlCommand, CancellationToken, Task<int>>? NonQueryCommandExecutor { get; set; }
+
+        protected internal virtual Task OpenConnectionAsync(
+            SqlConnection connection,
+            CancellationToken cancellationToken = default)
         {
             return connection.OpenAsync(cancellationToken);
         }
@@ -1037,7 +1182,7 @@ namespace CollationModifier.Services
             return command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        protected virtual async Task<int> ExecuteNonQueryAsync(
+        protected internal virtual async Task<int> ExecuteNonQueryAsync(
             SqlConnection connection,
             string commandText,
             int timeoutSeconds = 3600,
@@ -1053,6 +1198,11 @@ namespace CollationModifier.Services
                 }
                 try
                 {
+                    if (NonQueryCommandExecutor != null)
+                    {
+                        return await NonQueryCommandExecutor(command, cancellationToken);
+                    }
+
                     return await ExecuteCommandNonQueryAsync(command, cancellationToken);
                 }
                 catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
@@ -1062,7 +1212,11 @@ namespace CollationModifier.Services
             }
         }
 
-        private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode, CancellationToken cancellationToken = default)
+        protected internal virtual async Task SetDatabaseUserModeAsync(
+            SqlConnection connection,
+            string databaseName,
+            string mode,
+            CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             bool isSingleUser = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase);
@@ -1070,7 +1224,8 @@ namespace CollationModifier.Services
                 ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-            await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
+            var effectiveToken = isSingleUser ? cancellationToken : CancellationToken.None;
+            await ExecuteNonQueryAsync(connection, query, 3600, effectiveToken);
         }
 
         private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)

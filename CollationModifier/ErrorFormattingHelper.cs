@@ -30,6 +30,11 @@ namespace CollationModifier
 
             if (ex is PreflightValidationException preflightEx)
             {
+                if (!string.IsNullOrWhiteSpace(preflightEx.DiagnosticSummary))
+                {
+                    return preflightEx.DiagnosticSummary!.TrimEnd();
+                }
+
                 if (preflightEx.Report != null)
                 {
                     return preflightEx.Report.GetDiagnosticSummary().TrimEnd();
@@ -99,7 +104,7 @@ namespace CollationModifier
 
         public static bool IsSingleUserLockState(Exception? ex)
         {
-            if (ex == null) return false;
+            if (ex == null || ex is PreflightValidationException) return false;
             if (ex is AggregateException aggEx)
             {
                 foreach (var inner in aggEx.Flatten().InnerExceptions)
@@ -115,6 +120,22 @@ namespace CollationModifier
 
         public static (string StatusText, string ToolTipText, string DetailedError) FormatProcessError(Exception ex, string? backupFile, Exception? restoreEx = null, bool restoreAttempted = false)
         {
+            if (ex is PreflightValidationException preflightEx && backupFile == null)
+            {
+                string singleLineSummary = preflightEx.Report != null
+                    ? preflightEx.Report.GetSingleLineFailureSummary()
+                    : Models.PreflightReport.NormalizeSingleLine(GetSafeErrorMessage(preflightEx), Models.PreflightReport.MaxRenderedDetailLength);
+
+                if (string.IsNullOrWhiteSpace(singleLineSummary))
+                {
+                    singleLineSummary = "Pre-flight validation failed";
+                }
+
+                string status = $"Process failed before backup: {singleLineSummary.TrimEnd('.')}.";
+                string detailed = GetDetailedErrorText(preflightEx);
+                return (status, status, detailed);
+            }
+
             string primarySummary = GetSafeErrorMessage(ex);
             string detailedPrimary = GetDetailedErrorText(ex);
             bool isSingleUserLocked = IsSingleUserLockState(ex) || IsSingleUserLockState(restoreEx);
