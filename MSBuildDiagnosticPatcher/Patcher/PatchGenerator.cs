@@ -164,15 +164,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return null;
             }
 
-            List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>? overloads;
-            if (overloadCache == null || !overloadCache.TryGetValue(member.MemberName, out overloads))
-            {
-                overloads = ExtractMethodOverloadParameters(classSource, member.MemberName);
-                if (overloadCache != null)
-                {
-                    overloadCache[member.MemberName] = overloads;
-                }
-            }
+            var matches = pattern.Matches(classSource);
+            var myParamNames = ParseParameters(member.ParameterList).Select(p => p.Name).ToList();
 
             if (overloads.Count == 0)
             {
@@ -228,73 +221,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             return null;
-        }
-
-        private static List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>> ExtractMethodOverloadParameters(
-            string classSource,
-            string memberName)
-        {
-            var results = new List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>();
-            ReadOnlySpan<char> source = classSource.AsSpan();
-            ReadOnlySpan<char> targetName = memberName.AsSpan();
-            int searchStart = 0;
-
-            while (searchStart < source.Length)
-            {
-                int relIdx = source.Slice(searchStart).IndexOf(targetName, StringComparison.Ordinal);
-                if (relIdx < 0)
-                {
-                    break;
-                }
-
-                int nameIdx = searchStart + relIdx;
-                searchStart = nameIdx + 1;
-
-                // Must be preceded by whitespace
-                if (nameIdx == 0 || !char.IsWhiteSpace(source[nameIdx - 1]))
-                {
-                    continue;
-                }
-
-                // Must be followed by optional whitespace and '('
-                int afterName = nameIdx + targetName.Length;
-                while (afterName < source.Length && char.IsWhiteSpace(source[afterName]))
-                {
-                    afterName++;
-                }
-
-                if (afterName >= source.Length || source[afterName] != '(')
-                {
-                    continue;
-                }
-
-                // Scan backward across valid return-type characters to confirm an identifier token
-                if (!InterfaceDefinitionResolver.TryExtractReturnTypeSpan(source, nameIdx, out _))
-                {
-                    continue;
-                }
-
-                int paramStart = afterName + 1;
-                int closeParenRel = source.Slice(paramStart).IndexOf(')');
-                if (closeParenRel < 0)
-                {
-                    break;
-                }
-
-                string existingParamList = source.Slice(paramStart, closeParenRel).Trim().ToString();
-                results.Add(ParseParameters(existingParamList));
-
-                searchStart = paramStart + closeParenRel + 1;
-            }
-
-            return results;
-        }
-
-        private static List<string> ExtractParameterNames(string paramList)
-        {
-            return ParseParameters(paramList)
-                .Select(p => p.Name)
-                .ToList();
         }
 
         private static List<(string Type, string Name, bool HasDefault, string DefaultValue)> ParseParameters(string paramList)
