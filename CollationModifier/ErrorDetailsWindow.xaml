@@ -24,6 +24,7 @@
 
         <DockPanel Grid.Row="2">
             <Button x:Name="btnCopy" Content="Copy Details" Click="BtnCopy_Click" DockPanel.Dock="Left"
+                    Style="{StaticResource SecondaryButtonSmall}"
                     Width="110" Height="28" Padding="8,4"
                     AutomationProperties.Name="Copy Details"
                     AutomationProperties.HelpText="Copy error details to clipboard"
@@ -34,6 +35,7 @@
                            AutomationProperties.LiveSetting="Polite"
                            AutomationProperties.Name="Copied to clipboard!" />
                 <Button x:Name="btnClose" Content="Close" Click="BtnClose_Click" IsCancel="True" IsDefault="True"
+                        Style="{StaticResource SecondaryButtonSmall}"
                         Width="80" Height="28" Padding="8,4"
                         AutomationProperties.Name="Close"
                         AutomationProperties.HelpText="Close error details dialog" />

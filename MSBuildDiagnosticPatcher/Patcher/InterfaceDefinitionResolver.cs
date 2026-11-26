@@ -40,6 +40,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
         private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _rootSearchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _fileContentCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, (int Start, int Length)> _interfaceBodyOffsetsCache = new Dictionary<string, (int Start, int Length)>(StringComparer.OrdinalIgnoreCase);
 
         public void ClearCache()
         {
@@ -48,6 +49,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 _filePathCache.Clear();
                 _rootSearchCache.Clear();
                 _fileContentCache.Clear();
+                _interfaceBodyOffsetsCache.Clear();
             }
         }
 
@@ -171,6 +173,29 @@ namespace MSBuildDiagnosticPatcher.Patcher
         {
             var segments = CSharpLexer.SplitQualifiedTypeSegments(interfaceName);
             return segments.Count > 0 ? segments[segments.Count - 1].TrimStart('@') : CSharpLexer.StripGenericArity(interfaceName).TrimStart('@');
+        }
+
+        private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
+        {
+            string cacheKey = $"{filePath}|{interfaceName}";
+            lock (_cacheLock)
+            {
+                if (_interfaceBodyOffsetsCache.TryGetValue(cacheKey, out var cached) &&
+                    cached.Start >= 0 &&
+                    cached.Length >= 0 &&
+                    cached.Start + cached.Length <= content.Length)
+                {
+                    return cached;
+                }
+            }
+
+            var computed = FindInterfaceBodyOffsets(content.AsSpan(), interfaceName);
+            lock (_cacheLock)
+            {
+                _interfaceBodyOffsetsCache[cacheKey] = computed;
+            }
+
+            return computed;
         }
 
         private string? GetOrReadFileContent(string filePath)
