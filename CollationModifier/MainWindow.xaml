@@ -3,16 +3,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:viewmodels="clr-namespace:CollationModifier.ViewModels"
         mc:Ignorable="d"
         xml:lang="en"
         Language="en-US"
         Title="Collation Modifier Utility" Height="650" Width="900"
         WindowStartupLocation="CenterScreen">
-
-    <Window.DataContext>
-        <viewmodels:MainViewModel />
-    </Window.DataContext>
 
     <Grid>
         <!-- Main Content Area -->
@@ -66,7 +61,7 @@
             <Border Grid.Column="1" Padding="32" Background="#F8FAFC">
                 <Grid>
                     <!-- Overlay to disable interaction when not connected -->
-                    <Border Background="#F8FAFC" Panel.ZIndex="5" Opacity="0.8">
+                    <Border Background="{StaticResource OverlayBackgroundBrush}" Panel.ZIndex="5">
                         <Border.Style>
                             <Style TargetType="Border">
                                 <Setter Property="Visibility" Value="Collapsed" />
@@ -81,7 +76,7 @@
                                    AutomationProperties.Name="Please connect to a server to continue."
                                    AutomationProperties.LiveSetting="Polite"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
-                                   Foreground="#64748B" FontSize="16" />
+                                   Foreground="{StaticResource OverlayForegroundBrush}" FontSize="16" />
                     </Border>
 
                     <ScrollViewer x:Name="OperationsScrollViewer"
@@ -92,11 +87,28 @@
 
                         <!-- Database Selector -->
                         <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
-                        <ComboBox x:Name="SelectDatabaseInput" ItemsSource="{Binding Databases}"
-                                  SelectedItem="{Binding SelectedDatabase}" DisplayMemberPath="Name"
-                                  AutomationProperties.LabeledBy="{Binding ElementName=SelectDatabaseLabel}"
-                                  AutomationProperties.Name="Select Database"
-                                  Margin="0,0,0,24" IsEnabled="{Binding IsNotBusy}" />
+                        <Grid Margin="0,0,0,24">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="SelectDatabaseInput" Grid.Column="0"
+                                      ItemsSource="{Binding Databases}"
+                                      SelectedItem="{Binding SelectedDatabase}" DisplayMemberPath="Name"
+                                      AutomationProperties.LabeledBy="{Binding ElementName=SelectDatabaseLabel}"
+                                      AutomationProperties.Name="Select Database"
+                                      IsEnabled="{Binding IsNotBusy}" />
+                            <Button x:Name="btnRefreshDatabases" Grid.Column="1"
+                                    Content="Refresh"
+                                    Command="{Binding RefreshDatabasesCommand}"
+                                    Style="{StaticResource SecondaryButton}"
+                                    MinHeight="24"
+                                    Padding="12,6"
+                                    Margin="8,0,0,0"
+                                    AutomationProperties.Name="Refresh"
+                                    AutomationProperties.HelpText="Reload database catalog from SQL Server"
+                                    ToolTip="Reload database catalog from SQL Server" />
+                        </Grid>
 
                         <!-- Metadata Panel -->
                         <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
@@ -105,36 +117,69 @@
                                 <DropShadowEffect Color="#CBD5E1" BlurRadius="10" ShadowDepth="2" Opacity="0.3" />
                             </Border.Effect>
                             <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
+                                <!-- Property Grid (Visible when a database is selected) -->
+                                <Grid x:Name="MetadataPropertyGrid">
+                                    <Grid.Style>
+                                        <Style TargetType="Grid">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasSelectedDatabase}" Value="True">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Grid.Style>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
 
-                                <!-- Labels -->
-                                <TextBlock x:Name="CurrentCollationLabel" Grid.Row="0" Grid.Column="0" Text="Current Collation:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                <TextBlock x:Name="CompatibilityLevelLabel" Grid.Row="1" Grid.Column="0" Text="Compatibility Level:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                <TextBlock x:Name="OwnerLabel" Grid.Row="2" Grid.Column="0" Text="Owner:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                <TextBlock x:Name="SizeLabel" Grid.Row="3" Grid.Column="0" Text="Size:" FontWeight="SemiBold" />
+                                    <!-- Labels -->
+                                    <TextBlock x:Name="CurrentCollationLabel" Grid.Row="0" Grid.Column="0" Text="Current Collation:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                    <TextBlock x:Name="CompatibilityLevelLabel" Grid.Row="1" Grid.Column="0" Text="Compatibility Level:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                    <TextBlock x:Name="OwnerLabel" Grid.Row="2" Grid.Column="0" Text="Owner:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                    <TextBlock x:Name="SizeLabel" Grid.Row="3" Grid.Column="0" Text="Size:" FontWeight="SemiBold" />
 
-                                <!-- Values -->
-                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}"
-                                           AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Current Collation: {0}', FallbackValue='Current Collation: -', TargetNullValue='Current Collation: -'}" />
-                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
-                                           AutomationProperties.Name="{Binding SelectedDatabase.CompatibilityLevel, StringFormat='Compatibility Level: {0}', FallbackValue='Compatibility Level: -', TargetNullValue='Compatibility Level: -'}" />
-                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
-                                           AutomationProperties.Name="{Binding SelectedDatabase.Owner, StringFormat='Owner: {0}', FallbackValue='Owner: -', TargetNullValue='Owner: -'}" />
-                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
-                                           AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
-                                           AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
+                                    <!-- Values -->
+                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                               AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}"
+                                               AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Current Collation: {0}', FallbackValue='Current Collation: -', TargetNullValue='Current Collation: -'}" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                               AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
+                                               AutomationProperties.Name="{Binding SelectedDatabase.CompatibilityLevel, StringFormat='Compatibility Level: {0}', FallbackValue='Compatibility Level: -', TargetNullValue='Compatibility Level: -'}" />
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                               AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
+                                               AutomationProperties.Name="{Binding SelectedDatabase.Owner, StringFormat='Owner: {0}', FallbackValue='Owner: -', TargetNullValue='Owner: -'}" />
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
+                                               AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
+                                               AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
+                                </Grid>
+
+                                <!-- Empty State Guidance Panel (Visible when no database is selected) -->
+                                <StackPanel x:Name="MetadataEmptyStateContainer" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="12">
+                                    <StackPanel.Style>
+                                        <Style TargetType="StackPanel">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasSelectedDatabase}" Value="True">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </StackPanel.Style>
+                                    <TextBlock x:Name="lblMetadataEmptyState" Text="{Binding MetadataEmptyStateText}"
+                                               FontSize="14" HorizontalAlignment="Center"
+                                               TextWrapping="Wrap"
+                                               AutomationProperties.Name="{Binding MetadataEmptyStateText}"
+                                               AutomationProperties.HelpText="Metadata empty state guidance message."
+                                               AutomationProperties.LiveSetting="Polite" />
+                                </StackPanel>
                             </Grid>
                         </Border>
 
@@ -412,8 +457,4 @@
             </DockPanel>
         </Border>
     </Grid>
-
-    <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-    </Window.Resources>
 </Window>

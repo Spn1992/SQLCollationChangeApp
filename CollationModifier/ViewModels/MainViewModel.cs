@@ -17,12 +17,14 @@ namespace CollationModifier.ViewModels
     {
         private readonly IDatabaseService _databaseService;
         private readonly LoggerService _logger;
+        private readonly bool _ownsLogger;
         private CancellationTokenSource? _cts;
 
         public MainViewModel() : this(null, null) { }
 
         public MainViewModel(IDatabaseService? databaseService = null, LoggerService? logger = null)
         {
+            _ownsLogger = logger == null;
             _logger = logger ?? new LoggerService();
             _databaseService = databaseService ?? CreateDefaultDatabaseService(_logger);
 
@@ -280,6 +282,7 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        private bool _hasCustomBackupDirectory;
         private string _backupDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "SQLBackups");
         public string BackupDirectory
         {
@@ -482,9 +485,13 @@ namespace CollationModifier.ViewModels
                 _databaseService.SetConnectionString(ServerName, SelectedAuthenticationType, Username, Password);
                 var initData = await _databaseService.GetServerInitializationDataAsync(token);
 
-                if (!string.IsNullOrWhiteSpace(initData.DefaultBackupDirectory))
+                if (_hasCustomBackupDirectory && !string.IsNullOrWhiteSpace(BackupDirectory))
                 {
-                    BackupDirectory = initData.DefaultBackupDirectory;
+                    _logger.LogInfo($"Preserving custom backup directory: {BackupDirectory}");
+                }
+                else if (!string.IsNullOrWhiteSpace(initData.DefaultBackupDirectory))
+                {
+                    SetProperty(ref _backupDirectory, initData.DefaultBackupDirectory, nameof(BackupDirectory));
                     _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {initData.DefaultBackupDirectory}");
                 }
                 else
@@ -525,12 +532,56 @@ namespace CollationModifier.ViewModels
         }
 
 
+        public async Task RefreshDatabasesAsync()
+        {
+            if (!IsConnected || IsBusy)
+            {
+                return;
+            }
+
+            IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
+            StatusMessage = "Refreshing database catalog...";
+            _logger.LogInfo("Refreshing database catalog...");
+
+            try
+            {
+                bool loaded = await LoadDatabasesAsync(token);
+                if (loaded)
+                {
+                    SetStatus($"Database catalog refreshed ({Databases.Count} databases found).");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Operation cancelled by user.");
+            }
+            finally
+            {
+                _cts?.Dispose();
+                _cts = null;
+                IsBusy = false;
+            }
+        }
+
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
+            string? previousSelectedName = SelectedDatabase?.Name;
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
+                if (!string.IsNullOrWhiteSpace(previousSelectedName))
+                {
+                    SelectedDatabase = Databases.FirstOrDefault(db =>
+                        db != null && string.Equals(db.Name, previousSelectedName, StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    SelectedDatabase = null;
+                }
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
             }
@@ -543,6 +594,7 @@ namespace CollationModifier.ViewModels
             catch (Exception ex)
             {
                 Databases.Clear();
+                SelectedDatabase = null;
                 _logger.LogError("Failed to load databases.", ex);
                 var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatLoadDatabasesError(ex);
                 SetStatus(statusText, toolTipText, detailedError);
@@ -584,7 +636,18 @@ namespace CollationModifier.ViewModels
 
         private bool CanProcessCollationChange()
         {
-            return IsConnected && !IsBusy && SelectedDatabase != null && !string.IsNullOrWhiteSpace(TargetCollation);
+            if (!IsConnected || IsBusy || SelectedDatabase == null || string.IsNullOrWhiteSpace(TargetCollation))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(SelectedDatabase.Collation) &&
+                string.Equals(TargetCollation.Trim(), SelectedDatabase.Collation.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         public async Task RunPreflightCheckAsync()
@@ -708,6 +771,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
+                alterPhaseStarted = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 SetStatus("Collation changed successfully!");
@@ -727,13 +791,7 @@ namespace CollationModifier.ViewModels
                 {
                     try
                     {
-                        var restoreProgress = new Progress<int>(percent =>
-                        {
-                            ProgressPercent = percent;
-                            IsIndeterminateProgress = false;
-                            StatusMessage = $"Restoring database... {percent}%";
-                        });
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                        await RestoreDatabaseRollbackAsync(backupFile);
                     }
                     catch (Exception rex)
                     {
@@ -782,13 +840,7 @@ namespace CollationModifier.ViewModels
                 {
                     try
                     {
-                        var restoreProgress = new Progress<int>(percent =>
-                        {
-                            ProgressPercent = percent;
-                            IsIndeterminateProgress = false;
-                            StatusMessage = $"Restoring database... {percent}%";
-                        });
-                        await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                        await RestoreDatabaseRollbackAsync(backupFile);
                         var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: null, restoreAttempted: true);
                         SetStatus(statusText, toolTipText, detailedError);
                     }
@@ -815,21 +867,47 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        private async Task RestoreDatabaseRollbackAsync(string backupFile)
+        {
+            if (SelectedDatabase == null)
+            {
+                throw new InvalidOperationException("SelectedDatabase cannot be null when performing database rollback restore.");
+            }
+
+            var restoreProgress = new Progress<int>(percent =>
+            {
+                ProgressPercent = percent;
+                IsIndeterminateProgress = false;
+                StatusMessage = $"Restoring database... {percent}%";
+            });
+
+            await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+        }
+
         #endregion
 
         public void Dispose()
         {
-            if (_cts != null)
+            var cts = Interlocked.Exchange(ref _cts, null);
+            if (cts != null)
             {
                 try
                 {
-                    _cts.Cancel();
+                    cts.Cancel();
                 }
                 catch { }
-                _cts.Dispose();
-                _cts = null;
+
+                try
+                {
+                    cts.Dispose();
+                }
+                catch { }
             }
-            _logger?.Dispose();
+
+            if (_ownsLogger)
+            {
+                _logger?.Dispose();
+            }
         }
     }
 }
