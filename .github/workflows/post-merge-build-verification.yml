@@ -9,8 +9,17 @@ on:
 
 jobs:
   verify-build-and-test:
-    name: Verify Build and Tests
-    runs-on: ubuntu-latest
+    name: Verify Build and Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -23,11 +32,11 @@ jobs:
             8.0.x
             10.0.x
 
-      - name: Restore CollationModifier dependencies
-        run: dotnet restore CollationModifier/CollationModifier.csproj 2>&1 | tee /tmp/build-and-test.log
+      - name: Restore solution dependencies
+        run: dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log
 
-      - name: Restore CollationModifier.Tests dependencies
-        run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
+      - name: Build solution
+        run: dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Restore MSBuildDiagnosticPatcher dependencies
         run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj 2>&1 | tee -a /tmp/build-and-test.log
@@ -40,6 +49,9 @@ jobs:
 
       - name: Build CollationModifier
         run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Verify CollationModifier net8.0-windows build
+        run: dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Run unit tests
         run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
@@ -54,6 +66,10 @@ jobs:
       - name: Append diagnostic report to step summary
         if: failure()
         run: |
+          if [ -f "/tmp/build-and-test.log" ]; then
+            mkdir -p build-diagnostics
+            cp "/tmp/build-and-test.log" "build-diagnostics/build-and-test.log"
+          fi
           if [ -f "build-diagnostics/diagnostic-report.md" ]; then
             max_size=1048576
             file_size=$(wc -c < "build-diagnostics/diagnostic-report.md")
@@ -68,7 +84,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-diagnostics-report
+          name: build-diagnostics-report-${{ matrix.os }}
           path: |
             build-diagnostics/
             /tmp/build-and-test.log

@@ -1,5 +1,9 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using MSBuildDiagnosticPatcher.Models;
 
 namespace MSBuildDiagnosticPatcher.Patcher
@@ -27,11 +31,20 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            string source = File.ReadAllText(candidate.TargetFilePath);
+            var (source, encoding, _) = PatchGenerator.ReadFileWithEncoding(candidate.TargetFilePath);
+            string newline = PatchGenerator.DetectNewline(source);
 
-            // Guard: Check if member is already present to prevent duplicate insertions
-            if ((!string.IsNullOrWhiteSpace(candidate.MemberSignature) && source.Contains(candidate.MemberSignature)) ||
-                (!string.IsNullOrWhiteSpace(candidate.GeneratedCode) && source.Contains(candidate.GeneratedCode.Trim())))
+            // Scope duplicate guard to the target type body when available so multi-class files work cleanly
+            string checkRegion = source;
+            if (!string.IsNullOrWhiteSpace(candidate.TargetTypeName) &&
+                CSharpLexer.TryFindTypeScope(source, candidate.TargetTypeName, out var scope) &&
+                scope.CloseBraceIndex > scope.OpenBraceIndex)
+            {
+                checkRegion = source.Substring(scope.OpenBraceIndex, scope.CloseBraceIndex - scope.OpenBraceIndex + 1);
+            }
+
+            if ((!string.IsNullOrWhiteSpace(candidate.MemberSignature) && checkRegion.Contains(candidate.MemberSignature)) ||
+                (!string.IsNullOrWhiteSpace(candidate.GeneratedCode) && checkRegion.Contains(candidate.GeneratedCode.Trim())))
             {
                 Console.WriteLine($"[INFO] Target file already contains implementation. Skipped: {candidate.TargetFilePath}");
                 candidate.IsApplied = true;
@@ -45,12 +58,114 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return false;
             }
 
-            string updatedSource = source.Insert(insertPos, "\n" + candidate.GeneratedCode + "\n");
-            File.WriteAllText(candidate.TargetFilePath, updatedSource);
+            string normalizedStubs = string.Join(
+                newline + newline,
+                missingEntries
+                    .Select(m => PatchGenerator.NormalizeNewlines(m.GeneratedCode.Trim('\r', '\n'), newline))
+                    .Where(code => !string.IsNullOrWhiteSpace(code)));
+
+            if (string.IsNullOrWhiteSpace(normalizedStubs))
+            {
+                Console.WriteLine($"[INFO] Target file already contains implementation. Skipped: {candidate.TargetFilePath}");
+                candidate.IsApplied = true;
+                return true;
+            }
+
+            string updatedSource = PatchGenerator.SpliceCodeAtInsertionPoint(source, insertPos, normalizedStubs, newline);
+            File.WriteAllText(candidate.TargetFilePath, updatedSource, encoding);
 
             candidate.IsApplied = true;
             Console.WriteLine($"[SUCCESS] Successfully applied patch to '{candidate.TargetFilePath}'.");
             return true;
+        }
+
+        public static string? FindEnclosingProject(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                string fullFilePath = Path.GetFullPath(filePath);
+                string tempRoot = Path.GetFullPath(Path.GetTempPath())
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+
+                string? dir = Path.GetDirectoryName(fullFilePath);
+                while (!string.IsNullOrEmpty(dir))
+                {
+                    string normalizedDir = dir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                    if (string.IsNullOrEmpty(normalizedDir) ||
+                        normalizedDir.Equals(tempRoot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+
+                    if (Directory.Exists(dir))
+                    {
+                        var csprojFiles = Directory.GetFiles(dir, "*.csproj");
+                        if (csprojFiles.Length > 0)
+                        {
+                            Array.Sort(csprojFiles, StringComparer.OrdinalIgnoreCase);
+                            return csprojFiles[0];
+                        }
+                    }
+
+                    dir = Directory.GetParent(dir)?.FullName;
+                }
+            }
+            catch
+            {
+                // Ignore path/permission errors and return null
+            }
+
+            return null;
+        }
+
+        public bool VerifyProjectBuild(string projectFilePath, out string buildOutput)
+        {
+            buildOutput = string.Empty;
+            if (string.IsNullOrWhiteSpace(projectFilePath) || !File.Exists(projectFilePath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "dotnet",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("build");
+                psi.ArgumentList.Add(projectFilePath);
+                psi.ArgumentList.Add("-p:UseSharedCompilation=false");
+                psi.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+                psi.Environment["DOTNET_NOLOGO"] = "1";
+
+                using var process = Process.Start(psi);
+                if (process == null)
+                {
+                    return false;
+                }
+
+                Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+                Task<string> stderrTask = process.StandardError.ReadToEndAsync();
+                process.WaitForExit();
+                Task.WaitAll(stdoutTask, stderrTask);
+
+                buildOutput = (stdoutTask.Result + "\n" + stderrTask.Result).Trim();
+                return process.ExitCode == 0;
+            }
+            catch (Exception ex)
+            {
+                buildOutput = ex.Message;
+                return false;
+            }
         }
     }
 }
