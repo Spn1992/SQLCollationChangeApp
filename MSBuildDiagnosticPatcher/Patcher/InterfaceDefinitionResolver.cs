@@ -175,52 +175,44 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return segments.Count > 0 ? segments[segments.Count - 1].TrimStart('@') : CSharpLexer.StripGenericArity(interfaceName).TrimStart('@');
         }
 
-        private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
-        {
-            string cacheKey = $"{filePath}|{interfaceName}";
-            lock (_cacheLock)
-            {
-                if (_interfaceBodyOffsetsCache.TryGetValue(cacheKey, out var cached) &&
-                    cached.Start >= 0 &&
-                    cached.Length >= 0 &&
-                    cached.Start + cached.Length <= content.Length)
-                {
-                    return cached;
-                }
-            }
-
-            var computed = FindInterfaceBodyOffsets(content.AsSpan(), interfaceName);
-            lock (_cacheLock)
-            {
-                _interfaceBodyOffsetsCache[cacheKey] = computed;
-            }
-
-            return computed;
-        }
-
         public List<InterfaceMemberInfo> ResolveRequiredInterfaceMembers(
             string interfaceName,
             string contextFilePath,
             string? projectRoot = null)
         {
             string? interfaceFile = FindInterfaceFile(interfaceName, contextFilePath, projectRoot);
-            if (interfaceFile == null)
+            if (interfaceFile != null)
             {
-                return new List<InterfaceMemberInfo>();
+                string? content = GetOrReadFileContent(interfaceFile);
+                if (content != null)
+                {
+                    var members = ExtractRequiredMembersFromInterfaceSource(content, interfaceName);
+                    if (members.Count > 0)
+                    {
+                        foreach (var m in members)
+                        {
+                            m.InterfaceFilePath = interfaceFile;
+                        }
+                        return members;
+                    }
+                }
             }
 
-            string? content = GetOrReadFileContent(interfaceFile);
-            if (content == null)
+            if (!string.IsNullOrWhiteSpace(contextFilePath))
             {
-                return new List<InterfaceMemberInfo>();
+                string? contextContent = GetOrReadFileContent(contextFilePath);
+                if (contextContent != null && ContainsInterfaceDeclaration(contextContent, interfaceName))
+                {
+                    var contextMembers = ExtractRequiredMembersFromInterfaceSource(contextContent, interfaceName);
+                    foreach (var m in contextMembers)
+                    {
+                        m.InterfaceFilePath = contextFilePath;
+                    }
+                    return contextMembers;
+                }
             }
 
-            var members = ExtractRequiredMembersFromInterfaceSource(content, interfaceName);
-            foreach (var m in members)
-            {
-                m.InterfaceFilePath = interfaceFile;
-            }
-            return members;
+            return new List<InterfaceMemberInfo>();
         }
 
         public List<InterfaceMemberInfo> ExtractRequiredMembersFromInterfaceSource(
@@ -761,8 +753,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return false;
             }
 
-            // Exclude default expression-bodied end if '=>' exists at top level
+            // Skip expression-bodied default interface members ('=>')
             int sigEnd = FindTopLevelArrowOrEnd(declMasked, pos, declMasked.Length - 1);
+            if (sigEnd < declMasked.Length - 1)
+            {
+                return false;
+            }
 
             // Collect all top-level (...) groups in [pos .. sigEnd)
             var parenGroups = new List<(int Open, int Close)>();
@@ -876,7 +872,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             string rawReturnType = declStripped.Substring(pos, nameStart - pos);
-            string returnType = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            string returnType = NormalizeReturnType(rawReturnType);
             if (string.IsNullOrWhiteSpace(returnType) || !IsBalancedTypeTokens(returnType))
             {
                 return false;
@@ -992,7 +988,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             string rawReturnType = declStripped.Substring(pos, nameStart - pos);
-            string returnType = CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            string returnType = NormalizeReturnType(rawReturnType);
             if (string.IsNullOrWhiteSpace(returnType) || !IsBalancedTypeTokens(returnType))
             {
                 return false;
@@ -1017,6 +1013,47 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 FullSignature = $"{returnType} {parsedName} {{ {access} }}"
             };
             return true;
+        }
+
+        private static string NormalizeReturnType(string rawReturnType)
+        {
+            ReadOnlySpan<char> span = rawReturnType.AsSpan().Trim();
+            if (span.IsEmpty)
+            {
+                return string.Empty;
+            }
+
+            if (span.IndexOfAny('\r', '\n') < 0)
+            {
+                return CSharpLexer.CollapseWhitespacePreservingLiterals(rawReturnType);
+            }
+
+            var sb = new System.Text.StringBuilder(span.Length);
+            bool inWhitespace = false;
+            for (int i = 0; i < span.Length; i++)
+            {
+                char c = span[i];
+                if (char.IsWhiteSpace(c))
+                {
+                    inWhitespace = true;
+                }
+                else
+                {
+                    if (inWhitespace && sb.Length > 0)
+                    {
+                        char prev = sb[sb.Length - 1];
+                        if (prev != '<' && prev != '(' && prev != '.' &&
+                            c != '>' && c != ')' && c != ',' && c != '?' && c != '[')
+                        {
+                            sb.Append(' ');
+                        }
+                    }
+                    sb.Append(c);
+                    inWhitespace = false;
+                }
+            }
+
+            return sb.ToString();
         }
 
         private static bool IsBalancedTypeTokens(string typeText)

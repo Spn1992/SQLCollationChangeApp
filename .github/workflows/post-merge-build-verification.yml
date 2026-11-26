@@ -64,6 +64,12 @@ jobs:
         continue-on-error: true
         run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
+      - name: Verify CollationModifier net8.0-windows build
+        id: build_collation_modifier_windows
+        if: steps.restore_collation_modifier.outcome == 'success'
+        continue-on-error: true
+        run: dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
       - name: Build CollationModifier.Tests
         id: build_collation_modifier_tests
         if: steps.restore_collation_modifier_tests.outcome == 'success' && steps.build_collation_modifier.outcome == 'success'
@@ -98,6 +104,7 @@ jobs:
             "Restore CollationModifier.Tests dependencies:${{ steps.restore_collation_modifier_tests.outcome }}" \
             "Restore MSBuildDiagnosticPatcher.Tests dependencies:${{ steps.restore_patcher_tests.outcome }}" \
             "Build CollationModifier:${{ steps.build_collation_modifier.outcome }}" \
+            "Verify CollationModifier net8.0-windows build:${{ steps.build_collation_modifier_windows.outcome }}" \
             "Build CollationModifier.Tests:${{ steps.build_collation_modifier_tests.outcome }}" \
             "Build MSBuildDiagnosticPatcher.Tests:${{ steps.build_patcher_tests.outcome }}" \
             "Run unit tests:${{ steps.test_collation_modifier.outcome }}" \

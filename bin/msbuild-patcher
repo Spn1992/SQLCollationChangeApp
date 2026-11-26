@@ -7,9 +7,21 @@ DEBUG_DLL="$REPO_ROOT/MSBuildDiagnosticPatcher/bin/Debug/net8.0/MSBuildDiagnosti
 RELEASE_DLL="$REPO_ROOT/MSBuildDiagnosticPatcher/bin/Release/net8.0/MSBuildDiagnosticPatcher.dll"
 
 if [ -f "$DEBUG_DLL" ]; then
-  exec dotnet "$DEBUG_DLL" "$@"
+  if [ "$#" -eq 0 ]; then
+    exec dotnet "$DEBUG_DLL"
+  else
+    exec dotnet "$DEBUG_DLL" --project-root "$REPO_ROOT" "$@"
+  fi
 elif [ -f "$RELEASE_DLL" ]; then
-  exec dotnet "$RELEASE_DLL" "$@"
+  if [ "$#" -eq 0 ]; then
+    exec dotnet "$RELEASE_DLL"
+  else
+    exec dotnet "$RELEASE_DLL" --project-root "$REPO_ROOT" "$@"
+  fi
 else
-  exec dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false -- "$@"
+  if [ "$#" -eq 0 ]; then
+    exec dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false --
+  else
+    exec dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false -- --project-root "$REPO_ROOT" "$@"
+  fi
 fi
