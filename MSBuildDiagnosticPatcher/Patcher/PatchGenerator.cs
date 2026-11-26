@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -56,12 +57,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string? projectRoot = null)
         {
             var candidates = new List<PatchCandidate>();
-            string root = string.IsNullOrWhiteSpace(projectRoot) ? Directory.GetCurrentDirectory() : projectRoot;
+            bool hasExplicitProjectRoot = !string.IsNullOrWhiteSpace(projectRoot);
+            string root = hasExplicitProjectRoot ? Path.GetFullPath(projectRoot!) : Directory.GetCurrentDirectory();
+            var pathComparer = OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal;
 
             // Group CS0535 diagnostics by target file
             var cs0535Diags = diagnostics
                 .Where(d => d.Code.Equals("CS0535", StringComparison.OrdinalIgnoreCase))
-                .GroupBy(d => ResolveAbsoluteFilePath(d.FilePath, root));
+                .GroupBy(d => ResolveAbsoluteFilePath(d.FilePath, root, d.ProjectPath), pathComparer);
 
             foreach (var group in cs0535Diags)
             {
@@ -90,12 +95,18 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     targetClassName = parsed.Value.ClassName;
                     interfaceName = parsed.Value.InterfaceName;
 
+                    string interfaceSearchRoot = hasExplicitProjectRoot
+                        ? root
+                        : FindRepoRoot(targetFilePath)
+                            ?? ResolveProjectDirectory(diag.ProjectPath, root)
+                            ?? root;
+
                     var member = _resolver.ResolveInterfaceMember(
                         interfaceName,
                         parsed.Value.MemberName,
                         parsed.Value.ExpectedParamTypes,
                         targetFilePath,
-                        root);
+                        interfaceSearchRoot);
 
                     if (member != null)
                     {
@@ -150,6 +161,14 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         public string GenerateMemberStub(InterfaceMemberInfo member, string classSource)
         {
+            return GenerateMemberStub(member, classSource, overloadCache: null);
+        }
+
+        private string GenerateMemberStub(
+            InterfaceMemberInfo member,
+            string classSource,
+            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache)
+        {
             var sb = new StringBuilder();
 
             if (member.IsProperty)
@@ -169,7 +188,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             // Check if class has an existing overload of the same method
-            string? delegationCall = FindDelegationCall(member, classSource);
+            string? delegationCall = FindDelegationCall(member, classSource, overloadCache);
 
             sb.AppendLine($"        public virtual {member.ReturnType} {member.MemberName}({member.ParameterList})");
             sb.AppendLine("        {");
@@ -205,19 +224,23 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         private static string? FindDelegationCall(InterfaceMemberInfo member, string classSource)
         {
-            // Look for existing method in class with the same name:
-            // e.g. BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
-            var pattern = new Regex(
-                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^)]*)\)");
+            if (string.IsNullOrWhiteSpace(member.MemberName) || string.IsNullOrEmpty(classSource))
+            {
+                return null;
+            }
 
             var matches = pattern.Matches(classSource);
+            var myParamNames = ParseParameters(member.ParameterList).Select(p => p.Name).ToList();
+
+            if (overloads.Count == 0)
+            {
+                return null;
+            }
+
             var myParamNames = ExtractParameterNames(member.ParameterList);
 
-            foreach (Match match in matches)
+            foreach (var existingParams in overloads)
             {
-                string existingParamList = match.Groups["params"].Value.Trim();
-                var existingParams = ParseParameters(existingParamList);
-
                 // If existing method has strictly more parameters than the missing member
                 if (existingParams.Count > myParamNames.Count)
                 {
@@ -517,8 +540,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
             while (startCommon < oldLines.Count && startCommon < newLines.Count &&
                    oldLines[startCommon].Equals(newLines[startCommon]))
             {
-                startCommon++;
+                ArrayPool<char>.Shared.Return(rented);
             }
+        }
 
             var sb = new StringBuilder();
             sb.Append("--- ").Append(oldHeader).Append('\n');
@@ -534,8 +558,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             while (endCommonOld >= startCommon && endCommonNew >= startCommon &&
                    oldLines[endCommonOld].Equals(newLines[endCommonNew]))
             {
-                endCommonOld--;
-                endCommonNew--;
+                commonPrefixChars--;
             }
 
             // Context lines (up to 3 lines before and after)
@@ -550,20 +573,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             sb.Append($"@@ -{hunkOldStart},{hunkOldCount} +{hunkNewStart},{hunkNewCount} @@\n");
 
-            // Context lines before
-            for (int i = contextBefore; i < startCommon; i++)
+            while (oldHasMore && newHasMore)
             {
                 AppendDiffLine(sb, ' ', oldLines[i]);
             }
 
-            // Removed lines
-            for (int i = startCommon; i <= endCommonOld; i++)
+            if (oldRemHasMore)
             {
                 AppendDiffLine(sb, '-', oldLines[i]);
             }
 
-            // Added lines
-            for (int i = startCommon; i <= endCommonNew; i++)
+            if (newRemHasMore)
             {
                 AppendDiffLine(sb, '+', newLines[i]);
             }
@@ -1800,8 +1820,218 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         private static string ResolveAbsoluteFilePath(string path, string root)
         {
-            if (Path.IsPathRooted(path)) return path;
-            return Path.GetFullPath(Path.Combine(root, path));
+            int idx = span.Slice(0, end).LastIndexOfAny('\r', '\n');
+            if (idx < 0)
+            {
+                slice = new LineSlice(0, end);
+                ReadOnlySpan<char> line = span.Slice(0, end);
+                end = 0;
+                hasMore = false;
+                return line;
+            }
+            else
+            {
+                int lineStart = idx + 1;
+                int len = end - lineStart;
+                slice = new LineSlice(lineStart, len);
+                ReadOnlySpan<char> line = span.Slice(lineStart, len);
+                if (span[idx] == '\n' && idx > 0 && span[idx - 1] == '\r')
+                {
+                    end = idx - 1;
+                }
+                else
+                {
+                    end = idx;
+                }
+
+                return line;
+            }
+        }
+
+        private static int FindWindowStart(ReadOnlySpan<char> content, int pos, int maxBreaks)
+        {
+            int end = pos;
+            for (int b = 0; b < maxBreaks; b++)
+            {
+                if (end <= 0)
+                {
+                    return 0;
+                }
+
+                int idx = content.Slice(0, end).LastIndexOfAny('\r', '\n');
+                if (idx < 0)
+                {
+                    return 0;
+                }
+
+                if (b == maxBreaks - 1)
+                {
+                    return idx + 1;
+                }
+
+                if (content[idx] == '\n' && idx > 0 && content[idx - 1] == '\r')
+                {
+                    end = idx - 1;
+                }
+                else
+                {
+                    end = idx;
+                }
+            }
+
+            return 0;
+        }
+
+        private static int FindWindowEnd(ReadOnlySpan<char> content, int startPos, int maxBreaks)
+        {
+            int pos = startPos;
+            for (int b = 0; b < maxBreaks; b++)
+            {
+                if (pos >= content.Length)
+                {
+                    return content.Length;
+                }
+
+                int idx = content.Slice(pos).IndexOfAny('\r', '\n');
+                if (idx < 0)
+                {
+                    return content.Length;
+                }
+
+                int breakStart = pos + idx;
+                if (b == maxBreaks - 1)
+                {
+                    return breakStart;
+                }
+
+                pos = breakStart + 1;
+                if (content[breakStart] == '\r' && pos < content.Length && content[pos] == '\n')
+                {
+                    pos++;
+                }
+            }
+
+            return content.Length;
+        }
+
+        private static int CountLineBreaks(ReadOnlySpan<char> span)
+        {
+            int count = 0;
+            int pos = 0;
+            while (pos < span.Length)
+            {
+                int idx = span.Slice(pos).IndexOfAny('\r', '\n');
+                if (idx < 0)
+                {
+                    break;
+                }
+
+                pos += idx + 1;
+                if (span[pos - 1] == '\r' && pos < span.Length && span[pos] == '\n')
+                {
+                    pos++;
+                }
+
+                count++;
+            }
+
+            return count;
+        }
+
+        private static int CommonSuffixLength(ReadOnlySpan<char> a, ReadOnlySpan<char> b)
+        {
+            int max = Math.Min(a.Length, b.Length);
+            int matched = 0;
+
+            while (matched + 256 <= max &&
+                   a.Slice(a.Length - matched - 256, 256).SequenceEqual(b.Slice(b.Length - matched - 256, 256)))
+            {
+                matched += 256;
+            }
+
+            while (matched + 16 <= max &&
+                   a.Slice(a.Length - matched - 16, 16).SequenceEqual(b.Slice(b.Length - matched - 16, 16)))
+            {
+                matched += 16;
+            }
+
+            while (matched < max && a[a.Length - 1 - matched] == b[b.Length - 1 - matched])
+            {
+                matched++;
+            }
+
+            return matched;
+        }
+
+        private static string ResolveAbsoluteFilePath(string path, string root, string? projectPath = null)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+
+            if (Path.IsPathRooted(path))
+            {
+                return path;
+            }
+
+            string normalizedPath = NormalizeRelativePath(path);
+            string? projectDir = ResolveProjectDirectory(projectPath, root);
+            if (!string.IsNullOrEmpty(projectDir))
+            {
+                try
+                {
+                    string projectCandidate = Path.GetFullPath(Path.Combine(projectDir, normalizedPath));
+                    if (File.Exists(projectCandidate))
+                    {
+                        return projectCandidate;
+                    }
+                }
+                catch
+                {
+                    // Fall back to root below
+                }
+            }
+
+            return Path.GetFullPath(Path.Combine(root, normalizedPath));
+        }
+
+        private static string? ResolveProjectDirectory(string? projectPath, string root)
+        {
+            if (string.IsNullOrWhiteSpace(projectPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                string resolvedProjectPath = Path.IsPathRooted(projectPath)
+                    ? Path.GetFullPath(projectPath)
+                    : Path.GetFullPath(Path.Combine(root, NormalizeRelativePath(projectPath)));
+
+                if (Directory.Exists(resolvedProjectPath))
+                {
+                    return resolvedProjectPath;
+                }
+
+                return Path.GetDirectoryName(resolvedProjectPath);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string NormalizeRelativePath(string path)
+        {
+            if (!OperatingSystem.IsWindows() &&
+                path.Contains('\\') &&
+                !Regex.IsMatch(path, @"^[a-zA-Z]:[\\/]"))
+            {
+                return path.Replace('\\', Path.DirectorySeparatorChar);
+            }
+
+            return path;
         }
 
         private static string GetRelativePath(string relativeTo, string path)
@@ -1823,7 +2053,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 string? dir = Path.GetDirectoryName(filePath);
                 while (!string.IsNullOrEmpty(dir))
                 {
-                    if (Directory.Exists(Path.Combine(dir, ".git")))
+                    string gitPath = Path.Combine(dir, ".git");
+                    if (Directory.Exists(gitPath) || File.Exists(gitPath))
                     {
                         return dir;
                     }

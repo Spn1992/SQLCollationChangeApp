@@ -5,6 +5,7 @@
     <OutputType Condition="'$(OS)' != 'Windows_NT'">Library</OutputType>
     <TargetFramework Condition="'$(OS)' == 'Windows_NT'">net48</TargetFramework>
     <TargetFramework Condition="'$(OS)' != 'Windows_NT'">net8.0</TargetFramework>
+    <NuGetLockFilePath>packages.$(TargetFramework).lock.json</NuGetLockFilePath>
     <UseWPF Condition="'$(OS)' == 'Windows_NT'">true</UseWPF>
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
