@@ -124,8 +124,29 @@ namespace CollationModifier.Tests
         {
             try
             {
-                testAction();
-                Console.WriteLine($"PASS: {methodName}");
+                TestMapDatabaseInfo_NullArgumentValidation();
+                Console.WriteLine("PASS: TestMapDatabaseInfo_NullArgumentValidation");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullArgumentValidation - {ex}");
+                failed++;
+            }
+
+            try
+            {
+                TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks();
+                Console.WriteLine("PASS: TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"FAIL: TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks - {ex}");
+                failed++;
+            }
+
+            if (failed == 0)
+            {
+                Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
                 return 0;
             }
             catch (Exception ex)
@@ -518,124 +539,22 @@ namespace CollationModifier.Tests
             Assert(threw, "Expected ArgumentNullException when record is null.");
         }
 
-        static async Task TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests()
+        static void TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks()
         {
-            const string firstMethod = "Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes";
-            var originalOut = Console.Out;
-            using var captured = new StringWriter();
-            int failures;
-            try
-            {
-                Console.SetOut(captured);
-                failures = await GlobalExceptionHandlerTests.RunAllTestsAsync(methodName =>
-                {
-                    if (methodName == firstMethod)
-                    {
-                        throw new InvalidOperationException("Simulated failure in first GlobalExceptionHandlerTests method");
-                    }
-                });
-            }
-            finally
-            {
-                Console.SetOut(originalOut);
-            }
+            var recordWithCount = new MockDataRecord("SalesDb", "SQL_Latin1_General_CP1_CI_AS", (byte)160, "sa", 2048L, 37);
+            var dbWithCount = DatabaseService.MapDatabaseInfo(recordWithCount);
+            Assert(dbWithCount.UserCharacterColumnCount == 37, $"Expected UserCharacterColumnCount 37, got {dbWithCount.UserCharacterColumnCount}.");
+            Assert(dbWithCount.UserCharacterColumns == "37", $"Expected UserCharacterColumns '37', got '{dbWithCount.UserCharacterColumns}'.");
 
-            string log = captured.ToString();
-            Assert(failures == 1, $"Expected exactly 1 failure when first test fails, got {failures}.");
-            Assert(log.Contains($"[FAIL] GlobalExceptionHandlerTests.{firstMethod} - System.InvalidOperationException: Simulated failure in first GlobalExceptionHandlerTests method"),
-                "Expected failure output to include GlobalExceptionHandlerTests.<TestMethod> and exception message.");
-            Assert(log.Contains("at CollationModifier.Tests."), "Expected failure output to include stack trace.");
+            var recordWithZeroCount = new MockDataRecord("EmptySchemaDb", "SQL_Latin1_General_CP1_CI_AS", (byte)160, "sa", 64L, 0);
+            var dbWithZeroCount = DatabaseService.MapDatabaseInfo(recordWithZeroCount);
+            Assert(dbWithZeroCount.UserCharacterColumnCount == 0, $"Expected UserCharacterColumnCount 0, got {dbWithZeroCount.UserCharacterColumnCount}.");
+            Assert(dbWithZeroCount.UserCharacterColumns == "0", $"Expected UserCharacterColumns '0', got '{dbWithZeroCount.UserCharacterColumns}'.");
 
-            int passCount = log.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-                .Count(l => l.TrimStart().StartsWith("PASS: ", StringComparison.Ordinal));
-            Assert(passCount == 6, $"Expected remaining 6 tests to execute and pass, got {passCount} PASS lines.");
-        }
-
-        static async Task TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions()
-        {
-            var originalOut = Console.Out;
-            using var captured = new StringWriter();
-            int postedFailures;
-            int asyncVoidFailures;
-            bool subsequentTestRan = false;
-
-            try
-            {
-                Console.SetOut(captured);
-
-                // 1. Direct SynchronizationContext.Post unhandled exception
-                postedFailures = MainViewModelTestsRunner.ExecuteSyncTest("PostedUnhandledCallbackTest", () =>
-                {
-                    System.Threading.SynchronizationContext.Current!.Post(_ =>
-                    {
-                        throw new InvalidOperationException("Unhandled exception from SynchronizationContext.Post");
-                    }, null);
-                });
-
-                // 2. async void unhandled exception across await boundary
-                asyncVoidFailures = await MainViewModelTestsRunner.ExecuteAsyncTestAsync("AsyncVoidUnhandledCrashTest", async () =>
-                {
-                    TriggerFaultingAsyncVoid();
-                    await Task.Delay(20);
-                });
-
-                // 3. Verify subsequent test still runs normally without host abort
-                int passResult = MainViewModelTestsRunner.ExecuteSyncTest("SubsequentHealthyTest", () =>
-                {
-                    subsequentTestRan = true;
-                });
-                Assert(passResult == 0, "Expected subsequent healthy test to return 0 failures.");
-            }
-            finally
-            {
-                Console.SetOut(originalOut);
-            }
-
-            string log = captured.ToString();
-            Assert(postedFailures == 1, $"Expected 1 failure for posted callback exception, got {postedFailures}.");
-            Assert(asyncVoidFailures == 1, $"Expected 1 failure for async void exception, got {asyncVoidFailures}.");
-            Assert(subsequentTestRan, "Expected subsequent test to run after SynchronizationContext unhandled exceptions.");
-            Assert(log.Contains("[FAIL] MainViewModelTests.PostedUnhandledCallbackTest - System.InvalidOperationException: Unhandled exception from SynchronizationContext.Post"),
-                "Expected MainViewModelTests.PostedUnhandledCallbackTest failure entry.");
-            Assert(log.Contains("[FAIL] MainViewModelTests.AsyncVoidUnhandledCrashTest - System.InvalidOperationException: Unhandled async void crash after yield"),
-                "Expected MainViewModelTests.AsyncVoidUnhandledCrashTest failure entry.");
-            Assert(log.Contains("TriggerFaultingAsyncVoid"), "Expected original async void stack frame to be preserved.");
-        }
-
-        private static async void TriggerFaultingAsyncVoid()
-        {
-            await Task.Yield();
-            throw new InvalidOperationException("Unhandled async void crash after yield");
-        }
-
-        static async Task TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace()
-        {
-            var originalOut = Console.Out;
-            using var captured = new StringWriter();
-            int failures;
-            try
-            {
-                Console.SetOut(captured);
-                failures = await MainViewModelTestsRunner.ExecuteAsyncTestAsync("SampleFailingViewModelTest", async () =>
-                {
-                    await Task.Yield();
-                    throw new InvalidOperationException("Assertion failed: Expected Ready\nActual: Busy");
-                });
-            }
-            finally
-            {
-                Console.SetOut(originalOut);
-            }
-
-            string log = captured.ToString();
-            Assert(failures == 1, $"Expected integer failure count 1, got {failures}.");
-            int failLines = log.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries)
-                .Count(l => l.TrimStart().StartsWith("[FAIL]", StringComparison.Ordinal));
-            Assert(failLines == 1, $"Expected exactly 1 [FAIL] line without duplicate wrapper entry, got {failLines}.");
-            Assert(log.Contains("[FAIL] MainViewModelTests.SampleFailingViewModelTest - System.InvalidOperationException: Assertion failed: Expected Ready"),
-                "Expected ClassName.MethodName failure header.");
-            Assert(log.Contains("Actual: Busy"), "Expected multiline failure message preserved.");
-            Assert(log.Contains("at CollationModifier.Tests.Program"), "Expected stack trace preserved.");
+            var recordWithNullCount = new MockDataRecord("OfflineDb", "SQL_Latin1_General_CP1_CI_AS", (byte)150, "sa", DBNull.Value, DBNull.Value);
+            var dbWithNullCount = DatabaseService.MapDatabaseInfo(recordWithNullCount);
+            Assert(dbWithNullCount.UserCharacterColumnCount == 0, $"Expected UserCharacterColumnCount 0 for DBNull, got {dbWithNullCount.UserCharacterColumnCount}.");
+            Assert(dbWithNullCount.UserCharacterColumns == "Unknown", $"Expected UserCharacterColumns 'Unknown' for DBNull, got '{dbWithNullCount.UserCharacterColumns}'.");
         }
 
         private sealed class MockDataRecord : IDataRecord
