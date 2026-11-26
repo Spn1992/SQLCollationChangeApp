@@ -23,6 +23,8 @@ namespace MSBuildDiagnosticPatcher.Parsers
                 return new List<CompilerDiagnostic>();
             }
 
+            var seenKeys = new HashSet<(string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath)>();
+
             using var reader = new StringReader(logContent);
             return ParseStream(reader);
         }
@@ -31,10 +33,31 @@ namespace MSBuildDiagnosticPatcher.Parsers
         {
             if (reader == null)
             {
-                throw new ArgumentNullException(nameof(reader));
+                var diag = ParseLine(line);
+                if (diag != null && seenKeys.Add(CreateDiagnosticKey(diag)))
+                {
+                    results.Add(diag);
+                }
             }
 
             return LogStreamParser.Parse(reader, this, testParser: null).Diagnostics;
+        }
+
+        private static (string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath) CreateDiagnosticKey(CompilerDiagnostic diagnostic)
+        {
+            return (
+                NormalizePath(diagnostic.FilePath),
+                diagnostic.LineNumber,
+                diagnostic.ColumnNumber,
+                diagnostic.Severity,
+                (diagnostic.Code ?? string.Empty).Trim().ToUpperInvariant(),
+                (diagnostic.Message ?? string.Empty).Trim(),
+                NormalizePath(diagnostic.ProjectPath));
+        }
+
+        private static string NormalizePath(string? path)
+        {
+            return string.IsNullOrEmpty(path) ? string.Empty : path.Trim().Replace('\\', '/');
         }
 
         public CompilerDiagnostic? ParseLine(string rawLine)
