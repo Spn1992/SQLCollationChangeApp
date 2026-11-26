@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Enumeration;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -38,18 +39,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         private readonly object _cacheLock = new object();
         private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, string?> _rootSearchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Dictionary<string, string>> _rootFileIndexCache = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _fileContentCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, (int Start, int Length)> _interfaceBodyOffsetsCache = new Dictionary<string, (int Start, int Length)>(StringComparer.OrdinalIgnoreCase);
 
         public void ClearCache()
         {
             lock (_cacheLock)
             {
                 _filePathCache.Clear();
-                _rootSearchCache.Clear();
+                _rootFileIndexCache.Clear();
                 _fileContentCache.Clear();
-                _interfaceBodyOffsetsCache.Clear();
             }
         }
 
@@ -175,29 +174,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return segments.Count > 0 ? segments[segments.Count - 1].TrimStart('@') : CSharpLexer.StripGenericArity(interfaceName).TrimStart('@');
         }
 
-        private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
-        {
-            string cacheKey = $"{filePath}|{interfaceName}";
-            lock (_cacheLock)
-            {
-                if (_interfaceBodyOffsetsCache.TryGetValue(cacheKey, out var cached) &&
-                    cached.Start >= 0 &&
-                    cached.Length >= 0 &&
-                    cached.Start + cached.Length <= content.Length)
-                {
-                    return cached;
-                }
-            }
-
-            var computed = FindInterfaceBodyOffsets(content.AsSpan(), interfaceName);
-            lock (_cacheLock)
-            {
-                _interfaceBodyOffsetsCache[cacheKey] = computed;
-            }
-
-            return computed;
-        }
-
         private string? GetOrReadFileContent(string filePath)
         {
             lock (_cacheLock)
@@ -269,23 +245,68 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            // 3. Search under project root
-            string rootSearchKey = $"{fileName}|{root}";
+            // 3. Search under project root using per-root filtered C# file index
+            Dictionary<string, string> rootIndex = GetOrBuildRootFileIndex(root);
+            return rootIndex.TryGetValue(fileName, out string? foundRootPath) ? foundRootPath : null;
+        }
+
+        private Dictionary<string, string> GetOrBuildRootFileIndex(string root)
+        {
             lock (_cacheLock)
             {
-                if (_rootSearchCache.TryGetValue(rootSearchKey, out var cachedRootPath))
+                if (_rootFileIndexCache.TryGetValue(root, out var cachedIndex))
                 {
-                    return cachedRootPath;
+                    return cachedIndex;
                 }
             }
 
-            string? foundRootPath = null;
+            var builtIndex = BuildRootFileIndex(root);
+
+            lock (_cacheLock)
+            {
+                if (_rootFileIndexCache.TryGetValue(root, out var existingIndex))
+                {
+                    return existingIndex;
+                }
+
+                _rootFileIndexCache[root] = builtIndex;
+                return builtIndex;
+            }
+        }
+
+        private static Dictionary<string, string> BuildRootFileIndex(string root)
+        {
+            var index = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            {
+                return index;
+            }
+
             try
             {
-                var files = Directory.GetFiles(root, fileName, SearchOption.AllDirectories);
-                if (files.Length > 0)
+                var options = new EnumerationOptions
                 {
-                    foundRootPath = files[0];
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                    AttributesToSkip = 0
+                };
+
+                var enumerable = new FileSystemEnumerable<(string FileName, string FullPath)>(
+                    root,
+                    static (ref FileSystemEntry entry) => (entry.FileName.ToString(), entry.ToSpecifiedFullPath()),
+                    options)
+                {
+                    ShouldIncludePredicate = static (ref FileSystemEntry entry) =>
+                        !entry.IsDirectory &&
+                        entry.FileName.Length > 3 &&
+                        entry.FileName.EndsWith(".cs", StringComparison.OrdinalIgnoreCase),
+                    ShouldRecursePredicate = static (ref FileSystemEntry entry) =>
+                        ShouldRecurseIntoDirectory(ref entry)
+                };
+
+                foreach (var (csFileName, fullPath) in enumerable)
+                {
+                    index.TryAdd(csFileName, fullPath);
                 }
             }
             catch
@@ -293,12 +314,19 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 // Ignore search permission exceptions
             }
 
-            lock (_cacheLock)
-            {
-                _rootSearchCache[rootSearchKey] = foundRootPath;
-            }
+            return index;
+        }
 
-            return foundRootPath;
+        private static bool ShouldRecurseIntoDirectory(ref FileSystemEntry entry)
+        {
+            ReadOnlySpan<char> name = entry.FileName;
+            return !name.Equals(".git", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("bin", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("obj", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals(".vs", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("node_modules", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("packages", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("build-diagnostics", StringComparison.OrdinalIgnoreCase);
         }
 
         public InterfaceMemberInfo? ExtractMemberFromInterfaceSource(

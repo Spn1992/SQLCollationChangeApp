@@ -81,6 +81,7 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("InterfaceDefinitionResolver_ExtractsArrayAndGenericArrayReturnAndParamTypes", Test_InterfaceDefinitionResolver_ExtractsArrayAndGenericArrayReturnAndParamTypes);
             RunTest("InterfaceDefinitionResolver_ExtractsTupleReturnTypesPropertiesAndOverloads", Test_InterfaceDefinitionResolver_ExtractsTupleReturnTypesPropertiesAndOverloads);
             RunTest("InterfaceDefinitionResolver_ResolvesInterfaceDeclaredInSameContextFile", Test_InterfaceDefinitionResolver_ResolvesInterfaceDeclaredInSameContextFile);
+            RunTest("InterfaceDefinitionResolver_RootIndex_SkipsExcludedDirsReusesIndexAndRefreshesOnClearCache", Test_InterfaceDefinitionResolver_RootIndex_SkipsExcludedDirsReusesIndexAndRefreshesOnClearCache);
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
@@ -1565,6 +1566,91 @@ namespace Shifted.Namespace.Declaration
             finally
             {
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InterfaceDefinitionResolver_RootIndex_SkipsExcludedDirsReusesIndexAndRefreshesOnClearCache()
+        {
+            string outerTempDir = Path.Combine(Path.GetTempPath(), $"root_index_test_{Guid.NewGuid():N}");
+            // Place root itself inside a folder named 'bin' under /tmp to verify ShouldRecursePredicate checks only child entry.FileName
+            string rootDir = Path.Combine(outerTempDir, "bin");
+            Directory.CreateDirectory(rootDir);
+
+            try
+            {
+                string testsProjectDir = Path.Combine(rootDir, "App.Tests", "Unit");
+                string contractsDir = Path.Combine(rootDir, "App.Core", "Contracts");
+                Directory.CreateDirectory(testsProjectDir);
+                Directory.CreateDirectory(contractsDir);
+
+                string contextFile = Path.Combine(testsProjectDir, "MockServiceTests.cs");
+                File.WriteAllText(contextFile, "public class MockServiceTests { }");
+
+                // Populate decoy files inside excluded directories (.git, bin, obj, .vs, node_modules, packages, build-diagnostics)
+                string[] excludedDirs = { ".git", "bin", "obj", ".vs", "node_modules", "packages", "build-diagnostics" };
+                foreach (string excluded in excludedDirs)
+                {
+                    string decoyFolder = Path.Combine(rootDir, excluded, "nested");
+                    Directory.CreateDirectory(decoyFolder);
+                    File.WriteAllText(Path.Combine(decoyFolder, "ICrossProjectAlpha.cs"), "public interface ICrossProjectAlpha { string WrongDecoy(); }");
+                    File.WriteAllText(Path.Combine(decoyFolder, "IDecoyOnlyInterface.cs"), "public interface IDecoyOnlyInterface { void Decoy(); }");
+                }
+
+                // Real source interfaces in cross-project folder (misses dir, parent, and parent/Services local checks)
+                string realAlphaPath = Path.Combine(contractsDir, "ICrossProjectAlpha.cs");
+                string realBetaPath = Path.Combine(contractsDir, "ICrossProjectBeta.cs");
+                File.WriteAllText(realAlphaPath, "public interface ICrossProjectAlpha { int ComputeAlpha(string key); }");
+                File.WriteAllText(realBetaPath, "public interface ICrossProjectBeta { bool CheckBeta(); }");
+
+                var resolver = new InterfaceDefinitionResolver();
+
+                // 1. Cross-directory lookup skips .git, bin, obj, etc. decoys and resolves real source file
+                string? resolvedAlpha = resolver.FindInterfaceFile("ICrossProjectAlpha", contextFile, rootDir);
+                Assert(resolvedAlpha != null, "Expected ICrossProjectAlpha to resolve from cross-project Contracts folder.");
+                Assert(Path.GetFullPath(resolvedAlpha!) == Path.GetFullPath(realAlphaPath),
+                    $"Expected real source path '{realAlphaPath}', got '{resolvedAlpha}'");
+
+                var alphaMember = resolver.ResolveInterfaceMember("ICrossProjectAlpha", "ComputeAlpha", "string", contextFile, rootDir);
+                Assert(alphaMember != null && alphaMember.ReturnType == "int",
+                    $"Expected return type 'int' from real source interface (not decoy), got '{alphaMember?.ReturnType}'");
+
+                // Interface present only inside excluded decoy folders must return null
+                string? decoyOnly = resolver.FindInterfaceFile("IDecoyOnlyInterface", contextFile, rootDir);
+                Assert(decoyOnly == null, $"Expected null for interface existing only in excluded directories, got '{decoyOnly}'");
+
+                // 2. Mutate filesystem WITHOUT calling ClearCache to prove per-root index is reused in memory
+                File.Delete(realBetaPath);
+                string lateGammaPath = Path.Combine(contractsDir, "ICrossProjectGamma.cs");
+                File.WriteAllText(lateGammaPath, "public interface ICrossProjectGamma { void RunGamma(); }");
+
+                // ICrossProjectBeta was never queried before (not in _filePathCache), yet resolves from cached _rootFileIndexCache
+                string? cachedBeta = resolver.FindInterfaceFile("ICrossProjectBeta", contextFile, rootDir);
+                Assert(cachedBeta != null && Path.GetFullPath(cachedBeta) == Path.GetFullPath(realBetaPath),
+                    "Expected ICrossProjectBeta to resolve from cached root index without re-scanning disk.");
+
+                // ICrossProjectGamma was added after index build, so cached root index returns null without re-scanning disk
+                string? unindexedGamma = resolver.FindInterfaceFile("ICrossProjectGamma", contextFile, rootDir);
+                Assert(unindexedGamma == null,
+                    "Expected null for ICrossProjectGamma prior to ClearCache because root index is reused.");
+
+                // 3. ClearCache() invalidates _rootFileIndexCache and refreshes from disk on next lookup
+                resolver.ClearCache();
+
+                string? refreshedBeta = resolver.FindInterfaceFile("ICrossProjectBeta", contextFile, rootDir);
+                Assert(refreshedBeta == null, "Expected null for deleted ICrossProjectBeta after ClearCache.");
+
+                string? refreshedGamma = resolver.FindInterfaceFile("ICrossProjectGamma", contextFile, rootDir);
+                Assert(refreshedGamma != null && Path.GetFullPath(refreshedGamma) == Path.GetFullPath(lateGammaPath),
+                    "Expected ICrossProjectGamma to be discovered after ClearCache rebuilds root index.");
+
+                // 4. Missing root directory returns null cleanly without throwing
+                string missingRoot = Path.Combine(outerTempDir, "non_existent_root");
+                string? missingRootResult = resolver.FindInterfaceFile("ICrossProjectGamma", contextFile, missingRoot);
+                Assert(missingRootResult == null, "Expected null when projectRoot directory does not exist.");
+            }
+            finally
+            {
+                if (Directory.Exists(outerTempDir)) Directory.Delete(outerTempDir, true);
             }
         }
 
