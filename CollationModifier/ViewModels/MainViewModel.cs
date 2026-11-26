@@ -128,6 +128,15 @@ namespace CollationModifier.ViewModels
             DetailedError = detailedError;
         }
 
+        private void ClearErrorDiagnosticsIfPresent()
+        {
+            if (HasDetailedError || !string.IsNullOrEmpty(StatusToolTip))
+            {
+                DetailedError = null;
+                StatusToolTip = null;
+            }
+        }
+
         private int _progressPercent;
         public int ProgressPercent
         {
@@ -147,7 +156,13 @@ namespace CollationModifier.ViewModels
         public string ServerName
         {
             get => _serverName;
-            set => SetProperty(ref _serverName, value);
+            set
+            {
+                if (SetProperty(ref _serverName, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
+            }
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
@@ -162,6 +177,7 @@ namespace CollationModifier.ViewModels
                 string previous = _selectedAuthenticationType;
                 if (SetProperty(ref _selectedAuthenticationType, value))
                 {
+                    ClearErrorDiagnosticsIfPresent();
                     OnPropertyChanged(nameof(IsSqlServerAuth));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
                     if (!string.IsNullOrEmpty(previous) && previous != value)
@@ -185,14 +201,26 @@ namespace CollationModifier.ViewModels
         public string Username
         {
             get => _username;
-            set => SetProperty(ref _username, value);
+            set
+            {
+                if (SetProperty(ref _username, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
+            }
         }
 
         private string _password = string.Empty;
         public string Password
         {
             get => _password;
-            set => SetProperty(ref _password, value);
+            set
+            {
+                if (SetProperty(ref _password, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
+            }
         }
 
         private bool _isConnected;
@@ -241,6 +269,7 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _selectedDatabase, value))
                 {
+                    ClearErrorDiagnosticsIfPresent();
                     OnPropertyChanged(nameof(HasSelectedDatabase));
                     OnPropertyChanged(nameof(MetadataEmptyStateText));
                     InvalidateRequerySuggested();
@@ -273,8 +302,11 @@ namespace CollationModifier.ViewModels
             get => _targetCollation;
             set
             {
-                SetProperty(ref _targetCollation, value);
-                InvalidateRequerySuggested();
+                if (SetProperty(ref _targetCollation, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                    InvalidateRequerySuggested();
+                }
             }
         }
 
@@ -285,8 +317,10 @@ namespace CollationModifier.ViewModels
             get => _backupDirectory;
             set
             {
-                SetProperty(ref _backupDirectory, value);
-                _hasCustomBackupDirectory = !string.IsNullOrWhiteSpace(value);
+                if (SetProperty(ref _backupDirectory, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
             }
         }
 
@@ -446,7 +480,7 @@ namespace CollationModifier.ViewModels
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
 
-            StatusMessage = "Connecting to server...";
+            SetStatus("Connecting to server...");
             _logger.LogInfo($"Attempting to connect to server: {ServerName} using {SelectedAuthenticationType}");
 
             try
@@ -639,13 +673,13 @@ namespace CollationModifier.ViewModels
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
+            SetStatus("Running pre-flight checks...");
 
             try
             {
                 token.ThrowIfCancellationRequested();
 
                 // 1. Pre-flight (validates collation against server catalog & user permissions)
-                StatusMessage = "Running pre-flight checks...";
                 var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
                 if (preflightReport.HasBlockingConditions)
                 {

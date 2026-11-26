@@ -36,7 +36,7 @@ namespace CollationModifier.Tests
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
-        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
+        public Func<string, string, string, CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Func<CancellationToken, Task>? OnGetDatabases { get; set; }
@@ -136,7 +136,7 @@ namespace CollationModifier.Tests
         {
             if (OnPreflightCheck != null)
             {
-                await OnPreflightCheck(cancellationToken);
+                await OnPreflightCheck(databaseName, backupDirectory, targetCollation, cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
@@ -4820,84 +4820,213 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
-            RunSyncTest("SelectedAuthenticationType_RaisesPropertyChanged_ForCanEditSqlCredentials_WhenSwitched", () =>
+            await RunAsyncTest("ConnectAsync_ResetsErrorDiagnostics_AtOperationLaunch", async () =>
             {
-                var vm = new MainViewModel(new MockDatabaseService());
-                Assert(!vm.IsConnected, "IsConnected should default to false.");
-                Assert(!vm.IsBusy, "IsBusy should default to false.");
-                Assert(vm.SelectedAuthenticationType == "Windows Authentication", "Default authentication should be Windows Authentication.");
-                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false initially under Windows Authentication.");
-
-                var notifiedProperties = new List<string>();
-                vm.PropertyChanged += (sender, args) =>
+                var connectionStarted = new TaskCompletionSource<bool>();
+                var releaseConnection = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
                 {
-                    if (args.PropertyName != null)
+                    OnGetServerInitializationData = async (token) =>
                     {
-                        notifiedProperties.Add(args.PropertyName);
+                        connectionStarted.SetResult(true);
+                        await releaseConnection.Task;
                     }
                 };
 
-                // Switch to SQL Server Authentication
-                vm.SelectedAuthenticationType = "SQL Server Authentication";
+                var vm = new MainViewModel(mockService);
 
-                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
-                    $"Expected PropertyChanged for CanEditSqlCredentials when switching to SQL Server Auth, got: {string.Join(", ", notifiedProperties)}");
-                Assert(notifiedProperties.Contains(nameof(MainViewModel.IsSqlServerAuth)),
-                    "Expected PropertyChanged for IsSqlServerAuth.");
-                Assert(vm.CanEditSqlCredentials, "CanEditSqlCredentials should be true when SQL Server Authentication is selected and disconnected.");
-                Assert(vm.StatusMessage == "SQL Server Authentication selected. Username and Password fields enabled.",
-                    $"Expected status message announcing enabled credentials, got '{vm.StatusMessage}'");
+                // Seed prior error diagnostics
+                vm.SetStatus("Prior connection failure", "Prior error tooltip", "Detailed exception stack trace");
+                Assert(vm.DetailedError == "Detailed exception stack trace", "Expected DetailedError to be populated before connect.");
+                Assert(vm.StatusToolTip == "Prior error tooltip", "Expected StatusToolTip to be populated before connect.");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true before connect.");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Expected ShowErrorDetailsCommand to be enabled before connect.");
 
-                // Switch back to Windows Authentication
-                notifiedProperties.Clear();
-                vm.SelectedAuthenticationType = "Windows Authentication";
+                var connectTask = vm.ConnectAsync();
+                await connectionStarted.Task;
 
-                Assert(notifiedProperties.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
-                    $"Expected PropertyChanged for CanEditSqlCredentials when switching to Windows Auth, got: {string.Join(", ", notifiedProperties)}");
-                Assert(!vm.CanEditSqlCredentials, "CanEditSqlCredentials should be false when Windows Authentication is selected.");
-                Assert(vm.StatusMessage == "Windows Authentication selected. Username and Password fields disabled.",
-                    $"Expected status message announcing disabled credentials, got '{vm.StatusMessage}'");
+                // Diagnostics must be cleared at operation launch while task is active
+                Assert(vm.IsBusy == true, "Expected IsBusy to be true during connect.");
+                Assert(vm.DetailedError == null, $"Expected DetailedError to be null at operation launch, got '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip to be null at operation launch, got '{vm.StatusToolTip}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false at operation launch.");
+                Assert(vm.StatusMessage == "Connecting to server...", $"Expected StatusMessage 'Connecting to server...', got '{vm.StatusMessage}'");
+                Assert(vm.EffectiveStatusToolTip == "Connecting to server...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to be disabled at operation launch.");
+
+                releaseConnection.SetResult(true);
+                await connectTask;
+
+                Assert(vm.DetailedError == null, "Expected DetailedError to remain null after successful connection.");
+                Assert(vm.StatusToolTip == null, "Expected StatusToolTip to remain null after successful connection.");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to remain false after successful connection.");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to remain disabled after successful connection.");
             });
 
-            RunSyncTest("SelectedAuthenticationType_CanEditSqlCredentials_RemainsFalse_WhenConnectedOrBusy", () =>
+            await RunAsyncTest("ProcessCollationChangeAsync_ResetsErrorDiagnostics_AtOperationLaunch", async () =>
             {
-                // Edge case 1: When IsConnected is true
-                var vmConnected = new MainViewModel(new MockDatabaseService());
-                vmConnected.IsConnected = true;
-
-                var notifiedPropertiesConnected = new List<string>();
-                vmConnected.PropertyChanged += (sender, args) =>
+                var operationStarted = new TaskCompletionSource<bool>();
+                var releaseOperation = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
                 {
-                    if (args.PropertyName != null)
+                    DatabasesToReturn = new List<DatabaseInfo>
                     {
-                        notifiedPropertiesConnected.Add(args.PropertyName);
+                        new DatabaseInfo { Name = "TestDB", Collation = "SQL_Latin1_General_CP1_CI_AS" }
+                    },
+                    OnPreflightCheck = async (db, backupDir, targetCol, token) =>
+                    {
+                        operationStarted.SetResult(true);
+                        await releaseOperation.Task;
                     }
                 };
 
-                vmConnected.SelectedAuthenticationType = "SQL Server Authentication";
-                Assert(notifiedPropertiesConnected.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
-                    "Expected PropertyChanged for CanEditSqlCredentials even when IsConnected is true.");
-                Assert(!vmConnected.CanEditSqlCredentials,
-                    "CanEditSqlCredentials must evaluate to false when IsConnected is true even if SQL Server Auth is selected.");
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                vm.Databases.Add(mockService.DatabasesToReturn[0]);
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
 
-                // Edge case 2: When IsBusy is true
-                var vmBusy = new MainViewModel(new MockDatabaseService());
-                vmBusy.IsBusy = true;
+                // Seed prior error diagnostics
+                vm.SetStatus("Prior process failure", "Prior process error tooltip", "Detailed process exception trace");
+                Assert(vm.DetailedError == "Detailed process exception trace", "Expected DetailedError to be populated before collation change.");
+                Assert(vm.StatusToolTip == "Prior process error tooltip", "Expected StatusToolTip to be populated before collation change.");
+                Assert(vm.HasDetailedError == true, "Expected HasDetailedError to be true before collation change.");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Expected ShowErrorDetailsCommand to be enabled before collation change.");
 
-                var notifiedPropertiesBusy = new List<string>();
-                vmBusy.PropertyChanged += (sender, args) =>
+                var processTask = vm.ProcessCollationChangeAsync();
+                await operationStarted.Task;
+
+                // Diagnostics must be cleared immediately when operation launches
+                Assert(vm.IsBusy == true, "Expected IsBusy to be true during collation change.");
+                Assert(vm.DetailedError == null, $"Expected DetailedError to be null at operation launch, got '{vm.DetailedError}'");
+                Assert(vm.StatusToolTip == null, $"Expected StatusToolTip to be null at operation launch, got '{vm.StatusToolTip}'");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to be false at operation launch.");
+                Assert(vm.StatusMessage == "Running pre-flight checks...", $"Expected StatusMessage 'Running pre-flight checks...', got '{vm.StatusMessage}'");
+                Assert(vm.EffectiveStatusToolTip == "Running pre-flight checks...", $"Expected EffectiveStatusToolTip to fall back to StatusMessage, got '{vm.EffectiveStatusToolTip}'");
+                Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, "Expected ShowErrorDetailsCommand to be disabled at operation launch.");
+
+                releaseOperation.SetResult(true);
+                await processTask;
+
+                Assert(vm.DetailedError == null, "Expected DetailedError to remain null after successful collation change.");
+                Assert(vm.StatusToolTip == null, "Expected StatusToolTip to remain null after successful collation change.");
+                Assert(vm.HasDetailedError == false, "Expected HasDetailedError to remain false after successful collation change.");
+            });
+
+            RunSyncTest("MainViewModel_InputMutations_ClearErrorDiagnostics_WhenHasDetailedErrorIsTrue", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+                var db1 = new DatabaseInfo { Name = "Database1", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var db2 = new DatabaseInfo { Name = "Database2", Collation = "Latin1_General_CI_AS" };
+                vm.Databases.Add(db1);
+                vm.Databases.Add(db2);
+
+                void SeedError()
                 {
-                    if (args.PropertyName != null)
+                    vm.SetStatus("Operation failed", "Failure tooltip", "Detailed failure diagnostic info");
+                    Assert(vm.HasDetailedError == true, "Precondition: HasDetailedError must be true.");
+                    Assert(vm.DetailedError != null, "Precondition: DetailedError must be populated.");
+                    Assert(vm.StatusToolTip != null, "Precondition: StatusToolTip must be populated.");
+                    Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == true, "Precondition: ShowErrorDetailsCommand must be enabled.");
+                }
+
+                void AssertErrorCleared(string propertyName)
+                {
+                    Assert(vm.DetailedError == null, $"Expected DetailedError to be cleared on {propertyName} mutation.");
+                    Assert(vm.StatusToolTip == null, $"Expected StatusToolTip to be cleared on {propertyName} mutation.");
+                    Assert(vm.HasDetailedError == false, $"Expected HasDetailedError to be false on {propertyName} mutation.");
+                    Assert(vm.ShowErrorDetailsCommand.CanExecute(null) == false, $"Expected ShowErrorDetailsCommand to be disabled on {propertyName} mutation.");
+                }
+
+                // 1. ServerName
+                SeedError();
+                vm.ServerName = "new-sql-server";
+                AssertErrorCleared(nameof(MainViewModel.ServerName));
+
+                // 2. SelectedAuthenticationType
+                SeedError();
+                vm.SelectedAuthenticationType = "SQL Server Authentication";
+                AssertErrorCleared(nameof(MainViewModel.SelectedAuthenticationType));
+
+                // 3. Username
+                SeedError();
+                vm.Username = "admin_user";
+                AssertErrorCleared(nameof(MainViewModel.Username));
+
+                // 4. Password
+                SeedError();
+                vm.Password = "SuperSecret123!";
+                AssertErrorCleared(nameof(MainViewModel.Password));
+
+                // 5. SelectedDatabase
+                SeedError();
+                vm.SelectedDatabase = db1;
+                AssertErrorCleared(nameof(MainViewModel.SelectedDatabase));
+
+                // 6. TargetCollation
+                SeedError();
+                vm.TargetCollation = "Latin1_General_100_BIN2";
+                AssertErrorCleared(nameof(MainViewModel.TargetCollation));
+
+                // 7. BackupDirectory
+                SeedError();
+                vm.BackupDirectory = @"C:\CustomBackups";
+                AssertErrorCleared(nameof(MainViewModel.BackupDirectory));
+            });
+
+            RunSyncTest("MainViewModel_InputMutations_RapidKeystrokes_DoNotCauseRedundantNotifications", () =>
+            {
+                var mockService = new MockDatabaseService();
+                var vm = new MainViewModel(mockService);
+
+                // Seed error once
+                vm.SetStatus("Initial error", "Error tooltip", "Stack trace details");
+                Assert(vm.HasDetailedError == true, "Precondition: HasDetailedError should be true.");
+
+                var propertyNotifications = new List<string>();
+                vm.PropertyChanged += (s, e) =>
+                {
+                    if (e.PropertyName != null)
                     {
-                        notifiedPropertiesBusy.Add(args.PropertyName);
+                        propertyNotifications.Add(e.PropertyName);
                     }
                 };
 
-                vmBusy.SelectedAuthenticationType = "SQL Server Authentication";
-                Assert(notifiedPropertiesBusy.Contains(nameof(MainViewModel.CanEditSqlCredentials)),
-                    "Expected PropertyChanged for CanEditSqlCredentials even when IsBusy is true.");
-                Assert(!vmBusy.CanEditSqlCredentials,
-                    "CanEditSqlCredentials must evaluate to false when IsBusy is true even if SQL Server Auth is selected.");
+                // First keystroke mutates ServerName and clears error
+                vm.ServerName = "ServerA";
+                Assert(propertyNotifications.Contains(nameof(MainViewModel.ServerName)), "Expected PropertyChanged for ServerName.");
+                Assert(propertyNotifications.Contains(nameof(MainViewModel.DetailedError)), "Expected PropertyChanged for DetailedError on first mutation.");
+                Assert(propertyNotifications.Contains(nameof(MainViewModel.HasDetailedError)), "Expected PropertyChanged for HasDetailedError on first mutation.");
+                Assert(vm.HasDetailedError == false, "HasDetailedError should now be false.");
+
+                propertyNotifications.Clear();
+
+                // Subsequent keystroke while HasDetailedError is already false:
+                // must NOT raise DetailedError or HasDetailedError notifications
+                vm.ServerName = "ServerAB";
+                Assert(propertyNotifications.Contains(nameof(MainViewModel.ServerName)), "Expected PropertyChanged for ServerName.");
+                Assert(!propertyNotifications.Contains(nameof(MainViewModel.DetailedError)), "DetailedError notification should NOT fire on subsequent keystrokes.");
+                Assert(!propertyNotifications.Contains(nameof(MainViewModel.HasDetailedError)), "HasDetailedError notification should NOT fire on subsequent keystrokes.");
+
+                propertyNotifications.Clear();
+
+                // Identical value assignment (no-op keystroke/focus change):
+                // must not raise ANY property changed notifications
+                vm.ServerName = "ServerAB";
+                Assert(propertyNotifications.Count == 0, $"Expected 0 notifications for identical value assignment, got {propertyNotifications.Count}");
+
+                // Repeat for TargetCollation
+                vm.TargetCollation = "Collation1";
+                propertyNotifications.Clear();
+
+                vm.TargetCollation = "Collation1";
+                Assert(propertyNotifications.Count == 0, $"Expected 0 notifications for unchanged TargetCollation, got {propertyNotifications.Count}");
+
+                vm.TargetCollation = "Collation2";
+                Assert(propertyNotifications.Contains(nameof(MainViewModel.TargetCollation)), "Expected PropertyChanged for TargetCollation.");
+                Assert(!propertyNotifications.Contains(nameof(MainViewModel.DetailedError)), "DetailedError notification should NOT fire when HasDetailedError was false.");
+                Assert(!propertyNotifications.Contains(nameof(MainViewModel.HasDetailedError)), "HasDetailedError notification should NOT fire when HasDetailedError was false.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
