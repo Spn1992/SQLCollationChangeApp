@@ -3,16 +3,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:viewmodels="clr-namespace:CollationModifier.ViewModels"
         mc:Ignorable="d"
         xml:lang="en"
         Language="en-US"
         Title="Collation Modifier Utility" Height="650" Width="900"
         WindowStartupLocation="CenterScreen">
-
-    <Window.DataContext>
-        <viewmodels:MainViewModel />
-    </Window.DataContext>
 
     <Grid>
         <!-- Main Content Area -->
@@ -66,7 +61,7 @@
             <Border Grid.Column="1" Padding="32" Background="#F8FAFC">
                 <Grid>
                     <!-- Overlay to disable interaction when not connected -->
-                    <Border Background="#F8FAFC" Panel.ZIndex="5" Opacity="0.8">
+                    <Border Background="{StaticResource OverlayBackgroundBrush}" Panel.ZIndex="5">
                         <Border.Style>
                             <Style TargetType="Border">
                                 <Setter Property="Visibility" Value="Collapsed" />
@@ -81,7 +76,7 @@
                                    AutomationProperties.Name="Please connect to a server to continue."
                                    AutomationProperties.LiveSetting="Polite"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
-                                   Foreground="#64748B" FontSize="16" />
+                                   Foreground="{StaticResource OverlayForegroundBrush}" FontSize="16" />
                     </Border>
 
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -226,8 +221,4 @@
             </DockPanel>
         </Border>
     </Grid>
-
-    <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-    </Window.Resources>
 </Window>
