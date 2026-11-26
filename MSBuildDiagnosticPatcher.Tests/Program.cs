@@ -116,6 +116,13 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
 
+            // 10. Single-Pass Streaming & Regex Guard Regression Tests
+            RunTest("AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar", Test_AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar);
+            RunTest("MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord", Test_MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord);
+            RunTest("MSBuildLogParser_Guards_FastOnSevenColonProseLines", Test_MSBuildLogParser_Guards_FastOnSevenColonProseLines);
+            RunTest("TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures", Test_TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures);
+            RunTest("LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs", Test_LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs);
+
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
             Console.WriteLine("=================================================");
@@ -2698,5 +2705,188 @@ Actual:   Process aborted
         }
 
         private static string FindLauncherCmdPath() => FindLauncherScriptPath("msbuild-patcher.cmd");
+
+        // 10. Single-Pass Streaming & Regex Guard Regression Tests
+        static void Test_AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar()
+        {
+            string trimmedPlain = "Services/DatabaseService.cs(11,36): error CS0535: Missing member";
+            string cleaned = AnsiCleaner.Clean(trimmedPlain);
+            Assert(object.ReferenceEquals(trimmedPlain, cleaned), "Expected already-trimmed plain string without '\\x1B' to return same string instance.");
+
+            string untrimmedPlain = "   Build succeeded with 0 warnings.   ";
+            Assert(AnsiCleaner.Clean(untrimmedPlain) == "Build succeeded with 0 warnings.", "Expected whitespace trimming on plain string without '\\x1B'.");
+
+            string escaped = "  \u001b[32mBuild succeeded.\u001b[0m  ";
+            Assert(AnsiCleaner.Clean(escaped) == "Build succeeded.", "Expected ANSI stripping and trimming when '\\x1B' is present.");
+        }
+
+        static void Test_MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord()
+        {
+            var parser = new MSBuildLogParser();
+
+            var cases = new (string Line, string ExpectedCode, DiagnosticSeverity ExpectedSeverity)[]
+            {
+                ("csc : error cs0535a: Lowercase CS prefix with trailing letter", "CS0535A", DiagnosticSeverity.Error),
+                ("vbc : warning bc20010: Lowercase BC 5-digit code", "BC20010", DiagnosticSeverity.Warning),
+                ("fsc : info fs0074: Lowercase FS info code", "FS0074", DiagnosticSeverity.Info),
+                ("MSBUILD : custom fatal notice msb1003: Unrecognized multi-word severity defaults to Error", "MSB1003", DiagnosticSeverity.Error),
+                ("/app/App.csproj : CriticalAlert Netsdk1045: Mixed-case NETSDK code with custom severity", "NETSDK1045", DiagnosticSeverity.Error),
+                ("/app/App.csproj : warning Nu1605: Mixed-case NU code", "NU1605", DiagnosticSeverity.Warning)
+            };
+
+            foreach (var testCase in cases)
+            {
+                var diag = parser.ParseLine(testCase.Line);
+                Assert(diag != null, $"Expected diagnostic to parse for: {testCase.Line}");
+                Assert(diag!.Code == testCase.ExpectedCode, $"Expected code {testCase.ExpectedCode}, got {diag.Code}");
+                Assert(diag.Severity == testCase.ExpectedSeverity, $"Expected severity {testCase.ExpectedSeverity}, got {diag.Severity}");
+            }
+
+            // Non-supported prefix without coordinates should be rejected quickly by guard
+            Assert(parser.ParseLine("tool : error XY1234: Unsupported coordinate-free prefix") == null, "Expected unsupported prefix XY1234 without coordinates to return null.");
+        }
+
+        static void Test_MSBuildLogParser_Guards_FastOnSevenColonProseLines()
+        {
+            var parser = new MSBuildLogParser();
+            var lines = new List<string>(10_000);
+            for (int i = 0; i < 10_000; i++)
+            {
+                lines.Add($"Build agent pipeline stage: Restore project packages: Compile application sources: Execute unit test suite: Verify build artifacts: Upload diagnostic summary: Publish workflow status: Completed {i}");
+            }
+
+            string proseLog = string.Join("\n", lines);
+            var sw = Stopwatch.StartNew();
+            var diags = parser.ParseText(proseLog);
+            sw.Stop();
+
+            Assert(diags.Count == 0, $"Expected 0 diagnostics on seven-colon prose lines, got {diags.Count}");
+            Assert(sw.Elapsed.TotalMilliseconds < 135.48, $"Expected 10,000 seven-colon prose lines under 135.48 ms, took {sw.Elapsed.TotalMilliseconds:F2} ms");
+        }
+
+        static void Test_TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures()
+        {
+            var parser = new TestExecutionLogParser();
+            string log = string.Join("\r\n", new[]
+            {
+                "  fail: CustomSuite.FirstTest - Assertion Failed: Expected 42 but got 0",
+                "   at CustomSuite.FirstTest() in /src/Tests.cs:line 12",
+                "   --- End of inner exception stack trace ---",
+                "   at CustomSuite.Runner() in /src/Tests.cs:line 30",
+                "  failed DotnetSuite.SecondTest [19 ms]",
+                "  Error Message:",
+                "   Expected true, was false",
+                "  Stack Trace:",
+                "   at DotnetSuite.SecondTest() in /src/DotnetTests.cs:line 55",
+                "  failed DotnetSuite.ThirdTest [5 ms]",
+                "  Error Message:",
+                "   NullReferenceException",
+                "  [fail] BracketSuite.FourthTest: Connection timed out",
+                "  Passed DotnetSuite.PassingTest [2 ms]"
+            });
+
+            var failures = parser.ParseText(log);
+            Assert(failures.Count == 4, $"Expected 4 failures, got {failures.Count}");
+
+            Assert(failures[0].TestClass == "CustomSuite" && failures[0].TestMethod == "FirstTest", "Mismatch on failure 0 name");
+            Assert(failures[0].StackTrace.Contains("End of inner exception stack trace") && failures[0].StackTrace.Contains("CustomSuite.Runner"), "Mismatch on failure 0 stack trace");
+
+            Assert(failures[1].TestClass == "DotnetSuite" && failures[1].TestMethod == "SecondTest", "Mismatch on failure 1 name");
+            Assert(failures[1].AssertionFailureMessage == "Expected true, was false", $"Mismatch on failure 1 message: {failures[1].AssertionFailureMessage}");
+            Assert(failures[1].StackTrace.Contains("DotnetSuite.SecondTest"), "Mismatch on failure 1 stack trace");
+
+            Assert(failures[2].TestClass == "DotnetSuite" && failures[2].TestMethod == "ThirdTest", "Mismatch on failure 2 name");
+            Assert(failures[2].AssertionFailureMessage == "NullReferenceException", $"Mismatch on failure 2 message: {failures[2].AssertionFailureMessage}");
+            Assert(failures[2].StackTrace == string.Empty, "Expected empty stack trace on failure 2");
+
+            Assert(failures[3].TestClass == "BracketSuite" && failures[3].TestMethod == "FourthTest", "Mismatch on failure 3 name");
+            Assert(failures[3].AssertionFailureMessage == "Connection timed out", $"Mismatch on failure 3 message: {failures[3].AssertionFailureMessage}");
+        }
+
+        static void Test_LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"stream_equiv_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string mixedLog = string.Join("\r\n", new[]
+                {
+                    "  Determining projects to restore...",
+                    "\u001b[31;1mServices/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]\u001b[0m",
+                    "  2026-11-24 08:30:15: Stage 1: Step 2: Action 3: Target 4: Task 5: Detail 6: Done",
+                    "MSBUILD : unexpected MSB1003: Unrecognized severity fallback check",
+                    "ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [CollationModifier.csproj]",
+                    "Failed MainViewModelTests.FirstFailure [45 ms]",
+                    "  /app/Interleaved.csproj : error NU1605: Interleaved error inside lookahead block [/app/Interleaved.csproj]",
+                    "  Error Message:",
+                    "   Assertion Failed: Expected status ready",
+                    "  Stack Trace:",
+                    "   at CollationModifier.Tests.MainViewModelTests.FirstFailure() in /app/Tests.cs:line 80",
+                    "   at CollationModifier.Tests.MainViewModelTests.RunAsync() in /app/Tests.cs:line 120",
+                    "Failed DatabaseServiceTests.SecondFailure [60 ms]",
+                    "  Error Message:",
+                    "   Assertion Failed: Database was not put in SINGLE_USER mode",
+                    "  Stack Trace:",
+                    "   at CollationModifier.Tests.DatabaseServiceTests.SecondFailure() in /app/DbTests.cs:line 150",
+                    "FAIL: CustomRunnerSuite.ThirdFailure - System.Exception: Assertion Failed: Timeout",
+                    "   at CustomRunnerSuite.ThirdFailure() in /app/CustomTests.cs:line 44",
+                    "  [FAIL] BracketRunner.FourthFailure: Unexpected state",
+                    "CollationModifier.csproj : info netSDK1045: Informational SDK message"
+                });
+
+                string logPath = Path.Combine(tempDir, "mixed.log");
+                File.WriteAllText(logPath, mixedLog);
+
+                var msbDual = new MSBuildLogParser();
+                var testDual = new TestExecutionLogParser();
+                var expectedDiags = msbDual.ParseText(mixedLog);
+                var expectedFailures = testDual.ParseText(mixedLog);
+
+                var msbStream = new MSBuildLogParser();
+                var testStream = new TestExecutionLogParser();
+                List<CompilerDiagnostic> streamedDiags;
+                List<TestFailure> streamedFailures;
+                using (var reader = new StreamReader(logPath))
+                {
+                    (streamedDiags, streamedFailures) = LogStreamParser.Parse(reader, msbStream, testStream);
+                }
+
+                Assert(expectedDiags.Count == 5, $"Expected 5 diagnostics, got {expectedDiags.Count}");
+                Assert(streamedDiags.Count == expectedDiags.Count, $"Diagnostic count mismatch: {streamedDiags.Count} vs {expectedDiags.Count}");
+                for (int i = 0; i < expectedDiags.Count; i++)
+                {
+                    Assert(streamedDiags[i].Code == expectedDiags[i].Code, $"Diag[{i}].Code mismatch");
+                    Assert(streamedDiags[i].Severity == expectedDiags[i].Severity, $"Diag[{i}].Severity mismatch");
+                    Assert(streamedDiags[i].FilePath == expectedDiags[i].FilePath, $"Diag[{i}].FilePath mismatch");
+                    Assert(streamedDiags[i].LineNumber == expectedDiags[i].LineNumber, $"Diag[{i}].LineNumber mismatch");
+                    Assert(streamedDiags[i].ColumnNumber == expectedDiags[i].ColumnNumber, $"Diag[{i}].ColumnNumber mismatch");
+                    Assert(streamedDiags[i].Message == expectedDiags[i].Message, $"Diag[{i}].Message mismatch");
+                    Assert(streamedDiags[i].ProjectPath == expectedDiags[i].ProjectPath, $"Diag[{i}].ProjectPath mismatch");
+                    Assert(streamedDiags[i].RawLine == expectedDiags[i].RawLine, $"Diag[{i}].RawLine mismatch");
+                }
+
+                Assert(expectedFailures.Count == 4, $"Expected 4 test failures, got {expectedFailures.Count}");
+                Assert(streamedFailures.Count == expectedFailures.Count, $"Failure count mismatch: {streamedFailures.Count} vs {expectedFailures.Count}");
+                for (int i = 0; i < expectedFailures.Count; i++)
+                {
+                    Assert(streamedFailures[i].TestClass == expectedFailures[i].TestClass, $"Failure[{i}].TestClass mismatch");
+                    Assert(streamedFailures[i].TestMethod == expectedFailures[i].TestMethod, $"Failure[{i}].TestMethod mismatch");
+                    Assert(streamedFailures[i].AssertionFailureMessage == expectedFailures[i].AssertionFailureMessage, $"Failure[{i}].AssertionFailureMessage mismatch");
+                    Assert(streamedFailures[i].StackTrace == expectedFailures[i].StackTrace, $"Failure[{i}].StackTrace mismatch");
+                    Assert(streamedFailures[i].RawLine == expectedFailures[i].RawLine, $"Failure[{i}].RawLine mismatch");
+                }
+
+                string outDir = Path.Combine(tempDir, "out");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logPath, "-o", outDir });
+                Assert(exitCode == 1, $"Expected Program.Main exit code 1 on mixed failing log, got {exitCode}");
+                Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.json")), "Expected diagnostic-report.json to be written");
+                Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.md")), "Expected diagnostic-report.md to be written");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
     }
 }
