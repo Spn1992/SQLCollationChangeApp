@@ -36,6 +36,7 @@ namespace CollationModifier.Tests
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
+        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
@@ -126,8 +127,12 @@ namespace CollationModifier.Tests
             return Task.CompletedTask;
         }
 
-        public Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
+        public async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
+            if (OnPreflightCheck != null)
+            {
+                await OnPreflightCheck(cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
             if (!string.IsNullOrEmpty(targetCollation))
@@ -151,7 +156,7 @@ namespace CollationModifier.Tests
                     DatabaseService.EvaluateCollation(databaseName, currentCollation, targetCollation, PreflightReportToReturn);
                 }
             }
-            return Task.FromResult(PreflightReportToReturn);
+            return PreflightReportToReturn;
         }
 
         public async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
@@ -229,6 +234,30 @@ namespace CollationModifier.Tests
         }
     }
 
+    public sealed class RecordedSqlCommand
+    {
+        public string CommandText { get; }
+        public int TimeoutSeconds { get; }
+        public CancellationToken CancellationToken { get; }
+        public bool CanBeCanceled { get; }
+        public bool WasCancellationRequestedAtEntry { get; }
+        public SqlParameter[] Parameters { get; }
+
+        public RecordedSqlCommand(
+            string commandText,
+            int timeoutSeconds,
+            CancellationToken cancellationToken,
+            SqlParameter[] parameters)
+        {
+            CommandText = commandText;
+            TimeoutSeconds = timeoutSeconds;
+            CancellationToken = cancellationToken;
+            CanBeCanceled = cancellationToken.CanBeCanceled;
+            WasCancellationRequestedAtEntry = cancellationToken.IsCancellationRequested;
+            Parameters = parameters;
+        }
+    }
+
     public class TestableDatabaseService : DatabaseService
     {
         public int GetSupportedCollationsCallCount { get; private set; }
@@ -238,6 +267,13 @@ namespace CollationModifier.Tests
             "Latin1_General_100_CI_AS"
         };
         public bool ThrowOnGetSupportedCollations { get; set; } = false;
+
+        public bool SimulateConnectionOpen { get; set; } = false;
+        public Func<SqlConnection, CancellationToken, Task>? OnOpenConnection { get; set; }
+        public Func<SqlCommand, CancellationToken, Task<int>>? OnExecuteCommand { get; set; }
+        public PreflightReport? SimulatedPreflightReport { get; set; }
+        public List<CancellationToken> RecordedOpenTokens { get; } = new List<CancellationToken>();
+        public List<RecordedSqlCommand> ExecutedCommands { get; } = new List<RecordedSqlCommand>();
 
         public TestableDatabaseService(LoggerService logger) : base(logger) { }
 
@@ -250,6 +286,98 @@ namespace CollationModifier.Tests
                 throw new InvalidOperationException("Failed to fetch supported collations from testable mock.");
             }
             return Task.FromResult(new List<string>(CollationsToReturn));
+        }
+
+        public override Task<PreflightReport> PreflightCheckAsync(
+            string databaseName,
+            string backupDirectory = "",
+            string targetCollation = "",
+            CancellationToken cancellationToken = default)
+        {
+            if (SimulatedPreflightReport != null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.FromResult(SimulatedPreflightReport);
+            }
+
+            return base.PreflightCheckAsync(databaseName, backupDirectory, targetCollation, cancellationToken);
+        }
+
+        protected internal override async Task OpenConnectionAsync(
+            SqlConnection connection,
+            CancellationToken cancellationToken = default)
+        {
+            RecordedOpenTokens.Add(cancellationToken);
+
+            if (OnOpenConnection != null)
+            {
+                await OnOpenConnection(connection, cancellationToken);
+                return;
+            }
+
+            if (SimulateConnectionOpen || OnExecuteCommand != null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return;
+            }
+
+            await base.OpenConnectionAsync(connection, cancellationToken);
+        }
+
+        protected internal override async Task<int> ExecuteNonQueryAsync(
+            SqlConnection connection,
+            string commandText,
+            int timeoutSeconds = 3600,
+            CancellationToken cancellationToken = default,
+            params SqlParameter[] parameters)
+        {
+            ExecutedCommands.Add(new RecordedSqlCommand(
+                commandText,
+                timeoutSeconds,
+                cancellationToken,
+                parameters ?? Array.Empty<SqlParameter>()));
+
+            if (OnExecuteCommand != null)
+            {
+                NonQueryCommandExecutor = OnExecuteCommand;
+            }
+            else if (SimulateConnectionOpen)
+            {
+                NonQueryCommandExecutor = (_, ct) =>
+                {
+                    ct.ThrowIfCancellationRequested();
+                    return Task.FromResult(0);
+                };
+            }
+            else
+            {
+                NonQueryCommandExecutor = null;
+            }
+
+            return await base.ExecuteNonQueryAsync(
+                connection,
+                commandText,
+                timeoutSeconds,
+                cancellationToken,
+                parameters ?? Array.Empty<SqlParameter>());
+        }
+
+        public static SqlException CreateSimulatedSqlException(
+            string message = "A severe error occurred on the current command.  The results, if any, should be discarded.")
+        {
+            var errorCollection = (SqlErrorCollection)Activator.CreateInstance(typeof(SqlErrorCollection), nonPublic: true)!;
+            var ctor = typeof(SqlException).GetConstructor(
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
+                binder: null,
+                types: new[] { typeof(string), typeof(SqlErrorCollection), typeof(Exception), typeof(Guid) },
+                modifiers: null);
+
+            if (ctor != null)
+            {
+                return (SqlException)ctor.Invoke(new object?[] { message, errorCollection, null, Guid.NewGuid() });
+            }
+
+            throw new InvalidOperationException("Unable to construct simulated SqlException via reflection.");
         }
     }
 
@@ -1265,6 +1393,67 @@ namespace CollationModifier.Tests
                 await vm.ProcessCollationChangeAsync();
 
                 Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked if cancelled before backup completes.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync should NOT be invoked if cancelled before alteration starts.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SkipsMultiUserReset_WhenCancelledDuringPreflight", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelDuringPreflightDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnPreflightCheck = async token =>
+                {
+                    vm.Cancel();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 0, "BackupDatabaseAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(mockService.RestoreCount == 0, "RestoreDatabaseAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync should NOT be invoked when cancelled during pre-flight.");
+                Assert(!vm.HasDetailedError, "HasDetailedError should be false when pre-alter cancellation skips TrySetMultiUserAsync.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_SkipsMultiUserReset_WhenCancelledAfterBackupBeforeAlter", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelAfterBackupBeforeAlterDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    ShouldTrySetMultiUserFail = true
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                // Cancel after BackupDatabaseAsync passes its token check so backup completes,
+                // triggering cancellation right before AlterCollationAsync starts.
+                mockService.BackupProgressSimulator = _ => vm.Cancel();
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(mockService.BackupCount == 1, "BackupDatabaseAsync should have completed before post-backup cancellation check.");
+                Assert(mockService.RestoreCount == 1, "RestoreDatabaseAsync should still be invoked when backup completed before cancellation.");
+                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync should NOT have started.");
+                Assert(mockService.TrySetMultiUserCount == 0, "TrySetMultiUserAsync should NOT be invoked when cancelled before AlterCollationAsync starts.");
+                Assert(mockService.IsMultiUser, "Database must remain in MULTI_USER mode after restore.");
+                Assert(!vm.HasDetailedError, "HasDetailedError should be false when restore succeeds and unnecessary TrySetMultiUserAsync is skipped.");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Status message should indicate cancellation by user, got: '{vm.StatusMessage}'");
             });
 
@@ -3010,6 +3199,7 @@ namespace CollationModifier.Tests
 
                 Assert(!vm.IsBusy, "MainViewModel IsBusy should reset to false after cancellation.");
                 Assert(mockService.TrySetMultiUserCount > 0, "TrySetMultiUserAsync must be called during cancellation recovery.");
+                Assert(mockService.TrySetMultiUserCount == 1, $"Expected TrySetMultiUserCount to be 1 during alteration cancellation, got {mockService.TrySetMultiUserCount}.");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected 'Operation cancelled by user.' status, got: '{vm.StatusMessage}'");
                 Assert(vm.ProgressPercent == 0, "ProgressPercent should reset to 0 after cancellation.");
             });
@@ -4224,6 +4414,613 @@ namespace CollationModifier.Tests
                 Assert(isDefaultAttr != null, "btnConnect must declare IsDefault attribute.");
                 Assert(isDefaultAttr.Contains("CanEditConnectionParameters"),
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
+            });
+
+            RunSyncTest("MainWindowXaml_DoesNotInstantiateParameterlessMainViewModel_AndCodeBehindInjectsAppLogger", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string xamlContent = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(xamlContent);
+                Assert(!doc.Descendants().Any(e => e.Name.LocalName == "Window.DataContext"),
+                    "MainWindow.xaml must not declaratively set Window.DataContext.");
+                Assert(!doc.Descendants().Any(e => e.Name.LocalName == "MainViewModel"),
+                    "MainWindow.xaml must not declaratively instantiate a parameterless MainViewModel.");
+
+                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+
+                string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
+                Assert(csContent.Contains("(Application.Current as App)?.Logger"),
+                    "MainWindow.xaml.cs should retrieve App.Logger from Application.Current.");
+                Assert(csContent.Contains("new MainViewModel(logger: logger)"),
+                    "MainWindow.xaml.cs should pass the injected logger to MainViewModel.");
+
+                string appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml.cs"));
+                if (!System.IO.File.Exists(appXamlCsPath))
+                {
+                    appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(appXamlCsPath))
+                {
+                    appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(appXamlCsPath), $"App.xaml.cs file should exist at path {appXamlCsPath}");
+
+                string appCsContent = System.IO.File.ReadAllText(appXamlCsPath);
+                int onExitStart = appCsContent.IndexOf("protected override void OnExit");
+                Assert(onExitStart >= 0, "App.xaml.cs must define OnExit.");
+                int onExitEnd = appCsContent.IndexOf("base.OnExit(e);", onExitStart);
+                string onExitBody = appCsContent.Substring(onExitStart, onExitEnd - onExitStart);
+                Assert(!onExitBody.Contains("_logger?.Flush()") && !onExitBody.Contains("_logger.Flush()"),
+                    "App.OnExit must not call redundant Flush() before Dispose().");
+                Assert(onExitBody.Contains("_logger?.Dispose()"),
+                    "App.OnExit must call _logger?.Dispose() once.");
+            });
+
+            await RunAsyncTest("MainViewModel_Dispose_WithExternalLogger_CancelsCtsUnder5Ms_AndLeavesLoggerActive", async () =>
+            {
+                string logDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"vm_ext_logger_{Guid.NewGuid():N}");
+                string logPath = System.IO.Path.Combine(logDir, "app.log");
+
+                try
+                {
+                    using (var externalLogger = new LoggerService(logPath))
+                    {
+                        // Pre-JIT Dispose on a throwaway ViewModel so Stopwatch measures steady-state execution
+                        var warmupVm = new MainViewModel(new MockDatabaseService(), externalLogger);
+                        warmupVm.Dispose();
+
+                        var connectStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                        var mockService = new MockDatabaseService
+                        {
+                            OnTestConnection = async token =>
+                            {
+                                connectStarted.TrySetResult(true);
+                                var cancelTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                                using var reg = token.Register(() => cancelTcs.TrySetCanceled(token));
+                                return await cancelTcs.Task;
+                            }
+                        };
+
+                        var vm = new MainViewModel(mockService, externalLogger);
+                        var connectTask = vm.ConnectAsync();
+                        await connectStarted.Task;
+
+                        var sw = System.Diagnostics.Stopwatch.StartNew();
+                        vm.Dispose();
+                        sw.Stop();
+
+                        Assert(sw.Elapsed.TotalMilliseconds < 5.0,
+                            $"Disposing MainViewModel with external logger must cancel _cts in under 5 ms, took {sw.Elapsed.TotalMilliseconds:F3} ms.");
+
+                        await connectTask;
+                        Assert(!vm.IsConnected, "ConnectAsync should abort when MainViewModel.Dispose cancels _cts.");
+                        Assert(vm.StatusMessage == "Operation cancelled by user.",
+                            $"Expected cancellation status after Dispose, got '{vm.StatusMessage}'");
+
+                        Assert(!externalLogger.IsDisposed, "External LoggerService must NOT be disposed when MainViewModel is disposed.");
+                        externalLogger.LogInfo("Post-MainViewModel-dispose active log message");
+                    }
+
+                    Assert(System.IO.File.Exists(logPath), "External logger should flush log file upon its own disposal.");
+                    string logContent = System.IO.File.ReadAllText(logPath);
+                    Assert(logContent.Contains("Post-MainViewModel-dispose active log message"),
+                        "External logger must remain active and write entries logged after MainViewModel.Dispose.");
+                }
+                finally
+                {
+                    if (System.IO.Directory.Exists(logDir))
+                    {
+                        System.IO.Directory.Delete(logDir, recursive: true);
+                    }
+                }
+            });
+
+            RunSyncTest("MainViewModel_Dispose_WithNullLogger_DisposesOwnedFallbackLogger", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService(), logger: null);
+                var loggerField = typeof(MainViewModel).GetField("_logger", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                Assert(loggerField != null, "MainViewModel should have private _logger field.");
+
+                var fallbackLogger = (LoggerService)loggerField!.GetValue(vm)!;
+                Assert(!fallbackLogger.IsDisposed, "Fallback logger should be active before MainViewModel.Dispose.");
+
+                vm.Dispose();
+                Assert(fallbackLogger.IsDisposed, "Fallback logger created by MainViewModel must be disposed when MainViewModel is disposed.");
+            });
+
+            RunSyncTest("MainViewModel_OpenLogFile_BeforeLoggingStarts_PreservesMissingFileFallbackMessage", () =>
+            {
+                string missingDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"vm_openlog_missing_{Guid.NewGuid():N}");
+                string logPath = System.IO.Path.Combine(missingDir, "log_missing.txt");
+
+                try
+                {
+                    using var logger = new LoggerService(logPath);
+                    Assert(!System.IO.Directory.Exists(missingDir), "Lazy logger should not create directory before logging.");
+
+                    var vm = new MainViewModel(new MockDatabaseService(), logger);
+                    vm.OpenLogFile();
+
+                    Assert(vm.StatusMessage == "Log file does not exist yet.",
+                        $"Expected 'Log file does not exist yet.', got '{vm.StatusMessage}'");
+                    Assert(!System.IO.Directory.Exists(missingDir), "OpenLogFile should not create missing log directory.");
+                }
+                finally
+                {
+                    if (System.IO.Directory.Exists(missingDir))
+                    {
+                        System.IO.Directory.Delete(missingDir, recursive: true);
+                    }
+                }
+            });
+
+            await RunAsyncTest("ShutdownPipeline_StalledStorage_ExecutesAtMostOneBoundedWaitAcrossWindowCloseAndExit", async () =>
+            {
+                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"shutdown_single_budget_{Guid.NewGuid():N}.txt");
+                var workerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var releaseWorker = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                try
+                {
+                    var sharedAppLogger = new LoggerService(logPath, async reader =>
+                    {
+                        workerStarted.TrySetResult(true);
+                        await reader.WaitToReadAsync().ConfigureAwait(false);
+                        await releaseWorker.Task.ConfigureAwait(false);
+                    });
+
+                    await workerStarted.Task;
+                    var vm = new MainViewModel(new MockDatabaseService(), sharedAppLogger);
+                    sharedAppLogger.LogError("Unhandled error before exit");
+
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+
+                    // 1. Pre-shutdown bounded flush (simulating GlobalExceptionHandler)
+                    GlobalExceptionHandler.FlushLogger(sharedAppLogger, TimeSpan.FromMilliseconds(200));
+
+                    // 2. MainWindow.Closed -> MainViewModel.Dispose() (0ms on logger)
+                    var closeSw = System.Diagnostics.Stopwatch.StartNew();
+                    vm.Dispose();
+                    closeSw.Stop();
+
+                    // 3. App.OnExit -> sharedAppLogger.Dispose() (short-circuits terminal wait via atomic flag)
+                    sharedAppLogger.Dispose();
+
+                    sw.Stop();
+
+                    Assert(closeSw.Elapsed.TotalMilliseconds < 5.0,
+                        $"MainWindow close disposal should not block on shared logger, took {closeSw.Elapsed.TotalMilliseconds:F3} ms.");
+                    Assert(sw.ElapsedMilliseconds >= 150 && sw.ElapsedMilliseconds < 380,
+                        $"Expected single ~200ms wait across GlobalExceptionHandler, MainWindow.Closed, and App.OnExit, but took {sw.ElapsedMilliseconds} ms.");
+                }
+                finally
+                {
+                    releaseWorker.TrySetResult(true);
+                    if (System.IO.File.Exists(logPath))
+                    {
+                        System.IO.File.Delete(logPath);
+                    }
+                }
+            });
+
+            Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
+            if (failed > 0)
+            {
+                throw new InvalidOperationException($"MainViewModel tests failed with {failed} failures.");
+            }
+
+            await RunAsyncTest("DatabaseService_ExecuteNonQueryAsync_ForwardsCancellationToken_ToSqlCommand", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new DatabaseService(logger);
+                using var connection = new SqlConnection();
+
+                // Uncancelled token reaches SqlCommand connection check (InvalidOperationException on closed connection)
+                bool threwInvalidOpWhenUncancelled = false;
+                try
+                {
+                    await dbService.ExecuteNonQueryAsync(connection, "SELECT 1;", 3600, CancellationToken.None);
+                }
+                catch (InvalidOperationException)
+                {
+                    threwInvalidOpWhenUncancelled = true;
+                }
+                Assert(threwInvalidOpWhenUncancelled, "Uncancelled ExecuteNonQueryAsync on closed SqlConnection should reach SqlCommand execution.");
+
+                // Cancelled token is forwarded to SqlCommand.ExecuteNonQueryAsync(CancellationToken), throwing OperationCanceledException immediately
+                using var cts = new CancellationTokenSource();
+                cts.Cancel();
+
+                OperationCanceledException? caughtOce = null;
+                try
+                {
+                    await dbService.ExecuteNonQueryAsync(connection, "SELECT 1;", 3600, cts.Token);
+                }
+                catch (OperationCanceledException oce)
+                {
+                    caughtOce = oce;
+                }
+
+                Assert(caughtOce != null, "ExecuteNonQueryAsync must forward cancelled token to SqlCommand.ExecuteNonQueryAsync(CancellationToken) and throw OperationCanceledException.");
+            });
+
+            await RunAsyncTest("DatabaseService_ExecuteNonQueryAsync_TranslatesSqlExceptionToOperationCanceledException_WhenTokenCancelled", async () =>
+            {
+                using var logger = new LoggerService();
+                var simulatedSqlEx = TestableDatabaseService.CreateSimulatedSqlException("Operation cancelled by user.");
+
+                // 1. Active cancellation + SqlException -> OperationCanceledException with InnerException attached
+                var dbServiceCancelled = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true
+                };
+                using var cts = new CancellationTokenSource();
+                dbServiceCancelled.OnExecuteCommand = (_, ct) =>
+                {
+                    cts.Cancel();
+                    Assert(ct.IsCancellationRequested, "CancellationToken passed to command should reflect cancellation.");
+                    throw simulatedSqlEx;
+                };
+
+                using var conn1 = new SqlConnection();
+                OperationCanceledException? caughtCanceled = null;
+                try
+                {
+                    await dbServiceCancelled.ExecuteNonQueryAsync(conn1, "BACKUP DATABASE [TestDB] TO DISK = @BackupFile;", 3600, cts.Token, new SqlParameter("@BackupFile", "/tmp/test.bak"));
+                }
+                catch (OperationCanceledException oce)
+                {
+                    caughtCanceled = oce;
+                }
+
+                Assert(caughtCanceled != null, "SqlException raised after cancellation must surface as OperationCanceledException.");
+                Assert(ReferenceEquals(caughtCanceled!.InnerException, simulatedSqlEx), "OperationCanceledException must attach the original SqlException as InnerException.");
+                Assert(caughtCanceled.CancellationToken == cts.Token, "OperationCanceledException must carry the cancelled token.");
+
+                // 2. Non-cancelled token + SqlException -> rethrows original SqlException unwrapped
+                var dbServiceUncancelled = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true,
+                    OnExecuteCommand = (_, _) => throw simulatedSqlEx
+                };
+
+                using var conn2 = new SqlConnection();
+                SqlException? caughtSqlEx = null;
+                try
+                {
+                    await dbServiceUncancelled.ExecuteNonQueryAsync(conn2, "ALTER DATABASE [TestDB] COLLATE Latin1_General_100_CI_AS;", 3600, CancellationToken.None);
+                }
+                catch (SqlException sqlEx)
+                {
+                    caughtSqlEx = sqlEx;
+                }
+
+                Assert(ReferenceEquals(caughtSqlEx, simulatedSqlEx), "SqlException when token is NOT cancelled must propagate as SqlException.");
+            });
+
+            await RunAsyncTest("DatabaseService_SetDatabaseUserModeAsync_ForwardsTokenForSingleUser_AndEnforcesNoneForMultiUser", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true
+                };
+
+                using var connection = new SqlConnection();
+                using var singleUserCts = new CancellationTokenSource();
+
+                await dbService.SetDatabaseUserModeAsync(connection, "UserModeDB", "SINGLE_USER", singleUserCts.Token);
+                Assert(dbService.ExecutedCommands.Count == 1, "Expected 1 command for SINGLE_USER.");
+                Assert(dbService.ExecutedCommands[0].CommandText.Contains("SET SINGLE_USER WITH ROLLBACK IMMEDIATE"), "Expected SINGLE_USER statement.");
+                Assert(dbService.ExecutedCommands[0].CancellationToken == singleUserCts.Token, "SINGLE_USER must forward caller CancellationToken.");
+                Assert(dbService.ExecutedCommands[0].CanBeCanceled, "SINGLE_USER token must be cancelable.");
+
+                using var cancelledMultiUserCts = new CancellationTokenSource();
+                cancelledMultiUserCts.Cancel();
+
+                await dbService.SetDatabaseUserModeAsync(connection, "UserModeDB", "MULTI_USER", cancelledMultiUserCts.Token);
+                Assert(dbService.ExecutedCommands.Count == 2, "Expected 2nd command for MULTI_USER even when caller token is cancelled.");
+                Assert(dbService.ExecutedCommands[1].CommandText.Contains("SET MULTI_USER"), "Expected MULTI_USER statement.");
+                Assert(dbService.ExecutedCommands[1].CancellationToken == CancellationToken.None, "MULTI_USER must enforce CancellationToken.None.");
+                Assert(!dbService.ExecutedCommands[1].CanBeCanceled, "MULTI_USER token must not be cancelable.");
+            });
+
+            await RunAsyncTest("DatabaseService_WorkflowMethods_ForwardCancellationTokens_AndKeepMultiUserUncancelable", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true
+                };
+                dbService.SetConnectionString("localhost", "Windows Authentication", "", "");
+
+                // 1. BackupDatabaseAsync
+                using var backupCts = new CancellationTokenSource();
+                string backupPath = await dbService.BackupDatabaseAsync("WorkflowDB", "/tmp", null, backupCts.Token);
+                Assert(!string.IsNullOrEmpty(backupPath), "BackupDatabaseAsync should return backup file path.");
+                Assert(dbService.RecordedOpenTokens.Last() == backupCts.Token, "BackupDatabaseAsync must pass cancellationToken to OpenConnectionAsync.");
+                Assert(dbService.ExecutedCommands.Count == 1, $"Expected 1 backup command, got {dbService.ExecutedCommands.Count}.");
+                Assert(dbService.ExecutedCommands[0].CommandText.Contains("BACKUP DATABASE [WorkflowDB]"), "Expected BACKUP DATABASE command.");
+                Assert(dbService.ExecutedCommands[0].CancellationToken == backupCts.Token, "BackupDatabaseAsync must forward cancellationToken to BACKUP DATABASE.");
+
+                // 2. RestoreDatabaseAsync
+                dbService.ExecutedCommands.Clear();
+                dbService.RecordedOpenTokens.Clear();
+                using var restoreCts = new CancellationTokenSource();
+                await dbService.RestoreDatabaseAsync("WorkflowDB", backupPath, null, restoreCts.Token);
+                Assert(dbService.RecordedOpenTokens.Single() == restoreCts.Token, "RestoreDatabaseAsync must pass cancellationToken to OpenConnectionAsync.");
+                Assert(dbService.ExecutedCommands.Count == 4, $"Expected 4 restore commands, got {dbService.ExecutedCommands.Count}.");
+                Assert(dbService.ExecutedCommands[0].CommandText == "USE [master];" && dbService.ExecutedCommands[0].CancellationToken == restoreCts.Token,
+                    "RestoreDatabaseAsync must forward cancellationToken to USE [master].");
+                Assert(dbService.ExecutedCommands[1].CommandText.Contains("SET SINGLE_USER") && dbService.ExecutedCommands[1].CancellationToken == restoreCts.Token,
+                    "RestoreDatabaseAsync must forward cancellationToken to SINGLE_USER.");
+                Assert(dbService.ExecutedCommands[2].CommandText.Contains("RESTORE DATABASE [WorkflowDB]") && dbService.ExecutedCommands[2].CancellationToken == restoreCts.Token,
+                    "RestoreDatabaseAsync must forward cancellationToken to RESTORE DATABASE.");
+                Assert(dbService.ExecutedCommands[3].CommandText.Contains("SET MULTI_USER") && dbService.ExecutedCommands[3].CancellationToken == CancellationToken.None,
+                    "RestoreDatabaseAsync must execute MULTI_USER with CancellationToken.None.");
+
+                // 3. AlterCollationAsync
+                dbService.ExecutedCommands.Clear();
+                dbService.RecordedOpenTokens.Clear();
+                using var alterCts = new CancellationTokenSource();
+                await dbService.AlterCollationAsync("WorkflowDB", "Latin1_General_100_CI_AS", alterCts.Token);
+                Assert(dbService.RecordedOpenTokens.Single() == alterCts.Token, "AlterCollationAsync must pass cancellationToken to OpenConnectionAsync.");
+                Assert(dbService.ExecutedCommands.Count == 3, $"Expected 3 alter commands, got {dbService.ExecutedCommands.Count}.");
+                Assert(dbService.ExecutedCommands[0].CommandText.Contains("SET SINGLE_USER") && dbService.ExecutedCommands[0].CancellationToken == alterCts.Token,
+                    "AlterCollationAsync must forward cancellationToken to SINGLE_USER.");
+                Assert(dbService.ExecutedCommands[1].CommandText.Contains("ALTER DATABASE [WorkflowDB] COLLATE Latin1_General_100_CI_AS") && dbService.ExecutedCommands[1].CancellationToken == alterCts.Token,
+                    "AlterCollationAsync must forward cancellationToken to ALTER DATABASE COLLATE.");
+                Assert(dbService.ExecutedCommands[2].CommandText.Contains("SET MULTI_USER") && dbService.ExecutedCommands[2].CancellationToken == CancellationToken.None,
+                    "AlterCollationAsync must execute MULTI_USER with CancellationToken.None.");
+
+                // 4. TrySetMultiUserAsync ignores cancelled token
+                dbService.ExecutedCommands.Clear();
+                dbService.RecordedOpenTokens.Clear();
+                using var cancelledCts = new CancellationTokenSource();
+                cancelledCts.Cancel();
+                await dbService.TrySetMultiUserAsync("WorkflowDB", cancelledCts.Token);
+                Assert(dbService.RecordedOpenTokens.Single() == CancellationToken.None, "TrySetMultiUserAsync must open connection with CancellationToken.None.");
+                Assert(dbService.ExecutedCommands.Count == 1, "TrySetMultiUserAsync must execute MULTI_USER command.");
+                Assert(dbService.ExecutedCommands[0].CommandText.Contains("SET MULTI_USER") && dbService.ExecutedCommands[0].CancellationToken == CancellationToken.None,
+                    "TrySetMultiUserAsync must execute MULTI_USER with CancellationToken.None.");
+            });
+
+            await RunAsyncTest("TestableDatabaseService_CancelsSimulated30SecondCommands_InUnder100Milliseconds", async () =>
+            {
+                using var logger = new LoggerService();
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true
+                };
+                dbService.SetConnectionString("localhost", "Windows Authentication", "", "");
+
+                // Warm up paths so JIT overhead does not skew timing measurement
+                await dbService.BackupDatabaseAsync("WarmupDB", "/tmp", null, CancellationToken.None);
+                await dbService.RestoreDatabaseAsync("WarmupDB", "/tmp/warmup.bak", null, CancellationToken.None);
+                await dbService.AlterCollationAsync("WarmupDB", "Latin1_General_100_CI_AS", CancellationToken.None);
+
+                // 1. Cancel 30-second BackupDatabaseAsync after 50ms -> total latency < 100ms
+                dbService.OnExecuteCommand = async (cmd, ct) =>
+                {
+                    if (cmd.CommandText.Contains("BACKUP DATABASE"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    }
+                    return 0;
+                };
+
+                using (var cts = new CancellationTokenSource())
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    cts.CancelAfter(50);
+                    bool backupCanceled = false;
+                    try
+                    {
+                        await dbService.BackupDatabaseAsync("SlowBackupDB", "/tmp", null, cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        backupCanceled = true;
+                    }
+                    sw.Stop();
+
+                    Assert(backupCanceled, "Simulated 30-second backup must throw OperationCanceledException when cancelled.");
+                    Assert(sw.ElapsedMilliseconds < 100, $"Backup cancellation after 50ms must complete in under 100ms, took {sw.ElapsedMilliseconds}ms.");
+                }
+
+                // 2. Cancel 30-second AlterCollationAsync after 50ms -> total latency < 100ms and emergency MULTI_USER runs
+                dbService.ExecutedCommands.Clear();
+                dbService.OnExecuteCommand = async (cmd, ct) =>
+                {
+                    if (cmd.CommandText.Contains("COLLATE"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    }
+                    return 0;
+                };
+
+                using (var cts = new CancellationTokenSource())
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    cts.CancelAfter(50);
+                    bool alterCanceled = false;
+                    try
+                    {
+                        await dbService.AlterCollationAsync("SlowAlterDB", "Latin1_General_100_CI_AS", cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        alterCanceled = true;
+                    }
+                    sw.Stop();
+
+                    Assert(alterCanceled, "Simulated 30-second AlterCollationAsync must throw OperationCanceledException when cancelled.");
+                    Assert(sw.ElapsedMilliseconds < 100, $"AlterCollation cancellation after 50ms must complete in under 100ms, took {sw.ElapsedMilliseconds}ms.");
+                    Assert(dbService.ExecutedCommands.Any(c => c.CommandText.Contains("SET MULTI_USER") && c.CancellationToken == CancellationToken.None),
+                        "Emergency MULTI_USER reset must execute with CancellationToken.None on AlterCollation cancellation.");
+                }
+
+                // 3. Cancel 30-second RestoreDatabaseAsync after 50ms -> total latency < 100ms
+                dbService.ExecutedCommands.Clear();
+                dbService.OnExecuteCommand = async (cmd, ct) =>
+                {
+                    if (cmd.CommandText.Contains("RESTORE DATABASE"))
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                    }
+                    return 0;
+                };
+
+                using (var cts = new CancellationTokenSource())
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    cts.CancelAfter(50);
+                    bool restoreCanceled = false;
+                    try
+                    {
+                        await dbService.RestoreDatabaseAsync("SlowRestoreDB", "/tmp/slow.bak", null, cts.Token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        restoreCanceled = true;
+                    }
+                    sw.Stop();
+
+                    Assert(restoreCanceled, "Simulated 30-second RestoreDatabaseAsync must throw OperationCanceledException when cancelled.");
+                    Assert(sw.ElapsedMilliseconds < 100, $"RestoreDatabase cancellation after 50ms must complete in under 100ms, took {sw.ElapsedMilliseconds}ms.");
+                }
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_WithTestableDatabaseService_CancelsSlowBackup_WithoutRestore_AndUnlocksUI", async () =>
+            {
+                using var logger = new LoggerService();
+                var backupStarted = new TaskCompletionSource<bool>();
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true,
+                    SimulatedPreflightReport = new PreflightReport { DatabaseName = "SlowBackupCancelDB" },
+                    OnExecuteCommand = async (cmd, ct) =>
+                    {
+                        if (cmd.CommandText.Contains("BACKUP DATABASE"))
+                        {
+                            backupStarted.TrySetResult(true);
+                            await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                        }
+                        return 0;
+                    }
+                };
+                dbService.SetConnectionString("localhost", "Windows Authentication", "", "");
+
+                var vm = new MainViewModel(dbService)
+                {
+                    ConfirmCollationChangeHandler = (_, _) => true
+                };
+                var dbInfo = new DatabaseInfo { Name = "SlowBackupCancelDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(dbInfo);
+                vm.SelectedDatabase = dbInfo;
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                vm.BackupDirectory = "/tmp";
+
+                var processTask = vm.ProcessCollationChangeAsync();
+                await backupStarted.Task;
+
+                Assert(vm.IsBusy, "MainViewModel should hold IsBusy while backup is running.");
+
+                var cancelSw = System.Diagnostics.Stopwatch.StartNew();
+                vm.Cancel();
+                await processTask;
+                cancelSw.Stop();
+
+                Assert(cancelSw.ElapsedMilliseconds < 100, $"Cancelling slow backup should unlock workflow in under 100ms, took {cancelSw.ElapsedMilliseconds}ms.");
+                Assert(!vm.IsBusy, "MainViewModel.IsBusy must unlock immediately after backup cancellation.");
+                Assert(!dbService.ExecutedCommands.Any(c => c.CommandText.Contains("RESTORE DATABASE")),
+                    "RestoreDatabaseAsync must NOT run when backup was cancelled before completing.");
+                Assert(vm.StatusMessage == "Operation cancelled by user.",
+                    $"Expected StatusMessage 'Operation cancelled by user.', got '{vm.StatusMessage}'.");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_WithTestableDatabaseService_AttentionSqlExceptionDuringAlterCollation_RecoversAndSetsCancelledStatus", async () =>
+            {
+                using var logger = new LoggerService();
+                var alterStarted = new TaskCompletionSource<bool>();
+                var attentionSqlEx = TestableDatabaseService.CreateSimulatedSqlException(
+                    "A severe error occurred on the current command.  The results, if any, should be discarded.");
+
+                var dbService = new TestableDatabaseService(logger)
+                {
+                    SimulateConnectionOpen = true,
+                    SimulatedPreflightReport = new PreflightReport { DatabaseName = "AttentionCancelDB" },
+                    OnExecuteCommand = async (cmd, ct) =>
+                    {
+                        if (cmd.CommandText.Contains("COLLATE"))
+                        {
+                            alterStarted.TrySetResult(true);
+                            try
+                            {
+                                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                // Simulate SQL Server raising an attention SqlException after cancellation token triggers
+                                throw attentionSqlEx;
+                            }
+                        }
+                        return 0;
+                    }
+                };
+                dbService.SetConnectionString("localhost", "Windows Authentication", "", "");
+
+                var vm = new MainViewModel(dbService)
+                {
+                    ConfirmCollationChangeHandler = (_, _) => true
+                };
+                var dbInfo = new DatabaseInfo { Name = "AttentionCancelDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                vm.Databases.Add(dbInfo);
+                vm.SelectedDatabase = dbInfo;
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                vm.BackupDirectory = "/tmp";
+
+                var processTask = vm.ProcessCollationChangeAsync();
+                await alterStarted.Task;
+
+                vm.Cancel();
+                await processTask;
+
+                Assert(!vm.IsBusy, "MainViewModel.IsBusy must reset to false after attention-cancelled collation change.");
+                Assert(!vm.HasDetailedError, $"Attention cancellation should not record an error when rollback succeeds, got DetailedError: '{vm.DetailedError}'");
+                Assert(vm.StatusMessage == "Operation cancelled by user.",
+                    $"Expected StatusMessage 'Operation cancelled by user.', got '{vm.StatusMessage}'.");
+                Assert(dbInfo.Collation == "SQL_Latin1_General_CP1_CI_AS",
+                    "In-memory database collation must remain unchanged when alteration is cancelled.");
+
+                var restoreCommands = dbService.ExecutedCommands.Where(c => c.CommandText.Contains("RESTORE DATABASE")).ToList();
+                Assert(restoreCommands.Count == 1, $"Expected 1 backup rollback RESTORE DATABASE command, got {restoreCommands.Count}.");
+                Assert(restoreCommands[0].CancellationToken == CancellationToken.None,
+                    "Rollback RESTORE DATABASE command must execute with CancellationToken.None.");
+
+                var multiUserCommands = dbService.ExecutedCommands.Where(c => c.CommandText.Contains("SET MULTI_USER")).ToList();
+                Assert(multiUserCommands.Count >= 2, $"Expected emergency MULTI_USER reset commands to execute, got {multiUserCommands.Count}.");
+                Assert(multiUserCommands.All(c => c.CancellationToken == CancellationToken.None),
+                    "All MULTI_USER commands must execute with CancellationToken.None.");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");

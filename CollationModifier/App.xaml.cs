@@ -287,7 +287,6 @@ namespace CollationModifier
         {
             try
             {
-                _logger?.Flush();
                 _logger?.Dispose();
             }
             catch (Exception ex)

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using MSBuildDiagnosticPatcher.Models;
 using MSBuildDiagnosticPatcher.Parsers;
@@ -66,6 +66,9 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("InterfaceDefinitionResolver_Caching_ReadsFileOnce", Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce);
             RunTest("InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches", Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches);
             RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache);
+            RunTest("InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments", Test_InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments);
+            RunTest("InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType", Test_InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType);
+            RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets);
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
@@ -75,7 +78,11 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently", Test_PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
+            RunTest("PatchGenerator_CreatePatchForFile_MatchesReferenceAcrossLineEndingsAndEdgeCases", Test_PatchGenerator_CreatePatchForFile_LineEndingsAndEdgeCases);
+            RunTest("PatchGenerator_LargeFileDiff_MatchesReferenceWithBoundedAllocations", Test_PatchGenerator_LargeFileDiff_ExactOutputAndBoundedAllocations);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
+            RunTest("PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks", Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks);
+            RunTest("PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache", Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -85,12 +92,15 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("ReportGenerator_GenerateMarkdownReport_ProducesFormattedMarkdown", Test_ReportGenerator_Markdown);
             RunTest("ReportGenerator_GenerateMarkdownReport_ReplacesLineBreaksInTableCellsAndKeepsDetails", Test_ReportGenerator_Markdown_MultilineTableCellsAndDetails);
             RunTest("ReportGenerator_GenerateJsonReport_ProducesValidJson", Test_ReportGenerator_Json);
+            RunTest("ReportGenerator_PrintConsoleSummary_FiltersErrorsAndSkipsWhenNoErrors", Test_ReportGenerator_PrintConsoleSummary);
 
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
 
             // 8. Program.Main Exit Code & Unresolved Error Count Tests
             RunTest("DiagnosticReport_UnresolvedErrorCount_Calculation", Test_DiagnosticReport_UnresolvedErrorCount_Calculation);
+            RunTest("DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations", Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations);
+            RunTest("DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations", Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations);
             RunTest("Program_Main_ReturnsExitCode0_ForCleanBuildLog", Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog);
             RunTest("Program_Main_ReturnsZero_WhenNoErrorsOrFailures", Test_Program_Main_ReturnsZero_WhenNoErrorsOrFailures);
             RunTest("Program_Main_ReturnsZero_WhenWarningsOnly", Test_Program_Main_ReturnsZero_WhenWarningsOnly);
@@ -105,6 +115,13 @@ namespace MSBuildDiagnosticPatcher.Tests
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
+
+            // 10. Single-Pass Streaming & Regex Guard Regression Tests
+            RunTest("AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar", Test_AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar);
+            RunTest("MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord", Test_MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord);
+            RunTest("MSBuildLogParser_Guards_FastOnSevenColonProseLines", Test_MSBuildLogParser_Guards_FastOnSevenColonProseLines);
+            RunTest("TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures", Test_TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures);
+            RunTest("LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs", Test_LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -1021,6 +1038,174 @@ public interface IMutableInterface
             }
         }
 
+        static void Test_InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string interfaceSource = @"
+namespace CollationModifier.Services
+{
+    public interface IDatabaseServiceLike
+    {
+        /// <summary>
+        /// Backs up the specified database.
+        /// </summary>
+        Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
+        Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken) => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
+
+        // Expression-bodied default member with no abstract overload must not match header or arrow call
+        Task OnlyDefaultAsync(string databaseName) => OnlyDefaultAsync(databaseName, CancellationToken.None);
+
+        // Single-line comment right above declaration must never pollute ReturnType
+        string ServerName { get; set; }
+
+        /// <summary>Multi-line generic return type</summary>
+        Task<Dictionary<
+            string,
+            List<int?>>> FetchMappingsAsync(string schemaName);
+    }
+}";
+
+            var backupMember = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "BackupDatabaseAsync",
+                "string, string, CancellationToken");
+            Assert(backupMember != null, "Expected abstract BackupDatabaseAsync overload fallback to be resolved.");
+            Assert(backupMember!.ReturnType == "Task<string>", $"Expected clean ReturnType 'Task<string>', got '{backupMember.ReturnType}'");
+            Assert(backupMember.ParameterList.Contains("IProgress<int>? progress = null"), "Expected abstract overload parameters rather than default call arguments.");
+
+            var defaultOnly = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "OnlyDefaultAsync",
+                "string");
+            Assert(defaultOnly == null, "Expected default interface implementation and its arrow call to be ignored.");
+
+            var prop = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "ServerName",
+                "");
+            Assert(prop != null && prop.IsProperty, "Expected ServerName property to be extracted.");
+            Assert(prop!.ReturnType == "string", $"Expected clean property ReturnType 'string', got '{prop.ReturnType}'");
+
+            var multiLineGeneric = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "FetchMappingsAsync",
+                "string");
+            Assert(multiLineGeneric != null, "Expected multi-line generic method to be extracted.");
+            Assert(multiLineGeneric!.ReturnType == "Task<Dictionary<string, List<int?>>>",
+                $"Expected normalized multi-line generic ReturnType, got '{multiLineGeneric.ReturnType}'");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string source = @"
+public interface IUnrelatedInterface
+{
+    double Compute(string ignored);
+}
+
+public interface IAdvancedService
+{
+    Status Status { get; }
+    Status Status(string name);
+    Status Status(string name, int timeoutSeconds);
+    void WriteOnlySecret { set; }
+    Config Config { get; set; }
+}";
+
+            // Multi-overload selection & method-over-property precedence + identical return-type and member name
+            var statusTwoArgs = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Status", "string, int");
+            Assert(statusTwoArgs != null && !statusTwoArgs.IsProperty, "Expected method to take precedence over property and match 2-arg overload.");
+            Assert(statusTwoArgs!.ReturnType == "Status", $"Expected ReturnType 'Status', got '{statusTwoArgs.ReturnType}'");
+            Assert(statusTwoArgs.ParameterList == "string name, int timeoutSeconds", $"Unexpected ParameterList '{statusTwoArgs.ParameterList}'");
+
+            var statusOneArg = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Status", "string");
+            Assert(statusOneArg != null && !statusOneArg.IsProperty, "Expected 1-arg Status method overload.");
+            Assert(statusOneArg!.ParameterList == "string name", $"Unexpected ParameterList '{statusOneArg.ParameterList}'");
+
+            // Fallback to first method when expected parameter types do not match any method overload (still preferring method over property)
+            var statusFallback = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Status", "Guid");
+            Assert(statusFallback != null && !statusFallback.IsProperty, "Expected method precedence over property on parameter mismatch.");
+            Assert(statusFallback!.ParameterList == "string name", $"Expected first method overload as bestMatch, got '{statusFallback.ParameterList}'");
+
+            // Property with identical return-type and property name
+            var configProp = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Config", "");
+            Assert(configProp != null && configProp.IsProperty, "Expected Config property.");
+            Assert(configProp!.ReturnType == "Config", $"Expected ReturnType 'Config', got '{configProp.ReturnType}'");
+            Assert(configProp.HasGetter && configProp.HasSetter, "Expected both getter and setter on Config.");
+
+            // Setter-only property
+            var writeOnlyProp = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "WriteOnlySecret", "");
+            Assert(writeOnlyProp != null && writeOnlyProp.IsProperty, "Expected WriteOnlySecret property.");
+            Assert(!writeOnlyProp!.HasGetter && writeOnlyProp.HasSetter, "Expected setter-only property flags.");
+
+            // Unrelated interface member is excluded by interface body slicing
+            var unrelated = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Compute", "string");
+            Assert(unrelated == null, "Expected member from IUnrelatedInterface not to match inside IAdvancedService.");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"body_offset_cache_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IShiftedService.cs");
+                File.WriteAllText(ifaceFile, @"public interface IShiftedService
+{
+    string Alpha(int id);
+    bool Beta();
+}");
+                string contextFile = Path.Combine(tempDir, "ShiftedService.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                var alpha1 = resolver.ResolveInterfaceMember("IShiftedService", "Alpha", "int", contextFile, tempDir);
+                var beta1 = resolver.ResolveInterfaceMember("IShiftedService", "Beta", "", contextFile, tempDir);
+                Assert(alpha1 != null && alpha1.ReturnType == "string", "Expected initial Alpha return type 'string'.");
+                Assert(beta1 != null && beta1.ReturnType == "bool", "Expected initial Beta return type 'bool'.");
+
+                // Rewrite file with a large comment/namespace preamble that shifts '{ ... }' offsets significantly
+                File.WriteAllText(ifaceFile, @"
+// Preamble shifting interface declaration body offsets by well over 150 characters
+// =================================================================================
+namespace Shifted.Namespace.Declaration
+{
+    public interface IOtherDecoy
+    {
+        double Alpha(int id);
+    }
+
+    public interface IShiftedService
+    {
+        long Alpha(int id);
+        Guid Beta();
+    }
+}");
+
+                // Prior to ClearCache, cached body offsets and content still resolve original signatures
+                var cachedAlpha = resolver.ResolveInterfaceMember("IShiftedService", "Alpha", "int", contextFile, tempDir);
+                Assert(cachedAlpha != null && cachedAlpha.ReturnType == "string", "Expected cached return type prior to ClearCache.");
+
+                // ClearCache must clear cached body offsets as well as file content
+                resolver.ClearCache();
+                var refreshedAlpha = resolver.ResolveInterfaceMember("IShiftedService", "Alpha", "int", contextFile, tempDir);
+                var refreshedBeta = resolver.ResolveInterfaceMember("IShiftedService", "Beta", "", contextFile, tempDir);
+                Assert(refreshedAlpha != null && refreshedAlpha.ReturnType == "long",
+                    $"Expected refreshed Alpha return type 'long' after ClearCache, got '{refreshedAlpha?.ReturnType}'");
+                Assert(refreshedBeta != null && refreshedBeta.ReturnType == "Guid",
+                    $"Expected refreshed Beta return type 'Guid' after ClearCache, got '{refreshedBeta?.ReturnType}'");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
         // 4. PatchGenerator Tests
         static void Test_PatchGenerator_FindClassInsertionPoint()
         {
@@ -1275,6 +1460,271 @@ public class EmptyService : ISampleService
             Assert(diff.Contains("--- a/Test.cs"), "Expected --- header");
             Assert(diff.Contains("+++ b/Test.cs"), "Expected +++ header");
             Assert(diff.Contains("+line 2.5 added"), "Expected + line");
+            AssertExactDiffEquals(ReferenceGenerateUnifiedDiff(oldText, newText, "a/Test.cs", "b/Test.cs"), diff, "Basic LF insertion");
+
+            var cases = new (string Name, string Old, string New)[]
+            {
+                ("Empty vs Empty", "", ""),
+                ("Empty vs SingleLine", "", "hello"),
+                ("SingleLine vs Empty", "hello", ""),
+                ("Empty vs CRLF", "", "\r\n"),
+                ("LF vs Empty", "\n", ""),
+                ("Identical single line", "same", "same"),
+                ("Identical multi-line LF", "a\nb\nc\nd\ne\nf\n", "a\nb\nc\nd\ne\nf\n"),
+                ("Identical multi-line CRLF", "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n", "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n"),
+                ("Identical multi-line CR", "a\rb\rc\rd\re\rf", "a\rb\rc\rd\re\rf"),
+                ("CRLF insertion", "l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n", "l1\r\nl2\r\ninserted\r\nl3\r\nl4\r\nl5\r\n"),
+                ("CR insertion", "l1\rl2\rl3\rl4\rl5\r", "l1\rl2\rinserted\rl3\rl4\rl5\r"),
+                ("Mixed CRLF vs LF common lines", "l1\r\nl2\r\nold\r\nl4\r\nl5\r\n", "l1\nl2\nnew\nl4\nl5\n"),
+                ("Prefix split at CR before LF", "abc\r\ndef\r\nghi", "abc\rxyz\r\nghi"),
+                ("Suffix split at LF after CR", "abc\r\nold\r\nxyz", "abc\r\nnew\nxyz"),
+                ("Adjacent CRCRCRLF breaks", "a\r\r\nb\n\rc\r\nd", "a\r\r\nb_mod\n\rc\r\nd"),
+                ("Change at line 1 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1_mod\n2\n3\n4\n5\n6\n7\n8\n9\n10"),
+                ("Change at line 2 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2_mod\n3\n4\n5\n6\n7\n8\n9\n10"),
+                ("Change at line 4 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2\n3\n4_mod\n5\n6\n7\n8\n9\n10"),
+                ("Change at last line of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10_mod"),
+                ("Add trailing newline", "1\n2\n3\n4\n5", "1\n2\n3\n4\n5\n"),
+                ("Remove trailing newline", "1\n2\n3\n4\n5\n", "1\n2\n3\n4\n5"),
+                ("Strict prefix expansion", "a\nb\nc", "a\nb\nc\nd\ne"),
+                ("Strict prefix truncation", "a\nb\nc\nd\ne", "a\nb\nc"),
+                ("Duplicate lines around insertion", "a\nb\nb\nc\nd\ne", "a\nb\nb\nb\nc\nd\ne")
+            };
+
+            foreach (var tc in cases)
+            {
+                string expected = ReferenceGenerateUnifiedDiff(tc.Old, tc.New, "a/File.cs", "b/File.cs");
+                string actual = PatchGenerator.GenerateUnifiedDiff(tc.Old, tc.New, "a/File.cs", "b/File.cs");
+                AssertExactDiffEquals(expected, actual, tc.Name);
+            }
+        }
+
+        static void Test_PatchGenerator_CreatePatchForFile_LineEndingsAndEdgeCases()
+        {
+            var generator = new PatchGenerator();
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_diff_edge_{Guid.NewGuid():N}");
+            string targetFile = Path.Combine(tempRoot, "Src", "Sample.cs");
+
+            string stubLf = "        public virtual void Missing()\n        {\n            throw new NotImplementedException();\n        }";
+            string stubCrlf = stubLf.Replace("\n", "\r\n");
+
+            string multiLineTemplate = string.Join("\n", new[]
+            {
+                "using System;",
+                "namespace EdgeTests",
+                "{",
+                "    public class TargetClass : ITarget",
+                "    {",
+                "        public void Existing1() { }",
+                "        public void Existing2() { }",
+                "        public void Existing3() { }",
+                "        public void Existing4() { }",
+                "    }",
+                "",
+                "    public class NeighborClass",
+                "    {",
+                "        public void Neighbor1() { }",
+                "        public void Neighbor2() { }",
+                "        public void Neighbor3() { }",
+                "    }",
+                "}",
+                ""
+            });
+
+            var scenarios = new (string Name, string Content, string Stubs, string ClassName)[]
+            {
+                ("MultiLine LF", multiLineTemplate, stubLf, "TargetClass"),
+                ("MultiLine CRLF with LF stub", multiLineTemplate.Replace("\n", "\r\n"), stubLf, "TargetClass"),
+                ("MultiLine CRLF with CRLF stub", multiLineTemplate.Replace("\n", "\r\n"), stubCrlf, "TargetClass"),
+                ("MultiLine CR", multiLineTemplate.Replace("\n", "\r"), stubLf, "TargetClass"),
+                ("CR closing brace immediately after CR", "namespace N\r{\r    public class TargetClass : ITarget\r    {\r        void A() {}\r}\r}\r", stubLf, "TargetClass"),
+                ("Single-line class", "public class TargetClass : ITarget { }", stubLf, "TargetClass"),
+                ("Single-line class with trailing LF", "public class TargetClass : ITarget { }\n", stubLf, "TargetClass"),
+                ("Class near start of file (<4 breaks before)", "class TargetClass : ITarget\n{\n    void M() {}\n}\n// 1\n// 2\n// 3\n// 4\n// 5\n// 6\n", stubLf, "TargetClass"),
+                ("Class at very end of file (<5 breaks after)", "// 1\n// 2\n// 3\n// 4\n// 5\nclass TargetClass : ITarget\n{\n    void M() {}\n}", stubLf, "TargetClass"),
+                ("Stub matching lines in 5-line post-insert margin (fallback)", multiLineTemplate, "    }\n\n    public class NeighborClass\n    {\n        public void Injected() { }", "TargetClass")
+            };
+
+            foreach (var sc in scenarios)
+            {
+                var candidate = generator.CreatePatchForFile(
+                    targetFile,
+                    sc.Content,
+                    sc.Stubs,
+                    sc.ClassName,
+                    "ITarget",
+                    tempRoot);
+
+                Assert(candidate != null, $"Expected patch candidate for scenario '{sc.Name}'");
+
+                int insertPos = PatchGenerator.FindClassInsertionPoint(sc.Content, sc.ClassName);
+                string fullNewContent = sc.Content.Insert(insertPos, "\n" + sc.Stubs + "\n");
+                string expectedDiff = ReferenceGenerateUnifiedDiff(
+                    sc.Content,
+                    fullNewContent,
+                    "a/Src/Sample.cs",
+                    "b/Src/Sample.cs");
+
+                AssertExactDiffEquals(expectedDiff, candidate!.UnifiedDiff, sc.Name);
+            }
+        }
+
+        static void Test_PatchGenerator_LargeFileDiff_ExactOutputAndBoundedAllocations()
+        {
+            var generator = new PatchGenerator();
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_large_{Guid.NewGuid():N}");
+            string targetFile = Path.Combine(tempRoot, "LargeService.cs");
+            string stubs =
+                "        public virtual Task<int> ComputeAsync(CancellationToken cancellationToken = default)\n" +
+                "        {\n" +
+                "            throw new NotImplementedException();\n" +
+                "        }";
+
+            foreach (string nl in new[] { "\n", "\r\n", "\r" })
+            {
+                string nlLabel = nl == "\n" ? "LF" : (nl == "\r\n" ? "CRLF" : "CR");
+                var sb = new StringBuilder(20_000 * 56);
+                sb.Append("using System;").Append(nl);
+                sb.Append("namespace LargeTests").Append(nl);
+                sb.Append("{").Append(nl);
+                sb.Append("    public class LargeService : ILargeService").Append(nl);
+                sb.Append("    {").Append(nl);
+                for (int i = 0; i < 200; i++)
+                {
+                    sb.Append("        public int Prop").Append(i).Append(" { get; set; } = ").Append(i).Append(';').Append(nl);
+                }
+                sb.Append("    }").Append(nl);
+                sb.Append("    public class TrailingFixture").Append(nl);
+                sb.Append("    {").Append(nl);
+                for (int i = 0; i < 19_790; i++)
+                {
+                    sb.Append("        // Trailing fixture line ").Append(i).Append(" for 20k line file verification").Append(nl);
+                }
+                sb.Append("    }").Append(nl);
+                sb.Append("}").Append(nl);
+
+                string largeContent = sb.ToString();
+                int insertPos = PatchGenerator.FindClassInsertionPoint(largeContent, "LargeService");
+                string largeModified = largeContent.Insert(insertPos, "\n" + stubs + "\n");
+
+                string expectedDiff = ReferenceGenerateUnifiedDiff(
+                    largeContent,
+                    largeModified,
+                    "a/LargeService.cs",
+                    "b/LargeService.cs");
+
+                var candidate = generator.CreatePatchForFile(
+                    targetFile,
+                    largeContent,
+                    stubs,
+                    "LargeService",
+                    "ILargeService",
+                    tempRoot);
+
+                Assert(candidate != null, $"Expected candidate for 20k {nlLabel} file");
+                AssertExactDiffEquals(expectedDiff, candidate!.UnifiedDiff, $"CreatePatchForFile 20k {nlLabel}");
+
+                string directDiff = PatchGenerator.GenerateUnifiedDiff(
+                    largeContent,
+                    largeModified,
+                    "a/LargeService.cs",
+                    "b/LargeService.cs");
+                AssertExactDiffEquals(expectedDiff, directDiff, $"GenerateUnifiedDiff 20k {nlLabel}");
+
+                if (nl == "\n")
+                {
+                    // Warm up pooled buffers and JIT before checking thread allocations
+                    for (int w = 0; w < 5; w++)
+                    {
+                        generator.CreatePatchForFile(targetFile, largeContent, stubs, "LargeService", "ILargeService", tempRoot);
+                        PatchGenerator.GenerateUnifiedDiff(largeContent, largeModified, "a/LargeService.cs", "b/LargeService.cs");
+                    }
+
+                    long beforePatchAlloc = GC.GetAllocatedBytesForCurrentThread();
+                    var measuredCandidate = generator.CreatePatchForFile(targetFile, largeContent, stubs, "LargeService", "ILargeService", tempRoot);
+                    long patchAlloc = GC.GetAllocatedBytesForCurrentThread() - beforePatchAlloc;
+                    GC.KeepAlive(measuredCandidate);
+
+                    long beforeDiffAlloc = GC.GetAllocatedBytesForCurrentThread();
+                    string measuredDiff = PatchGenerator.GenerateUnifiedDiff(largeContent, largeModified, "a/LargeService.cs", "b/LargeService.cs");
+                    long diffAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeDiffAlloc;
+                    GC.KeepAlive(measuredDiff);
+
+                    const long maxAllowedBytes = 64 * 1024;
+                    Assert(patchAlloc <= maxAllowedBytes,
+                        $"Expected CreatePatchForFile on 20k lines to avoid full-file allocations (<= {maxAllowedBytes} B), but allocated {patchAlloc} B");
+                    Assert(diffAlloc <= maxAllowedBytes,
+                        $"Expected GenerateUnifiedDiff on 20k lines to avoid full-file line arrays (<= {maxAllowedBytes} B), but allocated {diffAlloc} B");
+                }
+            }
+        }
+
+        private static string ReferenceGenerateUnifiedDiff(
+            string oldText,
+            string newText,
+            string oldHeader,
+            string newHeader)
+        {
+            var oldLines = oldText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            var newLines = newText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+
+            int startCommon = 0;
+            while (startCommon < oldLines.Length && startCommon < newLines.Length &&
+                   oldLines[startCommon] == newLines[startCommon])
+            {
+                startCommon++;
+            }
+
+            int endCommonOld = oldLines.Length - 1;
+            int endCommonNew = newLines.Length - 1;
+            while (endCommonOld >= startCommon && endCommonNew >= startCommon &&
+                   oldLines[endCommonOld] == newLines[endCommonNew])
+            {
+                endCommonOld--;
+                endCommonNew--;
+            }
+
+            int contextBefore = Math.Max(0, startCommon - 3);
+            int contextAfterOld = Math.Min(oldLines.Length, endCommonOld + 4);
+            int contextAfterNew = Math.Min(newLines.Length, endCommonNew + 4);
+
+            int hunkOldStart = contextBefore + 1;
+            int hunkOldCount = contextAfterOld - contextBefore;
+            int hunkNewStart = contextBefore + 1;
+            int hunkNewCount = contextAfterNew - contextBefore;
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"--- {oldHeader}");
+            sb.AppendLine($"+++ {newHeader}");
+            sb.AppendLine($"@@ -{hunkOldStart},{hunkOldCount} +{hunkNewStart},{hunkNewCount} @@");
+
+            for (int i = contextBefore; i < startCommon; i++)
+            {
+                sb.AppendLine($" {oldLines[i]}");
+            }
+
+            for (int i = startCommon; i <= endCommonOld; i++)
+            {
+                sb.AppendLine($"-{oldLines[i]}");
+            }
+
+            for (int i = startCommon; i <= endCommonNew; i++)
+            {
+                sb.AppendLine($"+{newLines[i]}");
+            }
+
+            int afterLinesCount = Math.Min(oldLines.Length - (endCommonOld + 1), 3);
+            for (int i = 0; i < afterLinesCount; i++)
+            {
+                sb.AppendLine($" {oldLines[endCommonOld + 1 + i]}");
+            }
+
+            return sb.ToString();
+        }
+
+        private static void AssertExactDiffEquals(string expected, string actual, string scenario)
+        {
+            Assert(string.Equals(expected, actual, StringComparison.Ordinal),
+                $"Diff mismatch in scenario '{scenario}'.\nExpected ({expected.Length} chars):\n{expected}\nActual ({actual.Length} chars):\n{actual}");
         }
 
         static void Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs()
@@ -1344,6 +1794,114 @@ public class SqlWorker : ISqlWorker
                 var patches2 = generator.GeneratePatches(diagnostics, tempDir);
                 Assert(patches2.Count == 1, "Expected patch generation to succeed from cache after file deletion.");
                 Assert(patches2[0].UnifiedDiff == diff, "Expected identical diff output from cache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks()
+        {
+            var generator = new PatchGenerator();
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("namespace ScalingTest {");
+            sb.AppendLine("public class LargeService {");
+            sb.Append("    /* ");
+            for (int i = 0; i < 800; i++)
+            {
+                sb.Append("wordToken").Append(i).Append(' ');
+                if ((i + 1) % 20 == 0) sb.AppendLine();
+            }
+            sb.AppendLine("*/");
+            sb.AppendLine("    public virtual Task<string> RunOperationAsync(string opName, int timeoutMs = 500, CancellationToken cancellationToken = default) => Task.FromResult(opName);");
+            sb.AppendLine("} }");
+            string largeClassSource = sb.ToString();
+
+            var missingMember = new InterfaceMemberInfo
+            {
+                InterfaceName = "ILargeService",
+                MemberName = "MissingBenchmarkMethodAsync",
+                ReturnType = "Task<string>",
+                ParameterList = "string opName, CancellationToken cancellationToken = default"
+            };
+
+            // Warmup JIT
+            generator.GenerateMemberStub(missingMember, largeClassSource);
+
+            var sw = Stopwatch.StartNew();
+            for (int iter = 0; iter < 5; iter++)
+            {
+                string stub = generator.GenerateMemberStub(missingMember, largeClassSource);
+                Assert(stub.Contains("throw new NotImplementedException();"), "Expected fallback stub when no overload exists.");
+            }
+            sw.Stop();
+
+            // Uncached backtracking regex took ~560-720 ms per call (>2800 ms for 5 calls); ordinal scan completes in < 1 ms
+            Assert(sw.Elapsed.TotalMilliseconds < 100.0,
+                $"Expected 5 GenerateMemberStub calls on 800-word block to complete in < 100 ms, took {sw.Elapsed.TotalMilliseconds:F2} ms");
+        }
+
+        static void Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"delegation_edge_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IStatusService.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface IStatusService
+{
+    Status Status(string id);
+    Status Status(string id, int retryCount);
+}
+");
+                string classFile = Path.Combine(tempDir, "StatusService.cs");
+                File.WriteAllText(classFile, @"
+public class StatusService : IStatusService
+{
+    // public virtual Status Status(string id, string nonDefaultRequired, int retryCount = 99)
+    public Status Helper(string id) => Status(id, 5, default);
+
+    public virtual Status Status(string id, int retryCount = 3, CancellationToken cancellationToken = default)
+    {
+        return new Status();
+    }
+}
+");
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'StatusService' does not implement interface member 'IStatusService.Status(string)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'StatusService' does not implement interface member 'IStatusService.Status(string, int)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches.Count == 1, $"Expected 1 patch candidate, got {patches.Count}");
+                Assert(patches[0].ResolvedErrorCount == 2, $"Expected 2 resolved errors, got {patches[0].ResolvedErrorCount}");
+
+                string generated = patches[0].GeneratedCode;
+                Assert(generated.Contains("public virtual Status Status(string id)"), "Expected 1-arg Status stub.");
+                Assert(generated.Contains("return Status(id, 3, default);"), $"Expected 1-arg Status delegation, got:\n{generated}");
+                Assert(generated.Contains("public virtual Status Status(string id, int retryCount)"), "Expected 2-arg Status stub.");
+                Assert(generated.Contains("return Status(id, retryCount, default);"), $"Expected 2-arg Status delegation, got:\n{generated}");
             }
             finally
             {
@@ -1525,6 +2083,67 @@ public class DemoService : IDemoService
 
             Assert(json.Contains("\"CS0535\""), "Expected CS0535 in json");
             Assert(json.Contains("\"SourceLogPath\""), "Expected SourceLogPath in json");
+            Assert(!json.Contains("\"SeverityCounts\""), "Expected GetSeverityCounts method not to add JSON properties");
+        }
+
+        static void Test_ReportGenerator_PrintConsoleSummary()
+        {
+            var reporter = new ReportGenerator();
+            TextWriter originalOut = Console.Out;
+            try
+            {
+                var nonErrorReport = new DiagnosticReport
+                {
+                    SourceLogPath = "/tmp/warnings.log",
+                    ParseDuration = TimeSpan.FromMilliseconds(8.0),
+                    Diagnostics = new List<CompilerDiagnostic>
+                    {
+                        new CompilerDiagnostic { Code = "CS0168", Severity = DiagnosticSeverity.Warning, FilePath = "A.cs", LineNumber = 10, ColumnNumber = 4, Message = "Unused var" },
+                        new CompilerDiagnostic { Code = "MSB1001", Severity = DiagnosticSeverity.Info, FilePath = "B.cs", LineNumber = 1, ColumnNumber = 1, Message = "Info msg" }
+                    }
+                };
+
+                using (var swNoErrors = new StringWriter())
+                {
+                    Console.SetOut(swNoErrors);
+                    reporter.PrintConsoleSummary(nonErrorReport);
+                    string output = swNoErrors.ToString();
+                    Assert(output.Contains("Compiler Errors:  0"), "Expected 0 compiler errors");
+                    Assert(output.Contains("Compiler Warnings:1"), "Expected 1 compiler warning (Info excluded)");
+                    Assert(!output.Contains("[Compiler Errors]"), "Expected [Compiler Errors] section to be omitted when no errors exist");
+                }
+
+                string mdNoErrors = reporter.GenerateMarkdownReport(nonErrorReport);
+                Assert(mdNoErrors.Contains("- **Roslyn Errors**: `0`"), "Expected Markdown to report 0 Roslyn Errors");
+                Assert(mdNoErrors.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown to report 1 Roslyn Warning (Info excluded)");
+
+                nonErrorReport.Diagnostics.Add(new CompilerDiagnostic
+                {
+                    Code = "CS0535",
+                    Severity = DiagnosticSeverity.Error,
+                    FilePath = "C.cs",
+                    LineNumber = 22,
+                    ColumnNumber = 8,
+                    Message = "Missing interface member"
+                });
+
+                using (var swWithErrors = new StringWriter())
+                {
+                    Console.SetOut(swWithErrors);
+                    reporter.PrintConsoleSummary(nonErrorReport);
+                    string output = swWithErrors.ToString();
+                    Assert(output.Contains("Compiler Errors:  1"), "Expected 1 compiler error");
+                    Assert(output.Contains("Compiler Warnings:1"), "Expected 1 compiler warning");
+                    Assert(output.Contains("[Compiler Errors]"), "Expected [Compiler Errors] section when errors exist");
+                    Assert(output.Contains("[CS0535] C.cs(22,8): Missing interface member"), "Expected error line in console output");
+                    Assert(!output.Contains("[CS0168]"), "Expected warning not to be printed under [Compiler Errors]");
+                    Assert(!output.Contains("[MSB1001]"), "Expected info diagnostic not to be printed under [Compiler Errors]");
+                }
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
         }
 
         // 7. End-to-End Workflow Test
@@ -1603,6 +2222,90 @@ public class Greeter : IGreeter
 
             report.CandidatePatches[1].IsApplied = true;
             Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
+        }
+
+        static void Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations()
+        {
+            var report = new DiagnosticReport
+            {
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" }
+                }
+            };
+
+            Assert(report.ErrorCount == 1, $"Expected initial ErrorCount 1, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected initial WarningCount 1, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1002" });
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after adding Info, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1 after adding Info, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0219" });
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0103" });
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2 after adding Error, got {report.ErrorCount}");
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after adding Warning, got {report.WarningCount}");
+
+            report.Diagnostics[2].Severity = DiagnosticSeverity.Warning;
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after mutating Error to Warning, got {report.ErrorCount}");
+            Assert(report.WarningCount == 3, $"Expected WarningCount 3 after mutating Error to Warning, got {report.WarningCount}");
+
+            report.Diagnostics.RemoveAt(1);
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after RemoveAt, got {report.WarningCount}");
+
+            report.Diagnostics.Clear();
+            Assert(report.ErrorCount == 0, $"Expected ErrorCount 0 after Clear, got {report.ErrorCount}");
+            Assert(report.WarningCount == 0, $"Expected WarningCount 0 after Clear, got {report.WarningCount}");
+        }
+
+        static void Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations()
+        {
+            var diagnostics = new List<CompilerDiagnostic>(128);
+            for (int i = 0; i < 50; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" });
+            }
+            for (int i = 0; i < 40; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" });
+            }
+            for (int i = 0; i < 30; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" });
+            }
+
+            var report = new DiagnosticReport { Diagnostics = diagnostics };
+
+            // Warm up JIT tiers before measuring current-thread heap allocations
+            int warmupTotal = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                warmupTotal += report.ErrorCount + report.WarningCount;
+            }
+
+            long beforeError = GC.GetAllocatedBytesForCurrentThread();
+            int errorSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                errorSum += report.ErrorCount;
+            }
+            long errorAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeError;
+
+            long beforeWarning = GC.GetAllocatedBytesForCurrentThread();
+            int warningSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                warningSum += report.WarningCount;
+            }
+            long warningAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeWarning;
+
+            GC.KeepAlive(warmupTotal);
+            Assert(errorSum == 50 * 50, $"Expected errorSum 2500, got {errorSum}");
+            Assert(warningSum == 50 * 40, $"Expected warningSum 2000, got {warningSum}");
+            Assert(errorAllocated == 0, $"Expected 0 bytes allocated reading ErrorCount, got {errorAllocated}");
+            Assert(warningAllocated == 0, $"Expected 0 bytes allocated reading WarningCount, got {warningAllocated}");
         }
 
         static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
@@ -2002,5 +2705,188 @@ Actual:   Process aborted
         }
 
         private static string FindLauncherCmdPath() => FindLauncherScriptPath("msbuild-patcher.cmd");
+
+        // 10. Single-Pass Streaming & Regex Guard Regression Tests
+        static void Test_AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar()
+        {
+            string trimmedPlain = "Services/DatabaseService.cs(11,36): error CS0535: Missing member";
+            string cleaned = AnsiCleaner.Clean(trimmedPlain);
+            Assert(object.ReferenceEquals(trimmedPlain, cleaned), "Expected already-trimmed plain string without '\\x1B' to return same string instance.");
+
+            string untrimmedPlain = "   Build succeeded with 0 warnings.   ";
+            Assert(AnsiCleaner.Clean(untrimmedPlain) == "Build succeeded with 0 warnings.", "Expected whitespace trimming on plain string without '\\x1B'.");
+
+            string escaped = "  \u001b[32mBuild succeeded.\u001b[0m  ";
+            Assert(AnsiCleaner.Clean(escaped) == "Build succeeded.", "Expected ANSI stripping and trimming when '\\x1B' is present.");
+        }
+
+        static void Test_MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord()
+        {
+            var parser = new MSBuildLogParser();
+
+            var cases = new (string Line, string ExpectedCode, DiagnosticSeverity ExpectedSeverity)[]
+            {
+                ("csc : error cs0535a: Lowercase CS prefix with trailing letter", "CS0535A", DiagnosticSeverity.Error),
+                ("vbc : warning bc20010: Lowercase BC 5-digit code", "BC20010", DiagnosticSeverity.Warning),
+                ("fsc : info fs0074: Lowercase FS info code", "FS0074", DiagnosticSeverity.Info),
+                ("MSBUILD : custom fatal notice msb1003: Unrecognized multi-word severity defaults to Error", "MSB1003", DiagnosticSeverity.Error),
+                ("/app/App.csproj : CriticalAlert Netsdk1045: Mixed-case NETSDK code with custom severity", "NETSDK1045", DiagnosticSeverity.Error),
+                ("/app/App.csproj : warning Nu1605: Mixed-case NU code", "NU1605", DiagnosticSeverity.Warning)
+            };
+
+            foreach (var testCase in cases)
+            {
+                var diag = parser.ParseLine(testCase.Line);
+                Assert(diag != null, $"Expected diagnostic to parse for: {testCase.Line}");
+                Assert(diag!.Code == testCase.ExpectedCode, $"Expected code {testCase.ExpectedCode}, got {diag.Code}");
+                Assert(diag.Severity == testCase.ExpectedSeverity, $"Expected severity {testCase.ExpectedSeverity}, got {diag.Severity}");
+            }
+
+            // Non-supported prefix without coordinates should be rejected quickly by guard
+            Assert(parser.ParseLine("tool : error XY1234: Unsupported coordinate-free prefix") == null, "Expected unsupported prefix XY1234 without coordinates to return null.");
+        }
+
+        static void Test_MSBuildLogParser_Guards_FastOnSevenColonProseLines()
+        {
+            var parser = new MSBuildLogParser();
+            var lines = new List<string>(10_000);
+            for (int i = 0; i < 10_000; i++)
+            {
+                lines.Add($"Build agent pipeline stage: Restore project packages: Compile application sources: Execute unit test suite: Verify build artifacts: Upload diagnostic summary: Publish workflow status: Completed {i}");
+            }
+
+            string proseLog = string.Join("\n", lines);
+            var sw = Stopwatch.StartNew();
+            var diags = parser.ParseText(proseLog);
+            sw.Stop();
+
+            Assert(diags.Count == 0, $"Expected 0 diagnostics on seven-colon prose lines, got {diags.Count}");
+            Assert(sw.Elapsed.TotalMilliseconds < 135.48, $"Expected 10,000 seven-colon prose lines under 135.48 ms, took {sw.Elapsed.TotalMilliseconds:F2} ms");
+        }
+
+        static void Test_TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures()
+        {
+            var parser = new TestExecutionLogParser();
+            string log = string.Join("\r\n", new[]
+            {
+                "  fail: CustomSuite.FirstTest - Assertion Failed: Expected 42 but got 0",
+                "   at CustomSuite.FirstTest() in /src/Tests.cs:line 12",
+                "   --- End of inner exception stack trace ---",
+                "   at CustomSuite.Runner() in /src/Tests.cs:line 30",
+                "  failed DotnetSuite.SecondTest [19 ms]",
+                "  Error Message:",
+                "   Expected true, was false",
+                "  Stack Trace:",
+                "   at DotnetSuite.SecondTest() in /src/DotnetTests.cs:line 55",
+                "  failed DotnetSuite.ThirdTest [5 ms]",
+                "  Error Message:",
+                "   NullReferenceException",
+                "  [fail] BracketSuite.FourthTest: Connection timed out",
+                "  Passed DotnetSuite.PassingTest [2 ms]"
+            });
+
+            var failures = parser.ParseText(log);
+            Assert(failures.Count == 4, $"Expected 4 failures, got {failures.Count}");
+
+            Assert(failures[0].TestClass == "CustomSuite" && failures[0].TestMethod == "FirstTest", "Mismatch on failure 0 name");
+            Assert(failures[0].StackTrace.Contains("End of inner exception stack trace") && failures[0].StackTrace.Contains("CustomSuite.Runner"), "Mismatch on failure 0 stack trace");
+
+            Assert(failures[1].TestClass == "DotnetSuite" && failures[1].TestMethod == "SecondTest", "Mismatch on failure 1 name");
+            Assert(failures[1].AssertionFailureMessage == "Expected true, was false", $"Mismatch on failure 1 message: {failures[1].AssertionFailureMessage}");
+            Assert(failures[1].StackTrace.Contains("DotnetSuite.SecondTest"), "Mismatch on failure 1 stack trace");
+
+            Assert(failures[2].TestClass == "DotnetSuite" && failures[2].TestMethod == "ThirdTest", "Mismatch on failure 2 name");
+            Assert(failures[2].AssertionFailureMessage == "NullReferenceException", $"Mismatch on failure 2 message: {failures[2].AssertionFailureMessage}");
+            Assert(failures[2].StackTrace == string.Empty, "Expected empty stack trace on failure 2");
+
+            Assert(failures[3].TestClass == "BracketSuite" && failures[3].TestMethod == "FourthTest", "Mismatch on failure 3 name");
+            Assert(failures[3].AssertionFailureMessage == "Connection timed out", $"Mismatch on failure 3 message: {failures[3].AssertionFailureMessage}");
+        }
+
+        static void Test_LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"stream_equiv_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string mixedLog = string.Join("\r\n", new[]
+                {
+                    "  Determining projects to restore...",
+                    "\u001b[31;1mServices/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [CollationModifier.csproj]\u001b[0m",
+                    "  2026-11-24 08:30:15: Stage 1: Step 2: Action 3: Target 4: Task 5: Detail 6: Done",
+                    "MSBUILD : unexpected MSB1003: Unrecognized severity fallback check",
+                    "ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [CollationModifier.csproj]",
+                    "Failed MainViewModelTests.FirstFailure [45 ms]",
+                    "  /app/Interleaved.csproj : error NU1605: Interleaved error inside lookahead block [/app/Interleaved.csproj]",
+                    "  Error Message:",
+                    "   Assertion Failed: Expected status ready",
+                    "  Stack Trace:",
+                    "   at CollationModifier.Tests.MainViewModelTests.FirstFailure() in /app/Tests.cs:line 80",
+                    "   at CollationModifier.Tests.MainViewModelTests.RunAsync() in /app/Tests.cs:line 120",
+                    "Failed DatabaseServiceTests.SecondFailure [60 ms]",
+                    "  Error Message:",
+                    "   Assertion Failed: Database was not put in SINGLE_USER mode",
+                    "  Stack Trace:",
+                    "   at CollationModifier.Tests.DatabaseServiceTests.SecondFailure() in /app/DbTests.cs:line 150",
+                    "FAIL: CustomRunnerSuite.ThirdFailure - System.Exception: Assertion Failed: Timeout",
+                    "   at CustomRunnerSuite.ThirdFailure() in /app/CustomTests.cs:line 44",
+                    "  [FAIL] BracketRunner.FourthFailure: Unexpected state",
+                    "CollationModifier.csproj : info netSDK1045: Informational SDK message"
+                });
+
+                string logPath = Path.Combine(tempDir, "mixed.log");
+                File.WriteAllText(logPath, mixedLog);
+
+                var msbDual = new MSBuildLogParser();
+                var testDual = new TestExecutionLogParser();
+                var expectedDiags = msbDual.ParseText(mixedLog);
+                var expectedFailures = testDual.ParseText(mixedLog);
+
+                var msbStream = new MSBuildLogParser();
+                var testStream = new TestExecutionLogParser();
+                List<CompilerDiagnostic> streamedDiags;
+                List<TestFailure> streamedFailures;
+                using (var reader = new StreamReader(logPath))
+                {
+                    (streamedDiags, streamedFailures) = LogStreamParser.Parse(reader, msbStream, testStream);
+                }
+
+                Assert(expectedDiags.Count == 5, $"Expected 5 diagnostics, got {expectedDiags.Count}");
+                Assert(streamedDiags.Count == expectedDiags.Count, $"Diagnostic count mismatch: {streamedDiags.Count} vs {expectedDiags.Count}");
+                for (int i = 0; i < expectedDiags.Count; i++)
+                {
+                    Assert(streamedDiags[i].Code == expectedDiags[i].Code, $"Diag[{i}].Code mismatch");
+                    Assert(streamedDiags[i].Severity == expectedDiags[i].Severity, $"Diag[{i}].Severity mismatch");
+                    Assert(streamedDiags[i].FilePath == expectedDiags[i].FilePath, $"Diag[{i}].FilePath mismatch");
+                    Assert(streamedDiags[i].LineNumber == expectedDiags[i].LineNumber, $"Diag[{i}].LineNumber mismatch");
+                    Assert(streamedDiags[i].ColumnNumber == expectedDiags[i].ColumnNumber, $"Diag[{i}].ColumnNumber mismatch");
+                    Assert(streamedDiags[i].Message == expectedDiags[i].Message, $"Diag[{i}].Message mismatch");
+                    Assert(streamedDiags[i].ProjectPath == expectedDiags[i].ProjectPath, $"Diag[{i}].ProjectPath mismatch");
+                    Assert(streamedDiags[i].RawLine == expectedDiags[i].RawLine, $"Diag[{i}].RawLine mismatch");
+                }
+
+                Assert(expectedFailures.Count == 4, $"Expected 4 test failures, got {expectedFailures.Count}");
+                Assert(streamedFailures.Count == expectedFailures.Count, $"Failure count mismatch: {streamedFailures.Count} vs {expectedFailures.Count}");
+                for (int i = 0; i < expectedFailures.Count; i++)
+                {
+                    Assert(streamedFailures[i].TestClass == expectedFailures[i].TestClass, $"Failure[{i}].TestClass mismatch");
+                    Assert(streamedFailures[i].TestMethod == expectedFailures[i].TestMethod, $"Failure[{i}].TestMethod mismatch");
+                    Assert(streamedFailures[i].AssertionFailureMessage == expectedFailures[i].AssertionFailureMessage, $"Failure[{i}].AssertionFailureMessage mismatch");
+                    Assert(streamedFailures[i].StackTrace == expectedFailures[i].StackTrace, $"Failure[{i}].StackTrace mismatch");
+                    Assert(streamedFailures[i].RawLine == expectedFailures[i].RawLine, $"Failure[{i}].RawLine mismatch");
+                }
+
+                string outDir = Path.Combine(tempDir, "out");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logPath, "-o", outDir });
+                Assert(exitCode == 1, $"Expected Program.Main exit code 1 on mixed failing log, got {exitCode}");
+                Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.json")), "Expected diagnostic-report.json to be written");
+                Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.md")), "Expected diagnostic-report.md to be written");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
     }
 }
