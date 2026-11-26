@@ -1992,6 +1992,147 @@ namespace CollationModifier.Tests
                 Assert(sizeLabeledBy.Contains("ElementName=SizeLabel"), "Size value TextBlock should retain LabeledBy binding to SizeLabel");
             });
 
+            RunSyncTest("MainWindowXaml_MetadataEmptyState_BindingsTriggersAndContrast_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                var xName = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var mainDoc = System.Xml.Linq.XDocument.Parse(System.IO.File.ReadAllText(mainWindowXamlPath));
+                var appDoc = System.Xml.Linq.XDocument.Parse(System.IO.File.ReadAllText(appXamlPath));
+
+                // 1. MetadataPropertyGrid wraps the 4 metadata rows and toggles Visibility via HasSelectedDatabase
+                var metadataPropertyGrid = mainDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Grid" && e.Attribute(xName)?.Value == "MetadataPropertyGrid");
+                Assert(metadataPropertyGrid != null, "MainWindow.xaml must define Grid x:Name='MetadataPropertyGrid'");
+
+                var propGridStyle = metadataPropertyGrid!.Elements().FirstOrDefault(e => e.Name.LocalName == "Grid.Style")
+                    ?.Elements().FirstOrDefault(e => e.Name.LocalName == "Style" && e.Attribute("TargetType")?.Value == "Grid");
+                Assert(propGridStyle != null, "MetadataPropertyGrid must define an inline Style with TargetType='Grid'");
+
+                var propGridDefaultVisibility = propGridStyle!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(propGridDefaultVisibility?.Attribute("Value")?.Value == "Collapsed",
+                    "MetadataPropertyGrid must default Visibility to Collapsed when no database is selected");
+
+                var propGridTrigger = propGridStyle.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "DataTrigger" &&
+                    e.Attribute("Binding")?.Value == "{Binding HasSelectedDatabase}" &&
+                    e.Attribute("Value")?.Value == "True");
+                Assert(propGridTrigger != null, "MetadataPropertyGrid must define a DataTrigger for {Binding HasSelectedDatabase} == True");
+                var propGridTriggerSetter = propGridTrigger!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(propGridTriggerSetter?.Attribute("Value")?.Value == "Visible",
+                    "MetadataPropertyGrid DataTrigger must set Visibility to Visible when HasSelectedDatabase is True");
+
+                var propGridTextBlocks = metadataPropertyGrid.Elements().Where(e => e.Name.LocalName == "TextBlock").ToList();
+                Assert(propGridTextBlocks.Count == 8, $"MetadataPropertyGrid should contain all 8 label and value TextBlocks, got {propGridTextBlocks.Count}");
+
+                // 2. MetadataEmptyStateContainer sits beside MetadataPropertyGrid inside the metadata Border Grid
+                var metadataEmptyStateContainer = mainDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "StackPanel" && e.Attribute(xName)?.Value == "MetadataEmptyStateContainer");
+                Assert(metadataEmptyStateContainer != null, "MainWindow.xaml must define StackPanel x:Name='MetadataEmptyStateContainer'");
+                Assert(metadataEmptyStateContainer!.Parent == metadataPropertyGrid.Parent,
+                    "MetadataEmptyStateContainer and MetadataPropertyGrid must share the same parent Grid inside the metadata Border");
+                Assert(metadataEmptyStateContainer.Attribute("Margin")?.Value == "12",
+                    "MetadataEmptyStateContainer must specify valid Margin='12' on StackPanel");
+                Assert(metadataEmptyStateContainer.Attribute("Padding") == null,
+                    "MetadataEmptyStateContainer StackPanel must not specify invalid Padding attribute");
+                Assert(metadataEmptyStateContainer.Attribute("HorizontalAlignment")?.Value == "Center",
+                    "MetadataEmptyStateContainer must specify HorizontalAlignment='Center'");
+                Assert(metadataEmptyStateContainer.Attribute("VerticalAlignment")?.Value == "Center",
+                    "MetadataEmptyStateContainer must specify VerticalAlignment='Center'");
+
+                var emptyContainerStyle = metadataEmptyStateContainer.Elements().FirstOrDefault(e => e.Name.LocalName == "StackPanel.Style")
+                    ?.Elements().FirstOrDefault(e => e.Name.LocalName == "Style" && e.Attribute("TargetType")?.Value == "StackPanel");
+                Assert(emptyContainerStyle != null, "MetadataEmptyStateContainer must define an inline Style with TargetType='StackPanel'");
+
+                var emptyContainerDefaultVisibility = emptyContainerStyle!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(emptyContainerDefaultVisibility?.Attribute("Value")?.Value == "Visible",
+                    "MetadataEmptyStateContainer must default Visibility to Visible when no database is selected");
+
+                var emptyContainerTrigger = emptyContainerStyle.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "DataTrigger" &&
+                    e.Attribute("Binding")?.Value == "{Binding HasSelectedDatabase}" &&
+                    e.Attribute("Value")?.Value == "True");
+                Assert(emptyContainerTrigger != null, "MetadataEmptyStateContainer must define a DataTrigger for {Binding HasSelectedDatabase} == True");
+                var emptyContainerTriggerSetter = emptyContainerTrigger!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(emptyContainerTriggerSetter?.Attribute("Value")?.Value == "Collapsed",
+                    "MetadataEmptyStateContainer DataTrigger must set Visibility to Collapsed when HasSelectedDatabase is True");
+
+                // 3. lblMetadataEmptyState bindings, accessibility properties, and inherited #334155 high-contrast foreground
+                var lblMetadataEmptyState = metadataEmptyStateContainer.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "TextBlock" && e.Attribute(xName)?.Value == "lblMetadataEmptyState");
+                Assert(lblMetadataEmptyState != null, "MetadataEmptyStateContainer must contain TextBlock x:Name='lblMetadataEmptyState'");
+                Assert(lblMetadataEmptyState!.Attribute("Text")?.Value == "{Binding MetadataEmptyStateText}",
+                    "lblMetadataEmptyState Text must bind to {Binding MetadataEmptyStateText}");
+                Assert(lblMetadataEmptyState.Attribute("FontSize")?.Value == "14",
+                    "lblMetadataEmptyState must set FontSize='14'");
+                Assert(lblMetadataEmptyState.Attribute("HorizontalAlignment")?.Value == "Center",
+                    "lblMetadataEmptyState must set HorizontalAlignment='Center'");
+                Assert(lblMetadataEmptyState.Attribute("TextWrapping")?.Value == "Wrap",
+                    "lblMetadataEmptyState must set TextWrapping='Wrap'");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.Name")?.Value == "{Binding MetadataEmptyStateText}",
+                    "lblMetadataEmptyState AutomationProperties.Name must bind to {Binding MetadataEmptyStateText}");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.HelpText")?.Value == "Metadata empty state guidance message.",
+                    "lblMetadataEmptyState AutomationProperties.HelpText must equal 'Metadata empty state guidance message.'");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.LiveSetting")?.Value == "Polite",
+                    "lblMetadataEmptyState must configure AutomationProperties.LiveSetting='Polite' for WCAG 2.2 SC 4.1.3");
+                Assert(lblMetadataEmptyState.Attribute("Foreground") == null,
+                    "lblMetadataEmptyState must omit local Foreground so it inherits #334155 from App.xaml");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.HeadingLevel") == null,
+                    "lblMetadataEmptyState must omit AutomationProperties.HeadingLevel");
+
+                // 4. Verify inherited Foreground (#334155) from App.xaml against metadata Border Background (White) meets WCAG 2.2 SC 1.4.3
+                var metadataBorder = metadataPropertyGrid.Parent?.Parent;
+                Assert(metadataBorder != null && metadataBorder.Name.LocalName == "Border",
+                    "Metadata panel outer container should be a Border");
+                Assert(metadataBorder!.Attribute("Background")?.Value == "White",
+                    "Metadata Border Background should be White");
+
+                var implicitTextBlockStyle = appDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Style" &&
+                    e.Attribute("TargetType")?.Value == "TextBlock" &&
+                    e.Attributes().All(a => a.Name.LocalName != "Key"));
+                Assert(implicitTextBlockStyle != null, "App.xaml must define implicit TextBlock style");
+                var fgSetter = implicitTextBlockStyle!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Foreground");
+                Assert(fgSetter?.Attribute("Value")?.Value == "#334155",
+                    "App.xaml implicit TextBlock style must set Foreground='#334155'");
+
+                double sR = 0x33 / 255.0;
+                double sG = 0x41 / 255.0;
+                double sB = 0x55 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lumFg = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+                double contrastAgainstWhite = (1.0 + 0.05) / (lumFg + 0.05);
+                Assert(contrastAgainstWhite >= 4.5 && Math.Abs(contrastAgainstWhite - 10.35) < 0.1,
+                    $"Expected inherited #334155 foreground contrast ~10.35:1 (>= 4.5:1) against White, got {contrastAgainstWhite:F2}:1");
+            });
+
             RunSyncTest("MainViewModel_SelectedDatabase_MetadataAccessibleNames_EvaluatesCompositeStrings", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
