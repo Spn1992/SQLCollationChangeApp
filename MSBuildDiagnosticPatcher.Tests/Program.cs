@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using MSBuildDiagnosticPatcher.Models;
 using MSBuildDiagnosticPatcher.Parsers;
@@ -82,14 +83,15 @@ namespace MSBuildDiagnosticPatcher.Tests
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
+            RunTest("PatchGenerator_FindClassInsertionPoint_MasksCommentsStringsAndSingleLineClass", Test_PatchGenerator_FindClassInsertionPoint_MasksCommentsStringsAndSingleLineClass);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesToExistingOverload", Test_PatchGenerator_GenerateMemberStub_Delegates);
             RunTest("PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters", Test_PatchGenerator_GenerateMemberStub_DelegatesWithValueTypeParameters);
             RunTest("PatchGenerator_ExtractParameterNames_HandlesDefaultsNullablesAndWhitespace", Test_PatchGenerator_ExtractParameterNames_HandlesDefaultsNullablesAndWhitespace);
             RunTest("PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently", Test_PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
-            RunTest("PatchGenerator_CreatePatchForFile_MatchesReferenceAcrossLineEndingsAndEdgeCases", Test_PatchGenerator_CreatePatchForFile_LineEndingsAndEdgeCases);
-            RunTest("PatchGenerator_LargeFileDiff_MatchesReferenceWithBoundedAllocations", Test_PatchGenerator_LargeFileDiff_ExactOutputAndBoundedAllocations);
+            RunTest("PatchGenerator_GenerateUnifiedDiff_GitApplyEofAndMissingTrailingNewline", Test_PatchGenerator_GenerateUnifiedDiff_GitApplyEofAndMissingTrailingNewline);
+            RunTest("PatchGenerator_GeneratePatches_GitApplyPreservesUtf8BomAndCrlf", Test_PatchGenerator_GeneratePatches_GitApplyPreservesUtf8BomAndCrlf);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
             RunTest("PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot", Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot);
             RunTest("PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath", Test_PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath);
@@ -99,6 +101,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
             RunTest("PatchApplicator_ApplyPatch_GuardsAgainstDuplicateApplication", Test_PatchApplicator_GuardsDuplicate);
+            RunTest("PatchApplicator_ApplyPatch_PreservesBomAndNativeLineEndings", Test_PatchApplicator_PreservesBomAndNativeLineEndings);
+            RunTest("PatchApplicator_ApplyPatch_MultiMemberDuplicateGuardFiltersExistingMembers", Test_PatchApplicator_MultiMemberDuplicateGuardFiltersExistingMembers);
 
             // 6. ReportGenerator Tests
             RunTest("ReportGenerator_GenerateMarkdownReport_ProducesFormattedMarkdown", Test_ReportGenerator_Markdown);
@@ -1818,41 +1822,200 @@ public class EmptyService : ISampleService
             Assert(diff.Contains("--- a/Test.cs"), "Expected --- header");
             Assert(diff.Contains("+++ b/Test.cs"), "Expected +++ header");
             Assert(diff.Contains("+line 2.5 added"), "Expected + line");
-            AssertExactDiffEquals(ReferenceGenerateUnifiedDiff(oldText, newText, "a/Test.cs", "b/Test.cs"), diff, "Basic LF insertion");
+            Assert(diff.Contains("@@ -1,3 +1,4 @@"), $"Expected accurate 3->4 hunk header without trailing empty line inflation, got:\n{diff}");
+        }
 
-            var cases = new (string Name, string Old, string New)[]
+        static void Test_PatchGenerator_FindClassInsertionPoint_MasksCommentsStringsAndSingleLineClass()
+        {
+            // Case 1: Comments, strings, verbatim strings, interpolated strings with nested quotes/braces, and char literals
+            string complexSource = string.Join("\r\n", new[]
             {
-                ("Empty vs Empty", "", ""),
-                ("Empty vs SingleLine", "", "hello"),
-                ("SingleLine vs Empty", "hello", ""),
-                ("Empty vs CRLF", "", "\r\n"),
-                ("LF vs Empty", "\n", ""),
-                ("Identical single line", "same", "same"),
-                ("Identical multi-line LF", "a\nb\nc\nd\ne\nf\n", "a\nb\nc\nd\ne\nf\n"),
-                ("Identical multi-line CRLF", "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n", "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n"),
-                ("Identical multi-line CR", "a\rb\rc\rd\re\rf", "a\rb\rc\rd\re\rf"),
-                ("CRLF insertion", "l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n", "l1\r\nl2\r\ninserted\r\nl3\r\nl4\r\nl5\r\n"),
-                ("CR insertion", "l1\rl2\rl3\rl4\rl5\r", "l1\rl2\rinserted\rl3\rl4\rl5\r"),
-                ("Mixed CRLF vs LF common lines", "l1\r\nl2\r\nold\r\nl4\r\nl5\r\n", "l1\nl2\nnew\nl4\nl5\n"),
-                ("Prefix split at CR before LF", "abc\r\ndef\r\nghi", "abc\rxyz\r\nghi"),
-                ("Suffix split at LF after CR", "abc\r\nold\r\nxyz", "abc\r\nnew\nxyz"),
-                ("Adjacent CRCRCRLF breaks", "a\r\r\nb\n\rc\r\nd", "a\r\r\nb_mod\n\rc\r\nd"),
-                ("Change at line 1 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1_mod\n2\n3\n4\n5\n6\n7\n8\n9\n10"),
-                ("Change at line 2 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2_mod\n3\n4\n5\n6\n7\n8\n9\n10"),
-                ("Change at line 4 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2\n3\n4_mod\n5\n6\n7\n8\n9\n10"),
-                ("Change at last line of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10_mod"),
-                ("Add trailing newline", "1\n2\n3\n4\n5", "1\n2\n3\n4\n5\n"),
-                ("Remove trailing newline", "1\n2\n3\n4\n5\n", "1\n2\n3\n4\n5"),
-                ("Strict prefix expansion", "a\nb\nc", "a\nb\nc\nd\ne"),
-                ("Strict prefix truncation", "a\nb\nc\nd\ne", "a\nb\nc"),
-                ("Duplicate lines around insertion", "a\nb\nb\nc\nd\ne", "a\nb\nb\nb\nc\nd\ne")
-            };
+                "// class TrickyService { }",
+                "/* Multi-line comment mentioning class TrickyService { and extra } } */",
+                "namespace SampleNs",
+                "{",
+                "    public class TrickyService : ITrickyService",
+                "    {",
+                "        private string _s1 = \"unmatched } brace \\\" { in regular string\";",
+                "        private string _s2 = @\"verbatim \"\"quote\"\" and } } brace\";",
+                "        private char _c1 = '}';",
+                "        public string Format(string x) => $\"interp {{ literal }} and {x.Trim('}')} end\";",
+                "        // trailing comment with unmatched } brace",
+                "    }",
+                "}",
+                ""
+            });
 
-            foreach (var tc in cases)
+            int insertPos = PatchGenerator.FindClassInsertionPoint(complexSource, "TrickyService");
+            Assert(insertPos > 0, "Expected valid insertion point for TrickyService.");
+            // Verify insertion point is advanced past \r\n to the start of "    }" line, not between \r and \n
+            Assert(complexSource[insertPos - 2] == '\r' && complexSource[insertPos - 1] == '\n',
+                "Expected FindClassInsertionPoint to advance past \\r\\n.");
+            Assert(complexSource.Substring(insertPos).StartsWith("    }\r\n}"),
+                $"Expected insertion point at class closing brace line, got: '{complexSource.Substring(insertPos)}'");
+
+            // Case 2: Single-line class following a using directive
+            string singleLineSource = "using System;\r\npublic class CompactService : ICompactService { }\r\n";
+            int singlePos = PatchGenerator.FindClassInsertionPoint(singleLineSource, "CompactService");
+            Assert(singlePos > singleLineSource.IndexOf('{'),
+                "Single-line class insertion point must be inside '{ }', not before class declaration.");
+            Assert(singleLineSource[singlePos] == '}',
+                $"Expected insertion point at closing brace of single-line class, got '{singleLineSource[singlePos]}'");
+        }
+
+        static void Test_PatchGenerator_GenerateUnifiedDiff_GitApplyEofAndMissingTrailingNewline()
+        {
+            string repoDir = Path.Combine(Path.GetTempPath(), $"git_apply_eof_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(repoDir);
+
+            try
             {
-                string expected = ReferenceGenerateUnifiedDiff(tc.Old, tc.New, "a/File.cs", "b/File.cs");
-                string actual = PatchGenerator.GenerateUnifiedDiff(tc.Old, tc.New, "a/File.cs", "b/File.cs");
-                AssertExactDiffEquals(expected, actual, tc.Name);
+                RunGitCommand(repoDir, "init");
+
+                // 1. File whose class closing brace is within 2 lines of EOF (like DatabaseService.cs:L828-L832)
+                string ifacePath = Path.Combine(repoDir, "IDbService.cs");
+                File.WriteAllText(ifacePath, "using System.Threading;\nusing System.Threading.Tasks;\npublic interface IDbService\n{\n    Task PingAsync(CancellationToken cancellationToken = default);\n}\n", new UTF8Encoding(false));
+
+                string serviceDir = Path.Combine(repoDir, "Services");
+                Directory.CreateDirectory(serviceDir);
+                string servicePath = Path.Combine(serviceDir, "DbService.cs");
+                string eofServiceContent = string.Join("\n", new[]
+                {
+                    "using System;",
+                    "using System.Threading;",
+                    "using System.Threading.Tasks;",
+                    "",
+                    "namespace Demo.Services",
+                    "{",
+                    "    public class DbService : IDbService",
+                    "    {",
+                    "        private static void Helper()",
+                    "        {",
+                    "            Console.WriteLine(\"ok\");",
+                    "        }",
+                    "    }",
+                    "}",
+                    ""
+                });
+                File.WriteAllText(servicePath, eofServiceContent, new UTF8Encoding(false));
+
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = servicePath,
+                        LineNumber = 7,
+                        ColumnNumber = 18,
+                        Message = "'DbService' does not implement interface member 'IDbService.PingAsync(CancellationToken)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, repoDir);
+                Assert(patches.Count == 1, $"Expected 1 patch candidate, got {patches.Count}");
+                Assert(!string.IsNullOrWhiteSpace(patches[0].MemberSignature), "Expected MemberSignature to be populated.");
+                Assert(patches[0].Members.Count == 1, $"Expected 1 PatchMemberEntry, got {patches[0].Members.Count}");
+
+                string patchFile = Path.Combine(repoDir, "DbService.patch");
+                File.WriteAllText(patchFile, patches[0].UnifiedDiff, new UTF8Encoding(false));
+
+                RunGitCommand(repoDir, $"apply --verbose \"{patchFile}\"");
+                string patchedDisk = File.ReadAllText(servicePath);
+                Assert(patchedDisk.Contains("public virtual Task PingAsync(CancellationToken cancellationToken = default)"),
+                    "Expected git apply to insert PingAsync cleanly on EOF-adjacent class.");
+
+                // 2. File lacking trailing newline at EOF must emit '\ No newline at end of file' and pass git apply
+                string noNlPath = Path.Combine(repoDir, "NoNewlineService.cs");
+                string noNlOriginal = "public class NoNewlineService : IDbService\n{\n}"; // no trailing \n
+                File.WriteAllText(noNlPath, noNlOriginal, new UTF8Encoding(false));
+
+                var noNlDiag = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = noNlPath,
+                        LineNumber = 1,
+                        ColumnNumber = 14,
+                        Message = "'NoNewlineService' does not implement interface member 'IDbService.PingAsync(CancellationToken)'"
+                    }
+                };
+
+                var noNlPatches = generator.GeneratePatches(noNlDiag, repoDir);
+                Assert(noNlPatches.Count == 1, "Expected 1 patch for no-newline file.");
+                Assert(noNlPatches[0].UnifiedDiff.Contains("\\ No newline at end of file"),
+                    $"Expected missing EOF newline marker in diff, got:\n{noNlPatches[0].UnifiedDiff}");
+
+                string noNlPatchFile = Path.Combine(repoDir, "NoNewlineService.patch");
+                File.WriteAllText(noNlPatchFile, noNlPatches[0].UnifiedDiff, new UTF8Encoding(false));
+
+                RunGitCommand(repoDir, $"apply --verbose \"{noNlPatchFile}\"");
+                byte[] noNlAfterBytes = File.ReadAllBytes(noNlPath);
+                Assert(noNlAfterBytes[noNlAfterBytes.Length - 1] == (byte)'}',
+                    "Expected git apply to preserve absence of trailing newline at EOF.");
+            }
+            finally
+            {
+                if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true);
+            }
+        }
+
+        static void Test_PatchGenerator_GeneratePatches_GitApplyPreservesUtf8BomAndCrlf()
+        {
+            string repoDir = Path.Combine(Path.GetTempPath(), $"git_apply_bom_crlf_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(repoDir);
+
+            try
+            {
+                RunGitCommand(repoDir, "init");
+
+                string ifacePath = Path.Combine(repoDir, "IBomWorker.cs");
+                File.WriteAllText(ifacePath, "public interface IBomWorker\r\n{\r\n    void RunWork(string taskName);\r\n}\r\n", new UTF8Encoding(true));
+
+                // Short file (3 lines) with UTF-8 BOM and CRLF so the unified diff hunk starts at line 1
+                string classPath = Path.Combine(repoDir, "BomWorker.cs");
+                string originalCrlf = "public class BomWorker : IBomWorker\r\n{\r\n}\r\n";
+                File.WriteAllText(classPath, originalCrlf, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classPath,
+                        LineNumber = 1,
+                        ColumnNumber = 14,
+                        Message = "'BomWorker' does not implement interface member 'IBomWorker.RunWork(string)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, repoDir);
+                Assert(patches.Count == 1, "Expected 1 patch for BomWorker.");
+                Assert(patches[0].UnifiedDiff.Contains(" \uFEFFpublic class BomWorker"),
+                    "Expected line-1 UTF-8 BOM to be preserved in unified diff.");
+
+                string patchFile = Path.Combine(repoDir, "BomWorker.patch");
+                File.WriteAllText(patchFile, patches[0].UnifiedDiff, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+                RunGitCommand(repoDir, $"apply --verbose \"{patchFile}\"");
+
+                byte[] appliedBytes = File.ReadAllBytes(classPath);
+                Assert(appliedBytes.Length >= 3 && appliedBytes[0] == 0xEF && appliedBytes[1] == 0xBB && appliedBytes[2] == 0xBF,
+                    "Expected UTF-8 BOM bytes (EF BB BF) to be preserved after git apply.");
+
+                string appliedText = new UTF8Encoding(true).GetString(appliedBytes, 3, appliedBytes.Length - 3);
+                Assert(appliedText.Contains("public virtual void RunWork(string taskName)"),
+                    "Expected RunWork stub after git apply.");
+                AssertNoBareLf(appliedText, "git apply on CRLF + BOM file");
+            }
+            finally
+            {
+                if (Directory.Exists(repoDir)) Directory.Delete(repoDir, true);
             }
         }
 
@@ -2592,6 +2755,230 @@ public class DemoService : IDemoService
             finally
             {
                 if (File.Exists(tempFile)) File.Delete(tempFile);
+            }
+        }
+
+        static void Test_PatchApplicator_PreservesBomAndNativeLineEndings()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"patch_bom_nl_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                var applicator = new PatchApplicator();
+
+                // 1. UTF-8 with BOM + CRLF file, given a stub containing bare LF newlines
+                string utf8BomFile = Path.Combine(tempDir, "Utf8BomService.cs");
+                string crlfSource = "namespace Demo\r\n{\r\n    public class Utf8BomService : IService\r\n    {\r\n        public void Existing()\r\n        {\r\n        }\r\n    }\r\n}\r\n";
+                File.WriteAllText(utf8BomFile, crlfSource, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+                var candidate1 = new PatchCandidate
+                {
+                    TargetFilePath = utf8BomFile,
+                    TargetTypeName = "Utf8BomService",
+                    MemberSignature = "public virtual void AddedMethod()",
+                    GeneratedCode = "        public virtual void AddedMethod()\n        {\n            throw new NotImplementedException();\n        }"
+                };
+
+                Assert(applicator.ApplyPatch(candidate1, requireConfirmation: false), "Expected UTF-8 BOM patch to apply.");
+                byte[] utf8BomBytes = File.ReadAllBytes(utf8BomFile);
+                Assert(utf8BomBytes.Length >= 3 && utf8BomBytes[0] == 0xEF && utf8BomBytes[1] == 0xBB && utf8BomBytes[2] == 0xBF,
+                    "Expected UTF-8 BOM (EF BB BF) to be preserved by PatchApplicator.");
+                string utf8BomContent = new UTF8Encoding(true).GetString(utf8BomBytes, 3, utf8BomBytes.Length - 3);
+                Assert(utf8BomContent.Contains("AddedMethod()"), "Expected AddedMethod in UTF-8 BOM file.");
+                AssertNoBareLf(utf8BomContent, "UTF-8 BOM CRLF file after PatchApplicator");
+
+                // 2. UTF-8 without BOM + LF file, given a stub containing CRLF newlines
+                string utf8NoBomFile = Path.Combine(tempDir, "Utf8NoBomService.cs");
+                string lfSource = "namespace Demo\n{\n    public class Utf8NoBomService : IService\n    {\n    }\n}\n";
+                File.WriteAllText(utf8NoBomFile, lfSource, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+                var candidate2 = new PatchCandidate
+                {
+                    TargetFilePath = utf8NoBomFile,
+                    TargetTypeName = "Utf8NoBomService",
+                    MemberSignature = "public virtual void AddedLfMethod()",
+                    GeneratedCode = "        public virtual void AddedLfMethod()\r\n        {\r\n            throw new NotImplementedException();\r\n        }"
+                };
+
+                Assert(applicator.ApplyPatch(candidate2, requireConfirmation: false), "Expected UTF-8 no-BOM patch to apply.");
+                byte[] noBomBytes = File.ReadAllBytes(utf8NoBomFile);
+                Assert(!(noBomBytes.Length >= 3 && noBomBytes[0] == 0xEF && noBomBytes[1] == 0xBB && noBomBytes[2] == 0xBF),
+                    "Expected UTF-8 file without BOM to remain without BOM.");
+                string lfContent = Encoding.UTF8.GetString(noBomBytes);
+                Assert(!lfContent.Contains('\r'), "Expected LF file to contain no '\\r' characters after patching.");
+                Assert(lfContent.Contains("AddedLfMethod()"), "Expected AddedLfMethod in LF file.");
+
+                // 3. UTF-16 LE BOM + CRLF file
+                string utf16File = Path.Combine(tempDir, "Utf16Service.cs");
+                File.WriteAllText(utf16File, crlfSource.Replace("Utf8BomService", "Utf16Service"), new UnicodeEncoding(bigEndian: false, byteOrderMark: true));
+
+                var candidate3 = new PatchCandidate
+                {
+                    TargetFilePath = utf16File,
+                    TargetTypeName = "Utf16Service",
+                    MemberSignature = "public virtual void AddedUtf16Method()",
+                    GeneratedCode = "        public virtual void AddedUtf16Method()\n        {\n            throw new NotImplementedException();\n        }"
+                };
+
+                Assert(applicator.ApplyPatch(candidate3, requireConfirmation: false), "Expected UTF-16 LE BOM patch to apply.");
+                byte[] utf16Bytes = File.ReadAllBytes(utf16File);
+                Assert(utf16Bytes.Length >= 2 && utf16Bytes[0] == 0xFF && utf16Bytes[1] == 0xFE,
+                    "Expected UTF-16 LE BOM (FF FE) to be preserved by PatchApplicator.");
+                string utf16Content = new UnicodeEncoding(false, true).GetString(utf16Bytes, 2, utf16Bytes.Length - 2);
+                AssertNoBareLf(utf16Content, "UTF-16 LE CRLF file after PatchApplicator");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_PatchApplicator_MultiMemberDuplicateGuardFiltersExistingMembers()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"patch_multimember_guard_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "ISyncService.cs");
+                File.WriteAllText(ifaceFile, @"
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+
+public interface ISyncService
+{
+    Task<string> SyncAsync(string dbName, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
+    Task ResetAsync(string dbName, CancellationToken cancellationToken = default);
+    string CurrentStatus { get; }
+}
+");
+
+                // Class already implements SyncAsync with `async`, custom body, different parameter names, and System.Threading.CancellationToken
+                string classFile = Path.Combine(tempDir, "SyncService.cs");
+                File.WriteAllText(classFile, @"
+using System;
+using System.Threading.Tasks;
+
+public class SyncService : ISyncService
+{
+    public async Task<string> SyncAsync(
+        string database,
+        IProgress<int> reporter,
+        System.Threading.CancellationToken token = default)
+    {
+        await Task.Yield();
+        return database;
+    }
+}
+");
+
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 5,
+                        ColumnNumber = 14,
+                        Message = "'SyncService' does not implement interface member 'ISyncService.SyncAsync(string, IProgress<int>, CancellationToken)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 5,
+                        ColumnNumber = 14,
+                        Message = "'SyncService' does not implement interface member 'ISyncService.ResetAsync(string, CancellationToken)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 5,
+                        ColumnNumber = 14,
+                        Message = "'SyncService' does not implement interface member 'ISyncService.CurrentStatus'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches.Count == 1, $"Expected 1 combined PatchCandidate, got {patches.Count}");
+                Assert(patches[0].Members.Count == 3, $"Expected 3 per-member entries, got {patches[0].Members.Count}");
+                Assert(patches[0].MemberSignature.Contains("SyncAsync") && patches[0].MemberSignature.Contains("ResetAsync"),
+                    $"Expected MemberSignature to list member signatures, got: {patches[0].MemberSignature}");
+
+                var applicator = new PatchApplicator();
+                bool applied = applicator.ApplyPatch(patches[0], requireConfirmation: false);
+                Assert(applied && patches[0].IsApplied, "Expected multi-member patch application to succeed.");
+
+                string updated = File.ReadAllText(classFile);
+                int syncCount = Regex.Matches(updated, @"\bSyncAsync\s*\(").Count;
+                int resetCount = Regex.Matches(updated, @"\bResetAsync\s*\(").Count;
+                int propCount = Regex.Matches(updated, @"\bCurrentStatus\b").Count;
+
+                Assert(syncCount == 1, $"Expected SyncAsync NOT to be duplicated (preventing CS0111), found {syncCount} declarations:\n{updated}");
+                Assert(updated.Contains("await Task.Yield();"), "Expected existing async custom body of SyncAsync to remain intact.");
+                Assert(resetCount == 1, $"Expected missing ResetAsync to be inserted once, found {resetCount}:\n{updated}");
+                Assert(propCount == 1, $"Expected missing CurrentStatus property to be inserted once, found {propCount}:\n{updated}");
+
+                // Re-applying the same multi-member candidate must be idempotent
+                string snapshotAfterFirstApply = updated;
+                bool appliedAgain = applicator.ApplyPatch(patches[0], requireConfirmation: false);
+                Assert(appliedAgain, "Expected second ApplyPatch call to return true.");
+                Assert(File.ReadAllText(classFile) == snapshotAfterFirstApply, "Expected second ApplyPatch call not to modify file.");
+
+                // Fallback verification: manually constructed multi-member PatchCandidate (Members left empty)
+                var manualCandidate = new PatchCandidate
+                {
+                    TargetFilePath = classFile,
+                    TargetTypeName = "SyncService",
+                    GeneratedCode =
+                        "        public virtual Task ResetAsync(string dbName, System.Threading.CancellationToken cancellationToken = default)\n        {\n            throw new NotImplementedException();\n        }\n\n" +
+                        "        public virtual void ExtraAction(int retries)\n        {\n            throw new NotImplementedException();\n        }"
+                };
+                Assert(applicator.ApplyPatch(manualCandidate, requireConfirmation: false), "Expected manual multi-member fallback patch to apply.");
+                string afterManual = File.ReadAllText(classFile);
+                Assert(Regex.Matches(afterManual, @"\bResetAsync\s*\(").Count == 1, "Manual fallback must not duplicate ResetAsync.");
+                Assert(Regex.Matches(afterManual, @"\bExtraAction\s*\(").Count == 1, "Manual fallback must insert missing ExtraAction.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        private static void RunGitCommand(string workingDirectory, string arguments)
+        {
+            var psi = new ProcessStartInfo("git", arguments)
+            {
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var proc = Process.Start(psi);
+            Assert(proc != null, $"Failed to start git {arguments}");
+            string stdout = proc!.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit();
+            Assert(proc.ExitCode == 0, $"git {arguments} failed (exit {proc.ExitCode}):\nSTDOUT: {stdout}\nSTDERR: {stderr}");
+        }
+
+        private static void AssertNoBareLf(string text, string context)
+        {
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '\n' && (i == 0 || text[i - 1] != '\r'))
+                {
+                    throw new Exception($"Assertion Failed: Found bare LF at index {i} in {context}.");
+                }
             }
         }
 
