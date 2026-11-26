@@ -1839,6 +1839,108 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
             });
 
+            RunSyncTest("AppXaml_ComboBoxStyle_EditableFocusIndicatorAndAdorner_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string appXamlContent = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(appXamlContent);
+
+                var comboBoxStyle = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Style" &&
+                    e.Attribute("TargetType")?.Value == "ComboBox" &&
+                    e.Attributes().All(a => a.Name.LocalName != "Key"));
+                Assert(comboBoxStyle != null, "App.xaml must define an implicit <Style TargetType=\"ComboBox\">");
+
+                var setters = comboBoxStyle!.Elements().Where(e => e.Name.LocalName == "Setter").ToList();
+                Assert(setters.Any(s => s.Attribute("Property")?.Value == "BorderThickness" && s.Attribute("Value")?.Value == "1"),
+                    "ComboBox style must keep BorderThickness=\"1\" to prevent layout shift");
+                Assert(setters.Any(s => s.Attribute("Property")?.Value == "FocusVisualStyle" && s.Attribute("Value")?.Value == "{StaticResource FocusVisualStyle}"),
+                    "ComboBox style must keep default FocusVisualStyle=\"{StaticResource FocusVisualStyle}\" for non-editable ComboBox controls");
+                Assert(setters.Any(s => s.Attribute("Property")?.Value == "local:App.TrackEditableFocus" && s.Attribute("Value")?.Value == "True"),
+                    "ComboBox style must bind shared attached property local:App.TrackEditableFocus=\"True\"");
+
+                var triggersElement = comboBoxStyle.Elements().FirstOrDefault(e => e.Name.LocalName == "Style.Triggers");
+                Assert(triggersElement != null, "ComboBox style must declare Style.Triggers");
+                var triggers = triggersElement!.Elements().Where(e => e.Name.LocalName == "Trigger").ToList();
+
+                var keyboardFocusedTrigger = triggers.FirstOrDefault(t =>
+                    t.Attribute("Property")?.Value == "IsKeyboardFocused" &&
+                    t.Attribute("Value")?.Value == "True");
+                Assert(keyboardFocusedTrigger != null, "ComboBox style must retain Trigger for IsKeyboardFocused=\"True\"");
+                Assert(keyboardFocusedTrigger!.Elements().Any(s =>
+                    s.Name.LocalName == "Setter" &&
+                    s.Attribute("Property")?.Value == "BorderBrush" &&
+                    s.Attribute("Value")?.Value == "{StaticResource FocusBorderBrush}"),
+                    "IsKeyboardFocused=\"True\" trigger must set BorderBrush to {StaticResource FocusBorderBrush}");
+
+                var keyboardFocusWithinTrigger = triggers.FirstOrDefault(t =>
+                    t.Attribute("Property")?.Value == "IsKeyboardFocusWithin" &&
+                    t.Attribute("Value")?.Value == "True");
+                Assert(keyboardFocusWithinTrigger != null, "ComboBox style must declare Trigger for IsKeyboardFocusWithin=\"True\"");
+                Assert(keyboardFocusWithinTrigger!.Elements().Any(s =>
+                    s.Name.LocalName == "Setter" &&
+                    s.Attribute("Property")?.Value == "BorderBrush" &&
+                    s.Attribute("Value")?.Value == "{StaticResource FocusBorderBrush}"),
+                    "IsKeyboardFocusWithin=\"True\" trigger must set BorderBrush to {StaticResource FocusBorderBrush}");
+
+                var editableTrigger = triggers.FirstOrDefault(t =>
+                    t.Attribute("Property")?.Value == "IsEditable" &&
+                    t.Attribute("Value")?.Value == "True");
+                Assert(editableTrigger != null, "ComboBox style must declare Trigger for IsEditable=\"True\"");
+                Assert(editableTrigger!.Elements().Any(s =>
+                    s.Name.LocalName == "Setter" &&
+                    s.Attribute("Property")?.Value == "FocusVisualStyle" &&
+                    s.Attribute("Value")?.Value == "{x:Null}"),
+                    "IsEditable=\"True\" trigger must set FocusVisualStyle to {x:Null} to prevent duplicate outer adorners");
+
+                Assert(!triggers.SelectMany(t => t.Elements()).Any(s => s.Attribute("Property")?.Value == "BorderThickness"),
+                    "ComboBox triggers must not modify BorderThickness");
+
+                string appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(appXamlPath)!, "App.xaml.cs"));
+                Assert(System.IO.File.Exists(appXamlCsPath), $"App.xaml.cs file should exist at path {appXamlCsPath}");
+                string appCsContent = System.IO.File.ReadAllText(appXamlCsPath);
+
+                Assert(appCsContent.Contains("TrackEditableFocusProperty"), "App.xaml.cs must register TrackEditableFocusProperty");
+                Assert(appCsContent.Contains("IsEditable"), "App.xaml.cs must guard editable focus tracking on ComboBox.IsEditable");
+                Assert(appCsContent.Contains("IsKeyboardFocusWithinChanged"), "App.xaml.cs must subscribe to IsKeyboardFocusWithinChanged");
+                Assert(appCsContent.Contains("IsEnabledChanged"), "App.xaml.cs must subscribe to IsEnabledChanged");
+                Assert(appCsContent.Contains("Loaded +="), "App.xaml.cs must subscribe to Loaded");
+                Assert(appCsContent.Contains("Unloaded +="), "App.xaml.cs must subscribe to Unloaded");
+                Assert(appCsContent.Contains(": Adorner"), "App.xaml.cs must define a custom Adorner around the outer ComboBox");
+                Assert(appCsContent.Contains("AdornerLayer.GetAdornerLayer"), "App.xaml.cs must manage the focus indicator in AdornerLayer");
+                Assert(appCsContent.Contains("\"FocusVisualStyle\""), "App.xaml.cs must resolve FocusVisualStyle resource for the adorner");
+                Assert(appCsContent.Contains("IsHitTestVisible = false"), "Editable ComboBox focus adorner must be non-interactive (IsHitTestVisible = false)");
+                Assert(appCsContent.Contains("Focusable = false"), "Editable ComboBox focus adorner must not be focusable (Focusable = false)");
+
+                // Verify WCAG 2.2 SC 1.4.11 non-text contrast (>= 3.0:1) for #0284C7 against #F8FAFC and #FFFFFF
+                double fR = 2.0 / 255.0, fG = 132.0 / 255.0, fB = 199.0 / 255.0;
+                double fRLin = fR <= 0.04045 ? fR / 12.92 : Math.Pow((fR + 0.055) / 1.055, 2.4);
+                double fGLin = fG <= 0.04045 ? fG / 12.92 : Math.Pow((fG + 0.055) / 1.055, 2.4);
+                double fBLin = fB <= 0.04045 ? fB / 12.92 : Math.Pow((fB + 0.055) / 1.055, 2.4);
+                double focusLum = 0.2126 * fRLin + 0.7152 * fGLin + 0.0722 * fBLin;
+
+                double bgR = 248.0 / 255.0, bgG = 250.0 / 255.0, bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double slateBgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrastOnSlate = (slateBgLum + 0.05) / (focusLum + 0.05);
+                double contrastOnWhite = (1.0 + 0.05) / (focusLum + 0.05);
+                Assert(contrastOnSlate >= 3.0, $"Focus ring contrast {contrastOnSlate:F2}:1 on #F8FAFC must meet WCAG 2.2 SC 1.4.11 (>= 3:1)");
+                Assert(contrastOnWhite >= 3.0, $"Focus ring contrast {contrastOnWhite:F2}:1 on #FFFFFF must meet WCAG 2.2 SC 1.4.11 (>= 3:1)");
+            });
+
             RunSyncTest("ErrorDetailsWindowXaml_CopyStatus_UsesAccessibleStatusSuccessBrush", () =>
             {
                 string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
