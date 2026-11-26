@@ -36,7 +36,7 @@ namespace CollationModifier.Tests
         public Exception? TrySetMultiUserExceptionToThrow { get; set; }
         public Exception? AlterCollationExceptionToThrow { get; set; }
         public Exception? RestoreExceptionToThrow { get; set; }
-        public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
+        public Func<string, string, string, CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
         public Func<CancellationToken, Task>? OnGetDatabases { get; set; }
@@ -137,7 +137,7 @@ namespace CollationModifier.Tests
         {
             if (OnPreflightCheck != null)
             {
-                await OnPreflightCheck(cancellationToken);
+                await OnPreflightCheck(databaseName, backupDirectory, targetCollation, cancellationToken);
             }
             cancellationToken.ThrowIfCancellationRequested();
             PreflightReportToReturn.DatabaseName = databaseName;
