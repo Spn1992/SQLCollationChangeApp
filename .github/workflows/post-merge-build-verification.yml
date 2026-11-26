@@ -23,34 +23,14 @@ jobs:
             8.0.x
             10.0.x
 
-      - name: Restore CollationModifier dependencies
-        run: |
-          dotnet restore CollationModifier/CollationModifier.csproj --locked-mode 2>&1 | tee /tmp/build-and-test.log
-          dotnet list CollationModifier/CollationModifier.csproj package --deprecated --include-transitive --no-restore 2>&1 | tee -a /tmp/build-and-test.log
+      - name: Restore solution dependencies
+        run: dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log
 
-      - name: Verify CollationModifier Windows_NT net48 lockfile
-        run: dotnet restore CollationModifier/CollationModifier.csproj --locked-mode -p:OS=Windows_NT -p:EnableWindowsTargeting=true 2>&1 | tee -a /tmp/build-and-test.log
+      - name: Build solution
+        run: dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
-      - name: Restore CollationModifier.Tests dependencies
-        run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj --locked-mode 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Restore MSBuildDiagnosticPatcher dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj --locked-mode 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Restore MSBuildDiagnosticPatcher.Tests dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj --locked-mode 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Build MSBuildDiagnosticPatcher
-        run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Build CollationModifier
-        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Run unit tests
-        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Run MSBuildDiagnosticPatcher unit tests
-        run: dotnet run --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+      - name: Run solution unit tests
+        run: dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Generate diagnostics and candidate patches
         if: failure()

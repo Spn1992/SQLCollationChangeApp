@@ -1,0 +1,25 @@
+<Project>
+
+  <Target Name="VSTest" Condition="'$(IsConsoleTestRunner)' == 'true'">
+    <PropertyGroup Condition="'$(DOTNET_HOST_PATH)' == ''">
+      <DOTNET_HOST_PATH>dotnet</DOTNET_HOST_PATH>
+    </PropertyGroup>
+
+    <MSBuild Projects="$(MSBuildProjectFullPath)"
+             Targets="Build"
+             Condition="'$(VSTestNoBuild)' != 'true'" />
+
+    <Exec Command="&quot;$(DOTNET_HOST_PATH)&quot; &quot;$(TargetPath)&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          StandardOutputImportance="High"
+          StandardErrorImportance="High"
+          IgnoreStandardErrorWarningFormat="true"
+          IgnoreExitCode="true">
+      <Output TaskParameter="ExitCode" PropertyName="_ConsoleTestExitCode" />
+    </Exec>
+
+    <Error Condition="'$(_ConsoleTestExitCode)' != '0'"
+           Text="Console test runner '$(MSBuildProjectName)' failed with exit code $(_ConsoleTestExitCode)." />
+  </Target>
+
+</Project>

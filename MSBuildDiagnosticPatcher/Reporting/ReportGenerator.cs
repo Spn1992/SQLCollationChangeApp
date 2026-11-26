@@ -174,7 +174,7 @@ namespace MSBuildDiagnosticPatcher.Reporting
                 foreach (var tf in report.TestFailures)
                 {
                     string name = string.IsNullOrEmpty(tf.TestMethod) ? tf.TestClass : $"{tf.TestClass}.{tf.TestMethod}";
-                    Console.WriteLine($"  [FAIL] {name}: {tf.AssertionFailureMessage}");
+                    Console.WriteLine($"  [TEST-FAILURE] {name}: {tf.AssertionFailureMessage}");
                 }
             }
 

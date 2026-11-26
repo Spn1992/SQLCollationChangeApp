@@ -124,9 +124,17 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
                     return true;
                 }
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("Connection test was cancelled.", ex, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -142,7 +150,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
 
                     using (var command = new SqlCommand(DatabaseCatalogQuery, connection))
                     using (var reader = await command.ExecuteReaderAsync(cancellationToken))
@@ -153,6 +161,16 @@ namespace CollationModifier.Services
                         }
                     }
                 }
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo("Fetching databases was cancelled.");
+                throw new OperationCanceledException("Fetching databases was cancelled.", ex, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Fetching databases was cancelled.");
+                throw;
             }
             catch (Exception ex)
             {
@@ -187,7 +205,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
                     var query = "SELECT name FROM sys.fn_helpcollations() ORDER BY name;";
 
                     using (var command = new SqlCommand(query, connection))
@@ -208,6 +226,16 @@ namespace CollationModifier.Services
                     _cachedSupportedCollations = new HashSet<string>(collations, StringComparer.OrdinalIgnoreCase);
                 }
             }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo("Fetching supported collations was cancelled.");
+                throw new OperationCanceledException("Fetching supported collations was cancelled.", ex, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Fetching supported collations was cancelled.");
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError("Failed to fetch supported collations.", ex);
@@ -223,7 +251,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
 
                     using (var command = new SqlCommand(DefaultBackupDirectoryQuery, connection))
                     {
@@ -239,6 +267,16 @@ namespace CollationModifier.Services
                         }
                     }
                 }
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo("Retrieving default backup directory was cancelled.");
+                throw new OperationCanceledException("Retrieving default backup directory was cancelled.", ex, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Retrieving default backup directory was cancelled.");
+                throw;
             }
             catch (Exception ex)
             {
@@ -256,7 +294,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
 
                     var batchedQuery = $@"
                         -- 1. Default Backup Directory
@@ -309,6 +347,11 @@ namespace CollationModifier.Services
                         }
                     }
                 }
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo("Server initialization query was cancelled.");
+                throw new OperationCanceledException("Server initialization query was cancelled.", ex, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -401,6 +444,8 @@ namespace CollationModifier.Services
 
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var report = new PreflightReport
             {
                 DatabaseName = databaseName
@@ -444,6 +489,10 @@ namespace CollationModifier.Services
                                 cachedCollations = _cachedSupportedCollations;
                             }
                         }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
                         catch (Exception ex)
                         {
                             _logger.LogWarning($"Failed to check target collation in sys.fn_helpcollations(): {ex.Message}");
@@ -457,6 +506,10 @@ namespace CollationModifier.Services
                             report.ValidationErrors.Add($"Target collation '{targetCollation}' is not supported by SQL Server.");
                         }
                     }
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -475,7 +528,7 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
 
                     var batchedQuery = $@"
                         USE [{safeDbName}];
@@ -642,8 +695,19 @@ namespace CollationModifier.Services
                     }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo($"Preflight check for {databaseName} was cancelled.");
+                throw;
+            }
             catch (Exception ex)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogInfo($"Preflight check for {databaseName} was cancelled.");
+                    throw new OperationCanceledException(cancellationToken);
+                }
+
                 _logger.LogError($"Preflight check failed for {databaseName}", ex);
                 report.ValidationErrors.Add($"Database connection or pre-flight query error: {ex.Message}");
             }
@@ -672,6 +736,16 @@ namespace CollationModifier.Services
                 _logger.LogInfo($"Successfully backed up {databaseName} to {backupFile}");
                 return backupFile;
             }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo($"Backup cancelled for database: {databaseName}");
+                throw new OperationCanceledException($"Backup cancelled for database: {databaseName}", ex, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo($"Backup cancelled for database: {databaseName}");
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError($"Backup failed for database: {databaseName}", ex);
@@ -687,11 +761,11 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await OpenConnectionAsync(connection, cancellationToken);
-                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
+                    await OpenConnectionAsync(connection, CancellationToken.None);
+                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, CancellationToken.None);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", CancellationToken.None);
                     var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
+                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, CancellationToken.None, new SqlParameter("@BackupFile", backupFile));
                     await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
@@ -729,9 +803,19 @@ namespace CollationModifier.Services
                     await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
                     var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
                     await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", cancellationToken);
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                throw new OperationCanceledException($"Collation alteration cancelled for database: {databaseName}", ex, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                throw;
             }
             catch (Exception ex)
             {
@@ -774,16 +858,17 @@ namespace CollationModifier.Services
             return identifier.Replace("]", "]]");
         }
 
-        internal Func<SqlCommand, CancellationToken, Task<int>>? NonQueryCommandExecutor { get; set; }
-
-        protected internal virtual Task OpenConnectionAsync(
-            SqlConnection connection,
-            CancellationToken cancellationToken = default)
+        protected virtual Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
         {
             return connection.OpenAsync(cancellationToken);
         }
 
-        protected internal virtual async Task<int> ExecuteNonQueryAsync(
+        protected virtual Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, CancellationToken cancellationToken)
+        {
+            return command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        protected virtual async Task<int> ExecuteNonQueryAsync(
             SqlConnection connection,
             string commandText,
             int timeoutSeconds = 3600,
@@ -797,15 +882,9 @@ namespace CollationModifier.Services
                 {
                     command.Parameters.AddRange(parameters);
                 }
-
                 try
                 {
-                    if (NonQueryCommandExecutor != null)
-                    {
-                        return await NonQueryCommandExecutor(command, cancellationToken);
-                    }
-
-                    return await command.ExecuteNonQueryAsync(cancellationToken);
+                    return await ExecuteCommandNonQueryAsync(command, cancellationToken);
                 }
                 catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
                 {
@@ -814,11 +893,7 @@ namespace CollationModifier.Services
             }
         }
 
-        protected internal virtual async Task SetDatabaseUserModeAsync(
-            SqlConnection connection,
-            string databaseName,
-            string mode,
-            CancellationToken cancellationToken = default)
+        private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             bool isSingleUser = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase);
@@ -826,8 +901,7 @@ namespace CollationModifier.Services
                 ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-            var effectiveToken = isSingleUser ? cancellationToken : CancellationToken.None;
-            await ExecuteNonQueryAsync(connection, query, 3600, effectiveToken);
+            await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
         }
 
         private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)

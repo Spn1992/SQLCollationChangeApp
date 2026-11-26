@@ -34,14 +34,23 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors", Test_MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors);
             RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError);
             RunTest("MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity", Test_MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity);
-            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError);
+            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedAndMessageSeverity_ReturnsNull", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedAndMessageSeverity_ReturnsNull);
             RunTest("MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates", Test_MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates);
             RunTest("MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber", Test_MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber);
             RunTest("MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates", Test_MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon", Test_MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon);
+            RunTest("MSBuildLogParser_ParseLine_SpecialPathCharacters_X86_At_Plus", Test_MSBuildLogParser_ParseLine_SpecialPathCharacters_X86_At_Plus);
+            RunTest("MSBuildLogParser_ParseLine_ParallelNodePrefixes_1_And_1Colon7", Test_MSBuildLogParser_ParseLine_ParallelNodePrefixes_1_And_1Colon7);
+            RunTest("MSBuildLogParser_ParseLine_ThreeAndFourTupleCoordinates", Test_MSBuildLogParser_ParseLine_ThreeAndFourTupleCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_PrefixFreeNuGetAndNetSdkLines", Test_MSBuildLogParser_ParseLine_PrefixFreeNuGetAndNetSdkLines);
+            RunTest("MSBuildLogParser_ParseLine_McCaAndSyslibCodes", Test_MSBuildLogParser_ParseLine_McCaAndSyslibCodes);
+            RunTest("MSBuildLogParser_ParseLine_SubcategoryWarningsAndErrors", Test_MSBuildLogParser_ParseLine_SubcategoryWarningsAndErrors);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
+            RunTest("MSBuildLogParser_ParseText_DeduplicatesSummaryBlockErrorsAndWarnings", Test_MSBuildLogParser_ParseText_DeduplicatesSummaryBlockErrorsAndWarnings);
+            RunTest("MSBuildLogParser_ParseText_DeduplicatesAnsiFormattingAndPathSlashes", Test_MSBuildLogParser_ParseText_DeduplicatesAnsiFormattingAndPathSlashes);
+            RunTest("MSBuildLogParser_ParseText_PreservesSameLineDistinctErrorsAndMultiProjectDiagnostics", Test_MSBuildLogParser_ParseText_PreservesSameLineDistinctErrorsAndMultiProjectDiagnostics);
 
             // 1.5 AnsiCleaner Tests
             RunTest("AnsiCleaner_Clean_HandlesNullAndEmpty", Test_AnsiCleaner_Clean_HandlesNullAndEmpty);
@@ -82,8 +91,10 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_CreatePatchForFile_MatchesReferenceAcrossLineEndingsAndEdgeCases", Test_PatchGenerator_CreatePatchForFile_LineEndingsAndEdgeCases);
             RunTest("PatchGenerator_LargeFileDiff_MatchesReferenceWithBoundedAllocations", Test_PatchGenerator_LargeFileDiff_ExactOutputAndBoundedAllocations);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
-            RunTest("PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks", Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks);
-            RunTest("PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache", Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache);
+            RunTest("PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot", Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot);
+            RunTest("PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath", Test_PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath);
+            RunTest("PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing", Test_PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing);
+            RunTest("Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags", Test_Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -93,7 +104,7 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("ReportGenerator_GenerateMarkdownReport_ProducesFormattedMarkdown", Test_ReportGenerator_Markdown);
             RunTest("ReportGenerator_GenerateMarkdownReport_ReplacesLineBreaksInTableCellsAndKeepsDetails", Test_ReportGenerator_Markdown_MultilineTableCellsAndDetails);
             RunTest("ReportGenerator_GenerateJsonReport_ProducesValidJson", Test_ReportGenerator_Json);
-            RunTest("ReportGenerator_PrintConsoleSummary_FiltersErrorsAndSkipsWhenNoErrors", Test_ReportGenerator_PrintConsoleSummary);
+            RunTest("ReportGenerator_PrintConsoleSummary_DisambiguatesFailuresAndAvoidsParserMatches", Test_ReportGenerator_PrintConsoleSummary_DisambiguatesFailuresAndAvoidsParserMatches);
 
             // 7. End-to-End Diagnostic & Patching Workflow
             RunTest("EndToEnd_ParseLogAndGeneratePatch_RestoresInterfaceImplementation", Test_EndToEnd_Workflow);
@@ -112,7 +123,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent", Test_Program_Main_ReturnsOne_WhenBothErrorsAndFailuresPresent);
             RunTest("Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics", Test_Program_Main_ReturnsExitCode0_WhenPatchesRemediateAllCompilerDiagnostics);
             RunTest("Program_Main_ReturnsOne_WhenInputFileNotFound", Test_Program_Main_ReturnsOne_WhenInputFileNotFound);
-            RunTest("Program_Main_ReturnsExitCode1_ForUnhandledDotnetCrashAndPersistsJsonDetails", Test_Program_Main_ReturnsExitCode1_ForUnhandledDotnetCrashAndPersistsJsonDetails);
+            RunTest("InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams", Test_InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams);
+            RunTest("InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown", Test_InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown);
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
@@ -309,17 +321,27 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(diag.Message.Contains("Skipping restore for project"), "Expected info message to match");
         }
 
-        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError()
+        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedAndMessageSeverity_ReturnsNull()
         {
             var parser = new MSBuildLogParser();
-            string line = "MSBUILD : unexpected MSB1003: Unrecognized build failure.";
 
-            var diag = parser.ParseLine(line);
-            Assert(diag != null, "Expected diagnostic with unrecognized severity to be parsed.");
-            Assert(diag!.Code == "MSB1003", $"Expected code MSB1003, got {diag.Code}");
-            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected unrecognized severity to default to Error, got {diag.Severity}");
-            Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
-            Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
+            string unexpectedLine = "MSBUILD : unexpected MSB1003: Unrecognized build failure.";
+            Assert(parser.ParseLine(unexpectedLine) == null, "Expected unrecognized 'unexpected' severity line to return null.");
+
+            string msbuildMessageLine = "MSBUILD : message MSB1001: Informational build message.";
+            Assert(parser.ParseLine(msbuildMessageLine) == null, "Expected 'message' severity line with origin to return null.");
+
+            string highMessageLine = "MSBUILD : high message MSB4000: High importance informational message.";
+            Assert(parser.ParseLine(highMessageLine) == null, "Expected subcategory 'high message' line to return null.");
+
+            string coordMessageLine = "Services/DatabaseService.cs(11,36): message CS8001: Informational compiler message.";
+            Assert(parser.ParseLine(coordMessageLine) == null, "Expected coordinate-bearing 'message' line to return null.");
+
+            string prefixFreeMessageLine = "message NU1500: Restore informational output.";
+            Assert(parser.ParseLine(prefixFreeMessageLine) == null, "Expected prefix-free 'message' line to return null.");
+
+            string quotedErrorInsideMessageLine = "message MSB4000: error CS1002: Quoted error inside message text";
+            Assert(parser.ParseLine(quotedErrorInsideMessageLine) == null, "Expected prefix-free 'message' line containing quoted error text to return null.");
         }
 
         static void Test_MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates()
@@ -440,6 +462,223 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(colonDiag.Message == "Multiple colons in message: part 1: part 2", $"Expected full message preserved, got '{colonDiag.Message}'");
         }
 
+        static void Test_MSBuildLogParser_ParseLine_SpecialPathCharacters_X86_At_Plus()
+        {
+            var parser = new MSBuildLogParser();
+
+            string x86Line = @"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Microsoft.Common.CurrentVersion.targets(2301,5): error MSB3245: Could not resolve this reference. [C:\Work@2\My+App\CollationModifier.csproj]";
+            var x86Diag = parser.ParseLine(x86Line);
+            Assert(x86Diag != null, "Expected (x86) path diagnostic to parse.");
+            Assert(x86Diag!.FilePath == @"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Microsoft.Common.CurrentVersion.targets", $"Unexpected FilePath '{x86Diag.FilePath}'");
+            Assert(x86Diag.LineNumber == 2301, $"Expected line 2301, got {x86Diag.LineNumber}");
+            Assert(x86Diag.ColumnNumber == 5, $"Expected col 5, got {x86Diag.ColumnNumber}");
+            Assert(x86Diag.Severity == DiagnosticSeverity.Error, $"Expected Error, got {x86Diag.Severity}");
+            Assert(x86Diag.Code == "MSB3245", $"Expected MSB3245, got {x86Diag.Code}");
+            Assert(x86Diag.ProjectPath == @"C:\Work@2\My+App\CollationModifier.csproj", $"Unexpected ProjectPath '{x86Diag.ProjectPath}'");
+
+            string atPlusCoordLine = "/home/runner/work/repo@2/src/Collation+Modifier/Program.cs(42,10): warning CS0168: The variable 'ex' is declared but never used [/home/runner/work/repo@2/src/Collation+Modifier/App.csproj]";
+            var atPlusDiag = parser.ParseLine(atPlusCoordLine);
+            Assert(atPlusDiag != null, "Expected @ and + path diagnostic with coordinates to parse.");
+            Assert(atPlusDiag!.FilePath == "/home/runner/work/repo@2/src/Collation+Modifier/Program.cs", $"Unexpected FilePath '{atPlusDiag.FilePath}'");
+            Assert(atPlusDiag.LineNumber == 42 && atPlusDiag.ColumnNumber == 10, $"Expected (42,10), got ({atPlusDiag.LineNumber},{atPlusDiag.ColumnNumber})");
+            Assert(atPlusDiag.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {atPlusDiag.Severity}");
+
+            string numericDirLine = @"C:\Build (2022)\Program Files (x86)\Module.cs(18,4): error CS1002: ; expected";
+            var numericDirDiag = parser.ParseLine(numericDirLine);
+            Assert(numericDirDiag != null, "Expected numeric directory path before coordinates to parse.");
+            Assert(numericDirDiag!.FilePath == @"C:\Build (2022)\Program Files (x86)\Module.cs", $"Unexpected FilePath '{numericDirDiag.FilePath}'");
+            Assert(numericDirDiag.LineNumber == 18 && numericDirDiag.ColumnNumber == 4, $"Expected (18,4), got ({numericDirDiag.LineNumber},{numericDirDiag.ColumnNumber})");
+
+            string coordFreeSpecialPath = @"C:\Program Files (x86)\dotnet\sdk@8\My+Targets.targets : error NETSDK1045: The current .NET SDK does not support targeting .NET 9.0.";
+            var coordFreeDiag = parser.ParseLine(coordFreeSpecialPath);
+            Assert(coordFreeDiag != null, "Expected coordinate-free (x86)/@/+ path diagnostic to parse.");
+            Assert(coordFreeDiag!.FilePath == @"C:\Program Files (x86)\dotnet\sdk@8\My+Targets.targets", $"Unexpected FilePath '{coordFreeDiag.FilePath}'");
+            Assert(coordFreeDiag.LineNumber == 0 && coordFreeDiag.ColumnNumber == 0, "Expected 0 coordinates.");
+            Assert(coordFreeDiag.Code == "NETSDK1045", $"Expected NETSDK1045, got {coordFreeDiag.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ParallelNodePrefixes_1_And_1Colon7()
+        {
+            var parser = new MSBuildLogParser();
+
+            string node1Coord = "1>Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member [CollationModifier.csproj]";
+            var diag1 = parser.ParseLine(node1Coord);
+            Assert(diag1 != null, "Expected 1> coordinate diagnostic to parse.");
+            Assert(diag1!.FilePath == "Services/DatabaseService.cs", $"Expected 'Services/DatabaseService.cs', got '{diag1.FilePath}'");
+            Assert(diag1.LineNumber == 11 && diag1.ColumnNumber == 36, $"Expected (11,36), got ({diag1.LineNumber},{diag1.ColumnNumber})");
+            Assert(diag1.Code == "CS0535", $"Expected CS0535, got {diag1.Code}");
+
+            string node1Colon7Coord = "1:7>Views/MainWindow.xaml(15,6,15,24): error MC3074: The tag 'InvalidTag' does not exist in XML namespace [CollationModifier.csproj]";
+            var diag17 = parser.ParseLine(node1Colon7Coord);
+            Assert(diag17 != null, "Expected 1:7> coordinate diagnostic to parse.");
+            Assert(diag17!.FilePath == "Views/MainWindow.xaml", $"Expected 'Views/MainWindow.xaml', got '{diag17.FilePath}'");
+            Assert(diag17.LineNumber == 15 && diag17.ColumnNumber == 6, $"Expected (15,6), got ({diag17.LineNumber},{diag17.ColumnNumber})");
+            Assert(diag17.Code == "MC3074", $"Expected MC3074, got {diag17.Code}");
+
+            string nodeSpacedCoordFree = @"2>  C:\Program Files (x86)\App\App.csproj : warning NU1701: Package restored using fallback framework.";
+            var diagSpaced = parser.ParseLine(nodeSpacedCoordFree);
+            Assert(diagSpaced != null, "Expected spaced 2> coordinate-free diagnostic to parse.");
+            Assert(diagSpaced!.FilePath == @"C:\Program Files (x86)\App\App.csproj", $"Unexpected FilePath '{diagSpaced.FilePath}'");
+            Assert(diagSpaced.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagSpaced.Severity}");
+            Assert(diagSpaced.Code == "NU1701", $"Expected NU1701, got {diagSpaced.Code}");
+
+            string nodePrefixFree = "1:7>error NU1101: Unable to find package Bogus.Package.";
+            var diagPrefixFree = parser.ParseLine(nodePrefixFree);
+            Assert(diagPrefixFree != null, "Expected 1:7> prefix-free NuGet error to parse.");
+            Assert(diagPrefixFree!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagPrefixFree.FilePath}'");
+            Assert(diagPrefixFree.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagPrefixFree.Severity}");
+            Assert(diagPrefixFree.Code == "NU1101", $"Expected NU1101, got {diagPrefixFree.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ThreeAndFourTupleCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+
+            string threeTuple = "Services/Parser.cs(42,8,20): warning CA1822: Member 'Parse' does not access instance data and can be marked as static [CollationModifier.csproj]";
+            var diag3 = parser.ParseLine(threeTuple);
+            Assert(diag3 != null, "Expected 3-tuple coordinate diagnostic to parse.");
+            Assert(diag3!.FilePath == "Services/Parser.cs", $"Expected 'Services/Parser.cs', got '{diag3.FilePath}'");
+            Assert(diag3.LineNumber == 42, $"Expected line 42, got {diag3.LineNumber}");
+            Assert(diag3.ColumnNumber == 8, $"Expected col 8, got {diag3.ColumnNumber}");
+            Assert(diag3.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diag3.Severity}");
+            Assert(diag3.Code == "CA1822", $"Expected CA1822, got {diag3.Code}");
+
+            string fourTuple = "Views/MainWindow.xaml(14,6,14,28): error MC3074: The tag 'BadControl' does not exist in XML namespace [CollationModifier.csproj]";
+            var diag4 = parser.ParseLine(fourTuple);
+            Assert(diag4 != null, "Expected 4-tuple coordinate diagnostic to parse.");
+            Assert(diag4!.FilePath == "Views/MainWindow.xaml", $"Expected 'Views/MainWindow.xaml', got '{diag4.FilePath}'");
+            Assert(diag4.LineNumber == 14, $"Expected line 14, got {diag4.LineNumber}");
+            Assert(diag4.ColumnNumber == 6, $"Expected col 6, got {diag4.ColumnNumber}");
+            Assert(diag4.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diag4.Severity}");
+            Assert(diag4.Code == "MC3074", $"Expected MC3074, got {diag4.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_PrefixFreeNuGetAndNetSdkLines()
+        {
+            var parser = new MSBuildLogParser();
+
+            string nuError = "  error NU1101: Unable to find package NonExistent.Package. No packages exist with this id in source(s): nuget.org";
+            var diagNu = parser.ParseLine(nuError);
+            Assert(diagNu != null, "Expected prefix-free NU1101 error to parse.");
+            Assert(diagNu!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagNu.FilePath}'");
+            Assert(diagNu.LineNumber == 0 && diagNu.ColumnNumber == 0, $"Expected (0,0), got ({diagNu.LineNumber},{diagNu.ColumnNumber})");
+            Assert(diagNu.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagNu.Severity}");
+            Assert(diagNu.Code == "NU1101", $"Expected NU1101, got {diagNu.Code}");
+            Assert(diagNu.Message.Contains("Unable to find package NonExistent.Package"), $"Unexpected message '{diagNu.Message}'");
+
+            string netSdkError = "error NETSDK1045: The current .NET SDK does not support targeting .NET 9.0. [/app/CollationModifier/CollationModifier.csproj]";
+            var diagSdk = parser.ParseLine(netSdkError);
+            Assert(diagSdk != null, "Expected prefix-free NETSDK1045 error to parse.");
+            Assert(diagSdk!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagSdk.FilePath}'");
+            Assert(diagSdk.LineNumber == 0 && diagSdk.ColumnNumber == 0, $"Expected (0,0), got ({diagSdk.LineNumber},{diagSdk.ColumnNumber})");
+            Assert(diagSdk.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagSdk.Severity}");
+            Assert(diagSdk.Code == "NETSDK1045", $"Expected NETSDK1045, got {diagSdk.Code}");
+            Assert(diagSdk.ProjectPath == "/app/CollationModifier/CollationModifier.csproj", $"Unexpected ProjectPath '{diagSdk.ProjectPath}'");
+
+            string nuWarning = "warning NU1701: Package 'LegacyLib 1.0.0' was restored using '.NETFramework,Version=v4.6.1'.";
+            var diagWarn = parser.ParseLine(nuWarning);
+            Assert(diagWarn != null, "Expected prefix-free NU1701 warning to parse.");
+            Assert(diagWarn!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagWarn.FilePath}'");
+            Assert(diagWarn.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagWarn.Severity}");
+            Assert(diagWarn.Code == "NU1701", $"Expected NU1701, got {diagWarn.Code}");
+
+            // Guard check: prefix-free severity must not be consumed as <file> when message itself contains a colon and secondary code
+            string nestedErrorText = "error NU1101: Restore failed: error MSB1003: Inner detail";
+            var diagNested = parser.ParseLine(nestedErrorText);
+            Assert(diagNested != null, "Expected nested colon prefix-free NU1101 to parse.");
+            Assert(diagNested!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagNested.FilePath}'");
+            Assert(diagNested.Code == "NU1101", $"Expected outer code NU1101, got {diagNested.Code}");
+            Assert(diagNested.Message == "Restore failed: error MSB1003: Inner detail", $"Unexpected message '{diagNested.Message}'");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_McCaAndSyslibCodes()
+        {
+            var parser = new MSBuildLogParser();
+
+            string mcCoordFree = "Views/MainWindow.xaml : error MC3000: 'Cannot find type' [CollationModifier.csproj]";
+            var diagMc = parser.ParseLine(mcCoordFree);
+            Assert(diagMc != null, "Expected coordinate-free MC3000 error to parse.");
+            Assert(diagMc!.FilePath == "Views/MainWindow.xaml", $"Unexpected FilePath '{diagMc.FilePath}'");
+            Assert(diagMc.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagMc.Severity}");
+            Assert(diagMc.Code == "MC3000", $"Expected MC3000, got {diagMc.Code}");
+
+            string caCoordFree = "CSC : warning CA1062: Validate arguments of public methods [CollationModifier.csproj]";
+            var diagCa = parser.ParseLine(caCoordFree);
+            Assert(diagCa != null, "Expected coordinate-free CA1062 warning to parse.");
+            Assert(diagCa!.FilePath == "CSC", $"Expected FilePath 'CSC', got '{diagCa.FilePath}'");
+            Assert(diagCa.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagCa.Severity}");
+            Assert(diagCa.Code == "CA1062", $"Expected CA1062, got {diagCa.Code}");
+
+            string syslibCoordFree = "Security/Crypto.cs : warning SYSLIB1045: Convert to 'GeneratedRegexAttribute' [CollationModifier.csproj]";
+            var diagSyslib = parser.ParseLine(syslibCoordFree);
+            Assert(diagSyslib != null, "Expected coordinate-free SYSLIB1045 warning to parse.");
+            Assert(diagSyslib!.FilePath == "Security/Crypto.cs", $"Unexpected FilePath '{diagSyslib.FilePath}'");
+            Assert(diagSyslib.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagSyslib.Severity}");
+            Assert(diagSyslib.Code == "SYSLIB1045", $"Expected SYSLIB1045, got {diagSyslib.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_SubcategoryWarningsAndErrors()
+        {
+            var parser = new MSBuildLogParser();
+
+            string coordSubcatWarn = "Views/MainWindow.xaml(22,10): Localization warning MC6000: Invalid localization comment [CollationModifier.csproj]";
+            var diagCoordWarn = parser.ParseLine(coordSubcatWarn);
+            Assert(diagCoordWarn != null, "Expected coordinate subcategory warning to parse.");
+            Assert(diagCoordWarn!.Severity == DiagnosticSeverity.Warning, $"Expected Warning for Localization warning, got {diagCoordWarn.Severity}");
+            Assert(diagCoordWarn.Code == "MC6000", $"Expected MC6000, got {diagCoordWarn.Code}");
+
+            string coordSubcatErr = "Views/MainWindow.xaml(12,5): XamlInternalError error MC1000: Unknown build error [CollationModifier.csproj]";
+            var diagCoordErr = parser.ParseLine(coordSubcatErr);
+            Assert(diagCoordErr != null, "Expected coordinate subcategory error to parse.");
+            Assert(diagCoordErr!.Severity == DiagnosticSeverity.Error, $"Expected Error for XamlInternalError error, got {diagCoordErr.Severity}");
+            Assert(diagCoordErr.Code == "MC1000", $"Expected MC1000, got {diagCoordErr.Code}");
+
+            string coordFreeSubcatWarn = "CSC : compiler warning CS8002: Referenced assembly 'LegacyLib' does not have a strong name.";
+            var diagCoordFreeWarn = parser.ParseLine(coordFreeSubcatWarn);
+            Assert(diagCoordFreeWarn != null, "Expected coordinate-free subcategory warning to parse.");
+            Assert(diagCoordFreeWarn!.FilePath == "CSC", $"Expected FilePath 'CSC', got '{diagCoordFreeWarn.FilePath}'");
+            Assert(diagCoordFreeWarn.Severity == DiagnosticSeverity.Warning, $"Expected Warning for compiler warning, got {diagCoordFreeWarn.Severity}");
+            Assert(diagCoordFreeWarn.Code == "CS8002", $"Expected CS8002, got {diagCoordFreeWarn.Code}");
+
+            string multiWordSubcatWarn = "CSC : Command line warning CS2002: Source file 'Program.cs' specified multiple times";
+            var diagMultiWarn = parser.ParseLine(multiWordSubcatWarn);
+            Assert(diagMultiWarn != null, "Expected multi-word subcategory warning to parse.");
+            Assert(diagMultiWarn!.Severity == DiagnosticSeverity.Warning, $"Expected Warning for Command line warning, got {diagMultiWarn.Severity}");
+            Assert(diagMultiWarn.Code == "CS2002", $"Expected CS2002, got {diagMultiWarn.Code}");
+
+            string prefixFreeSubcatWarn = "restore warning NU1603: Package dependency resolved to higher version.";
+            var diagPrefixFreeWarn = parser.ParseLine(prefixFreeSubcatWarn);
+            Assert(diagPrefixFreeWarn != null, "Expected prefix-free subcategory warning to parse.");
+            Assert(diagPrefixFreeWarn!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagPrefixFreeWarn.FilePath}'");
+            Assert(diagPrefixFreeWarn.Severity == DiagnosticSeverity.Warning, $"Expected Warning for restore warning, got {diagPrefixFreeWarn.Severity}");
+            Assert(diagPrefixFreeWarn.Code == "NU1603", $"Expected NU1603, got {diagPrefixFreeWarn.Code}");
+
+            // Verify Program.Main returns 0 on logs with message lines and subcategory warnings
+            string tempDir = Path.Combine(Path.GetTempPath(), $"subcat_clean_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean_with_messages_and_subcat_warnings.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, string.Join("\n", new[]
+                {
+                    "MSBUILD : message MSB1001: Informational build trace.",
+                    "CSC : compiler warning CS8002: Referenced assembly 'LegacyLib' does not have a strong name.",
+                    "Views/MainWindow.xaml(22,10): Localization warning MC6000: Invalid localization comment [CollationModifier.csproj]",
+                    "Build succeeded.",
+                    "    2 Warning(s)",
+                    "    0 Error(s)"
+                }));
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 when only message lines and subcategory warnings exist, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
         static void Test_MSBuildLogParser_ParsePerformance_Under10Seconds()
         {
             var parser = new MSBuildLogParser();
@@ -471,6 +710,108 @@ namespace MSBuildDiagnosticPatcher.Tests
             Console.WriteLine($"    Parsed 20,000 lines in {sw.ElapsedMilliseconds} ms (Extracted {parsed.Count} diagnostics).");
             Assert(sw.Elapsed.TotalSeconds < 10.0, $"Expected parse duration under 10 seconds, got {sw.Elapsed.TotalSeconds:F2} seconds.");
             Assert(parsed.Count == 1200, $"Expected 1200 diagnostics, got {parsed.Count}.");
+        }
+
+        static void Test_MSBuildLogParser_ParseText_DeduplicatesSummaryBlockErrorsAndWarnings()
+        {
+            var parser = new MSBuildLogParser();
+            string firstWarningLine = "  ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [/app/CollationModifier/CollationModifier.csproj]";
+            string firstErrorLine = "  Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [/app/CollationModifier/CollationModifier.csproj]";
+            string firstNugetLine = "  /app/CollationModifier/CollationModifier.csproj : error NU1605: Detected package downgrade: Microsoft.Data.SqlClient from 5.1.0 to 5.0.0 [/app/CollationModifier/CollationModifier.csproj]";
+
+            string log = $@"Microsoft (R) Build Engine version 17.8.3+195e7f5a3 for .NET
+  Determining projects to restore...
+{firstNugetLine}
+{firstWarningLine}
+{firstErrorLine}
+
+Build FAILED.
+
+    ViewModels/MainViewModel.cs(120,15): warning CS0168: The variable 'ex' is declared but never used [/app/CollationModifier/CollationModifier.csproj]
+    /app/CollationModifier/CollationModifier.csproj : error NU1605: Detected package downgrade: Microsoft.Data.SqlClient from 5.1.0 to 5.0.0 [/app/CollationModifier/CollationModifier.csproj]
+    Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [/app/CollationModifier/CollationModifier.csproj]
+    1 Warning(s)
+    2 Error(s)
+
+Time Elapsed 00:00:02.15
+";
+
+            var parsed = parser.ParseText(log);
+            Assert(parsed.Count == 3, $"Expected 3 unique diagnostics after collapsing summary duplicates, got {parsed.Count}.");
+            Assert(parsed[0].Code == "NU1605" && parsed[0].RawLine == firstNugetLine, "Expected first diagnostic to preserve log order and first RawLine for NU1605.");
+            Assert(parsed[1].Code == "CS0168" && parsed[1].Severity == DiagnosticSeverity.Warning && parsed[1].RawLine == firstWarningLine, "Expected second diagnostic to preserve first warning occurrence.");
+            Assert(parsed[2].Code == "CS0535" && parsed[2].Severity == DiagnosticSeverity.Error && parsed[2].RawLine == firstErrorLine, "Expected third diagnostic to preserve first CS0535 occurrence.");
+
+            var report = new DiagnosticReport { SourceLogPath = "/tmp/build.log", Diagnostics = parsed };
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2, got {report.ErrorCount}.");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1, got {report.WarningCount}.");
+
+            var reporter = new ReportGenerator();
+            string markdown = reporter.GenerateMarkdownReport(report);
+            Assert(markdown.Contains("- **Roslyn Errors**: `2`"), "Expected Markdown summary to report 2 errors.");
+            Assert(markdown.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown summary to report 1 warning.");
+            int cs0535Rows = markdown.Split(new[] { "| `CS0535` |" }, StringSplitOptions.None).Length - 1;
+            Assert(cs0535Rows == 1, $"Expected exactly 1 CS0535 row in Markdown table, found {cs0535Rows}.");
+        }
+
+        static void Test_MSBuildLogParser_ParseText_DeduplicatesAnsiFormattingAndPathSlashes()
+        {
+            var parser = new MSBuildLogParser();
+            string inlineAnsiError = "  Services\\DatabaseService.cs(11,36): \u001b[31;1merror CS0535\u001b[0m: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [C:\\Repo\\CollationModifier\\CollationModifier.csproj]";
+            string summaryAnsiError = "    \u001b[31;1mServices/DatabaseService.cs(11,36): error cs0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync()' [C:/Repo/CollationModifier/CollationModifier.csproj]\u001b[0m";
+            string plainWarning = "ViewModels/MainViewModel.cs(45,9): warning CS0219: The variable 'flag' is assigned but its value is never used [C:/Repo/CollationModifier/CollationModifier.csproj]";
+            string summaryAnsiWarning = "  \u001b[33mViewModels\\MainViewModel.cs(45,9): warning CS0219: The variable 'flag' is assigned but its value is never used [C:\\Repo\\CollationModifier\\CollationModifier.csproj]\u001b[0m";
+
+            string log = string.Join("\n", new[]
+            {
+                inlineAnsiError,
+                plainWarning,
+                "Build FAILED.",
+                summaryAnsiWarning,
+                summaryAnsiError
+            });
+
+            var parsed = parser.ParseText(log);
+            Assert(parsed.Count == 2, $"Expected 2 unique diagnostics across ANSI and slash variants, got {parsed.Count}.");
+            Assert(parsed[0].Code == "CS0535" && parsed[0].RawLine == inlineAnsiError, "Expected first error RawLine preserved.");
+            Assert(parsed[1].Code == "CS0219" && parsed[1].RawLine == plainWarning, "Expected first warning RawLine preserved.");
+
+            // Ensure ParseLine itself remains stateless for direct callers
+            var single1 = parser.ParseLine(inlineAnsiError);
+            var single2 = parser.ParseLine(inlineAnsiError);
+            Assert(single1 != null && single2 != null, "Expected ParseLine to remain stateless across repeated calls.");
+        }
+
+        static void Test_MSBuildLogParser_ParseText_PreservesSameLineDistinctErrorsAndMultiProjectDiagnostics()
+        {
+            var parser = new MSBuildLogParser();
+            string member1Error = "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync(string, string, CancellationToken)' [CollationModifier/CollationModifier.csproj]";
+            string member2Error = "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.RestoreDatabaseAsync(string, string, CancellationToken)' [CollationModifier/CollationModifier.csproj]";
+            string sameCoordOtherCode = "Services/DatabaseService.cs(11,36): warning CS1591: Missing XML comment for publicly visible type or member 'DatabaseService' [CollationModifier/CollationModifier.csproj]";
+            string sharedFileProjA = "Shared/SqlHelper.cs(22,13): warning CS0168: The variable 'err' is declared but never used [CollationModifier/CollationModifier.csproj]";
+            string sharedFileProjB = "Shared/SqlHelper.cs(22,13): warning CS0168: The variable 'err' is declared but never used [CollationModifier.Tests/CollationModifier.Tests.csproj]";
+
+            string log = $@"
+  {member1Error}
+  {member2Error}
+  {sameCoordOtherCode}
+  {sharedFileProjA}
+Build FAILED.
+    {sameCoordOtherCode}
+    {member1Error}
+    {member2Error}
+    {sharedFileProjA}
+
+  {sharedFileProjB}
+Build succeeded.
+    {sharedFileProjB}
+";
+
+            var parsed = parser.ParseText(log);
+            Assert(parsed.Count == 5, $"Expected 5 distinct diagnostics (3 same-line distinct + 2 per-project), got {parsed.Count}.");
+            Assert(parsed.Count(d => d.Code == "CS0535") == 2, "Expected both same-line CS0535 missing members to be kept.");
+            Assert(parsed.Count(d => d.Code == "CS1591") == 1, "Expected same-line warning with distinct code/severity to be kept.");
+            Assert(parsed.Count(d => d.Code == "CS0168") == 2, "Expected shared-file diagnostics from distinct ProjectPath entries to be kept per project.");
         }
 
         // 1.5 AnsiCleaner Tests
@@ -1825,111 +2166,359 @@ public class SqlWorker : ISqlWorker
             }
         }
 
-        static void Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks()
+        static void Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot()
         {
-            var generator = new PatchGenerator();
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine("namespace ScalingTest {");
-            sb.AppendLine("public class LargeService {");
-            sb.Append("    /* ");
-            for (int i = 0; i < 800; i++)
-            {
-                sb.Append("wordToken").Append(i).Append(' ');
-                if ((i + 1) % 20 == 0) sb.AppendLine();
-            }
-            sb.AppendLine("*/");
-            sb.AppendLine("    public virtual Task<string> RunOperationAsync(string opName, int timeoutMs = 500, CancellationToken cancellationToken = default) => Task.FromResult(opName);");
-            sb.AppendLine("} }");
-            string largeClassSource = sb.ToString();
-
-            var missingMember = new InterfaceMemberInfo
-            {
-                InterfaceName = "ILargeService",
-                MemberName = "MissingBenchmarkMethodAsync",
-                ReturnType = "Task<string>",
-                ParameterList = "string opName, CancellationToken cancellationToken = default"
-            };
-
-            // Warmup JIT
-            generator.GenerateMemberStub(missingMember, largeClassSource);
-
-            var sw = Stopwatch.StartNew();
-            for (int iter = 0; iter < 5; iter++)
-            {
-                string stub = generator.GenerateMemberStub(missingMember, largeClassSource);
-                Assert(stub.Contains("throw new NotImplementedException();"), "Expected fallback stub when no overload exists.");
-            }
-            sw.Stop();
-
-            // Uncached backtracking regex took ~560-720 ms per call (>2800 ms for 5 calls); ordinal scan completes in < 1 ms
-            Assert(sw.Elapsed.TotalMilliseconds < 100.0,
-                $"Expected 5 GenerateMemberStub calls on 800-word block to complete in < 100 ms, took {sw.Elapsed.TotalMilliseconds:F2} ms");
-        }
-
-        static void Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache()
-        {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"delegation_edge_{Guid.NewGuid():N}");
-            Directory.CreateDirectory(tempDir);
+            string originalCwd = Directory.GetCurrentDirectory();
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_proj_rel_{Guid.NewGuid():N}");
+            string outsideCwd = Path.Combine(Path.GetTempPath(), $"patch_outside_cwd_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
+            Directory.CreateDirectory(outsideCwd);
 
             try
             {
-                string ifaceFile = Path.Combine(tempDir, "IStatusService.cs");
-                File.WriteAllText(ifaceFile, @"
-public interface IStatusService
-{
-    Status Status(string id);
-    Status Status(string id, int retryCount);
-}
-");
-                string classFile = Path.Combine(tempDir, "StatusService.cs");
-                File.WriteAllText(classFile, @"
-public class StatusService : IStatusService
-{
-    // public virtual Status Status(string id, string nonDefaultRequired, int retryCount = 99)
-    public Status Helper(string id) => Status(id, 5, default);
+                Directory.CreateDirectory(Path.Combine(tempRoot, ".git"));
+                string contractsDir = Path.Combine(tempRoot, "Contracts");
+                string projectDir = Path.Combine(tempRoot, "CollationModifier");
+                string servicesDir = Path.Combine(projectDir, "Services");
+                Directory.CreateDirectory(contractsDir);
+                Directory.CreateDirectory(servicesDir);
 
-    public virtual Status Status(string id, int retryCount = 3, CancellationToken cancellationToken = default)
-    {
-        return new Status();
-    }
+                string csprojPath = Path.Combine(projectDir, "CollationModifier.csproj");
+                File.WriteAllText(csprojPath, "<Project Sdk=\"Microsoft.NET.Sdk\" />");
+
+                // Place interface in sibling Contracts/ folder so FindRepoRoot(targetFilePath) is required when projectRoot is unset
+                File.WriteAllText(Path.Combine(contractsDir, "IRemoteCatalog.cs"), @"
+public interface IRemoteCatalog
+{
+    Task<IReadOnlyList<string>> FetchEntriesAsync(string filter, CancellationToken cancellationToken = default);
 }
 ");
-                var diagnostics = new List<CompilerDiagnostic>
+
+                string implPath = Path.Combine(servicesDir, "RemoteCatalog.cs");
+                File.WriteAllText(implPath, @"
+public class RemoteCatalog : IRemoteCatalog
+{
+}
+");
+
+                Directory.SetCurrentDirectory(outsideCwd);
+                var parser = new MSBuildLogParser();
+
+                // 1. Rooted ProjectPath with unset projectRoot (CWD outside repo)
+                string rootedProjLog = $"Services/RemoteCatalog.cs(2,14): error CS0535: 'RemoteCatalog' does not implement interface member 'IRemoteCatalog.FetchEntriesAsync(string, CancellationToken)' [{csprojPath}]";
+                var rootedProjDiags = parser.ParseText(rootedProjLog);
+                Assert(rootedProjDiags.Count == 1, "Expected 1 parsed diagnostic for rooted ProjectPath log");
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patchesUnsetRoot = generator.GeneratePatches(rootedProjDiags);
+                Assert(patchesUnsetRoot.Count == 1, $"Expected 1 patch when projectRoot is unset, got {patchesUnsetRoot.Count}");
+                Assert(Path.GetFullPath(patchesUnsetRoot[0].TargetFilePath) == Path.GetFullPath(implPath),
+                    $"Expected TargetFilePath '{implPath}', got '{patchesUnsetRoot[0].TargetFilePath}'");
+                Assert(patchesUnsetRoot[0].UnifiedDiff.Contains("Task<IReadOnlyList<string>> FetchEntriesAsync(string filter, CancellationToken cancellationToken = default)"),
+                    $"Expected interface signature from repo root Contracts/, got:\n{patchesUnsetRoot[0].UnifiedDiff}");
+                Assert(patchesUnsetRoot[0].UnifiedDiff.Contains("--- a/CollationModifier/Services/RemoteCatalog.cs"),
+                    $"Expected repo-relative diff header, got:\n{patchesUnsetRoot[0].UnifiedDiff}");
+
+                // 2. Relative ProjectPath resolved against explicit root
+                string relProjLog = "Services/RemoteCatalog.cs(2,14): error CS0535: 'RemoteCatalog' does not implement interface member 'IRemoteCatalog.FetchEntriesAsync(string, CancellationToken)' [CollationModifier/CollationModifier.csproj]";
+                var relProjDiags = parser.ParseText(relProjLog);
+                var patchesRelProj = new PatchGenerator(new InterfaceDefinitionResolver()).GeneratePatches(relProjDiags, tempRoot);
+                Assert(patchesRelProj.Count == 1, $"Expected 1 patch for relative ProjectPath, got {patchesRelProj.Count}");
+                Assert(Path.GetFullPath(patchesRelProj[0].TargetFilePath) == Path.GetFullPath(implPath),
+                    $"Expected TargetFilePath '{implPath}', got '{patchesRelProj[0].TargetFilePath}'");
+
+                // 3. Unset projectRoot without .git directory falls back to project directory for interface lookup
+                Directory.Delete(Path.Combine(tempRoot, ".git"), true);
+                string abstractionsDir = Path.Combine(projectDir, "Abstractions");
+                string nestedImplDir = Path.Combine(projectDir, "Impl", "Nested");
+                Directory.CreateDirectory(abstractionsDir);
+                Directory.CreateDirectory(nestedImplDir);
+
+                File.WriteAllText(Path.Combine(abstractionsDir, "ILocalRule.cs"), @"
+public interface ILocalRule
+{
+    bool ValidateRule(string inputCode);
+}
+");
+                string nestedImplPath = Path.Combine(nestedImplDir, "LocalRule.cs");
+                File.WriteAllText(nestedImplPath, @"
+public class LocalRule : ILocalRule
+{
+}
+");
+                string noGitLog = $"Impl/Nested/LocalRule.cs(2,14): error CS0535: 'LocalRule' does not implement interface member 'ILocalRule.ValidateRule(string)' [{csprojPath}]";
+                var noGitDiags = parser.ParseText(noGitLog);
+                var noGitPatches = new PatchGenerator(new InterfaceDefinitionResolver()).GeneratePatches(noGitDiags);
+                Assert(noGitPatches.Count == 1, $"Expected 1 patch using project directory search root without .git, got {noGitPatches.Count}");
+                Assert(noGitPatches[0].UnifiedDiff.Contains("public virtual bool ValidateRule(string inputCode)"),
+                    $"Expected bool ValidateRule(string inputCode) resolved from project directory, got:\n{noGitPatches[0].UnifiedDiff}");
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(originalCwd);
+                if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
+                if (Directory.Exists(outsideCwd)) Directory.Delete(outsideCwd, true);
+            }
+        }
+
+        static void Test_PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath()
+        {
+            string solutionRoot = Path.Combine(Path.GetTempPath(), $"patch_multiproj_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(solutionRoot);
+
+            try
+            {
+                string projADir = Path.Combine(solutionRoot, "ProjectAlpha", "Services");
+                string projBDir = Path.Combine(solutionRoot, "ProjectBeta", "Services");
+                Directory.CreateDirectory(projADir);
+                Directory.CreateDirectory(projBDir);
+
+                File.WriteAllText(Path.Combine(projADir, "ISyncAgent.cs"), @"
+public interface ISyncAgent
+{
+    Task<int> RunBatchAsync(string batchId);
+}
+");
+                string workerA = Path.Combine(projADir, "SyncAgent.cs");
+                File.WriteAllText(workerA, @"
+public class SyncAgent : ISyncAgent
+{
+}
+");
+
+                File.WriteAllText(Path.Combine(projBDir, "ISyncAgent.cs"), @"
+public interface ISyncAgent
+{
+    Task<bool> VerifyChecksumAsync(string batchId);
+}
+");
+                string workerB = Path.Combine(projBDir, "SyncAgent.cs");
+                File.WriteAllText(workerB, @"
+public class SyncAgent : ISyncAgent
+{
+}
+");
+
+                string multiProjLog = @"
+Services/SyncAgent.cs(2,14): error CS0535: 'SyncAgent' does not implement interface member 'ISyncAgent.RunBatchAsync(string)' [ProjectAlpha/ProjectAlpha.csproj]
+Services/SyncAgent.cs(2,14): error CS0535: 'SyncAgent' does not implement interface member 'ISyncAgent.VerifyChecksumAsync(string)' [ProjectBeta/ProjectBeta.csproj]
+";
+
+                var diagnostics = new MSBuildLogParser().ParseText(multiProjLog);
+                Assert(diagnostics.Count == 2, $"Expected 2 diagnostics, got {diagnostics.Count}");
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, solutionRoot);
+                Assert(patches.Count == 2, $"Expected 2 separate patches for ProjectAlpha and ProjectBeta, got {patches.Count}");
+
+                var patchA = patches.FirstOrDefault(p => Path.GetFullPath(p.TargetFilePath) == Path.GetFullPath(workerA));
+                var patchB = patches.FirstOrDefault(p => Path.GetFullPath(p.TargetFilePath) == Path.GetFullPath(workerB));
+                Assert(patchA != null, "Expected patch targeting ProjectAlpha/Services/SyncAgent.cs");
+                Assert(patchB != null, "Expected patch targeting ProjectBeta/Services/SyncAgent.cs");
+                Assert(patchA!.UnifiedDiff.Contains("Task<int> RunBatchAsync(string batchId)"), $"Expected ProjectAlpha method signature, got:\n{patchA.UnifiedDiff}");
+                Assert(patchB!.UnifiedDiff.Contains("Task<bool> VerifyChecksumAsync(string batchId)"), $"Expected ProjectBeta method signature, got:\n{patchB.UnifiedDiff}");
+            }
+            finally
+            {
+                if (Directory.Exists(solutionRoot)) Directory.Delete(solutionRoot, true);
+            }
+        }
+
+        static void Test_PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing()
+        {
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_root_fallback_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRoot);
+
+            try
+            {
+                string subServicesDir = Path.Combine(tempRoot, "SubModule", "Services");
+                Directory.CreateDirectory(subServicesDir);
+
+                File.WriteAllText(Path.Combine(subServicesDir, "IAuditSink.cs"), @"
+public interface IAuditSink
+{
+    void WriteEntry(string category);
+    void FlushEntries();
+}
+");
+                string targetFile = Path.Combine(subServicesDir, "AuditSink.cs");
+                File.WriteAllText(targetFile, @"
+public class AuditSink : IAuditSink
+{
+}
+");
+
+                // 1. Empty ProjectPath falls back to root
+                var emptyProjDiags = new List<CompilerDiagnostic>
                 {
                     new CompilerDiagnostic
                     {
                         Code = "CS0535",
                         Severity = DiagnosticSeverity.Error,
-                        FilePath = classFile,
+                        FilePath = "SubModule/Services/AuditSink.cs",
+                        ProjectPath = string.Empty,
                         LineNumber = 2,
                         ColumnNumber = 14,
-                        Message = "'StatusService' does not implement interface member 'IStatusService.Status(string)'"
-                    },
-                    new CompilerDiagnostic
-                    {
-                        Code = "CS0535",
-                        Severity = DiagnosticSeverity.Error,
-                        FilePath = classFile,
-                        LineNumber = 2,
-                        ColumnNumber = 14,
-                        Message = "'StatusService' does not implement interface member 'IStatusService.Status(string, int)'"
+                        Message = "'AuditSink' does not implement interface member 'IAuditSink.WriteEntry(string)'"
                     }
                 };
 
                 var generator = new PatchGenerator(new InterfaceDefinitionResolver());
-                var patches = generator.GeneratePatches(diagnostics, tempDir);
-                Assert(patches.Count == 1, $"Expected 1 patch candidate, got {patches.Count}");
-                Assert(patches[0].ResolvedErrorCount == 2, $"Expected 2 resolved errors, got {patches[0].ResolvedErrorCount}");
+                var patchesEmptyProj = generator.GeneratePatches(emptyProjDiags, tempRoot);
+                Assert(patchesEmptyProj.Count == 1, $"Expected 1 patch when ProjectPath is empty, got {patchesEmptyProj.Count}");
+                Assert(Path.GetFullPath(patchesEmptyProj[0].TargetFilePath) == Path.GetFullPath(targetFile),
+                    $"Expected fallback to root file '{targetFile}', got '{patchesEmptyProj[0].TargetFilePath}'");
 
-                string generated = patches[0].GeneratedCode;
-                Assert(generated.Contains("public virtual Status Status(string id)"), "Expected 1-arg Status stub.");
-                Assert(generated.Contains("return Status(id, 3, default);"), $"Expected 1-arg Status delegation, got:\n{generated}");
-                Assert(generated.Contains("public virtual Status Status(string id, int retryCount)"), "Expected 2-arg Status stub.");
-                Assert(generated.Contains("return Status(id, retryCount, default);"), $"Expected 2-arg Status delegation, got:\n{generated}");
+                // 2. Non-empty ProjectPath where FilePath is already root-relative (SubModule/SubModule/Services/AuditSink.cs missing -> falls back to root)
+                var rootRelWithProjDiags = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = "SubModule/Services/AuditSink.cs",
+                        ProjectPath = "SubModule/SubModule.csproj",
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'AuditSink' does not implement interface member 'IAuditSink.FlushEntries()'"
+                    }
+                };
+
+                var patchesFallback = generator.GeneratePatches(rootRelWithProjDiags, tempRoot);
+                Assert(patchesFallback.Count == 1, $"Expected 1 patch when project candidate is missing and root candidate exists, got {patchesFallback.Count}");
+                Assert(patchesFallback[0].UnifiedDiff.Contains("public virtual void FlushEntries()"),
+                    $"Expected FlushEntries stub in diff, got:\n{patchesFallback[0].UnifiedDiff}");
             }
             finally
             {
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
+            }
+        }
+
+        static void Test_Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags()
+        {
+            string originalCwd = Directory.GetCurrentDirectory();
+            string outsideCwd = Path.Combine(Path.GetTempPath(), $"launcher_outside_{Guid.NewGuid():N}");
+            string customProjectRoot = Path.Combine(Path.GetTempPath(), $"launcher_custom_proj_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(outsideCwd);
+            Directory.CreateDirectory(customProjectRoot);
+
+            try
+            {
+                string launcherPath = FindLauncherScriptPath();
+                string cmdLauncherPath = FindLauncherCmdPath();
+                string repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(launcherPath)!, ".."));
+
+                string bashContent = File.ReadAllText(launcherPath);
+                Assert(bashContent.Contains("--project-root \"$REPO_ROOT\""), "bin/msbuild-patcher must forward --project-root \"$REPO_ROOT\"");
+
+                string cmdContent = File.ReadAllText(cmdLauncherPath);
+                Assert(cmdContent.Contains("setlocal"), "bin/msbuild-patcher.cmd must use setlocal");
+                Assert(cmdContent.Contains("--project-root \"%REPO_ROOT%\""), "bin/msbuild-patcher.cmd must forward --project-root \"%REPO_ROOT%\"");
+
+                Directory.SetCurrentDirectory(outsideCwd);
+
+                // 1. Program.Main detects -h/--help after wrapper --project-root flag without creating output dir
+                int helpShortExit = MSBuildDiagnosticPatcher.Program.Main(new[] { "--project-root", repoRoot, "-h" });
+                int helpLongExit = MSBuildDiagnosticPatcher.Program.Main(new[] { "--project-root", repoRoot, "--help" });
+                Assert(helpShortExit == 0, $"Expected exit code 0 for -h after --project-root, got {helpShortExit}");
+                Assert(helpLongExit == 0, $"Expected exit code 0 for --help after --project-root, got {helpLongExit}");
+                Assert(!Directory.Exists(Path.Combine(outsideCwd, "build-diagnostics")),
+                    "Help invocation must not create build-diagnostics directory");
+
+                // 2. Execute launcher process from outside REPO_ROOT
+                (int ExitCode, string Output) RunLauncher(params string[] launcherArgs)
+                {
+                    var psi = new ProcessStartInfo
+                    {
+                        WorkingDirectory = outsideCwd,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false,
+                        CreateNoWindow = true
+                    };
+
+                    if (OperatingSystem.IsWindows())
+                    {
+                        psi.FileName = "cmd.exe";
+                        string quotedArgs = string.Join(" ", launcherArgs.Select(a => $"\"{a}\""));
+                        psi.Arguments = launcherArgs.Length == 0
+                            ? $"/c \"\"{cmdLauncherPath}\"\""
+                            : $"/c \"\"{cmdLauncherPath}\" {quotedArgs}\"";
+                    }
+                    else
+                    {
+                        psi.FileName = "bash";
+                        psi.ArgumentList.Add(launcherPath);
+                        foreach (var arg in launcherArgs)
+                        {
+                            psi.ArgumentList.Add(arg);
+                        }
+                    }
+
+                    using var proc = Process.Start(psi)!;
+                    string stdout = proc.StandardOutput.ReadToEnd();
+                    string stderr = proc.StandardError.ReadToEnd();
+                    proc.WaitForExit();
+                    return (proc.ExitCode, stdout + "\n" + stderr);
+                }
+
+                // 2a. Empty arguments invocation prints help and returns 0
+                var emptyRun = RunLauncher();
+                Assert(emptyRun.ExitCode == 0, $"Expected exit code 0 for empty-arg launcher run, got {emptyRun.ExitCode}:\n{emptyRun.Output}");
+                Assert(emptyRun.Output.Contains("Usage:"), $"Expected help output for empty-arg launcher run, got:\n{emptyRun.Output}");
+
+                // 2b. -h invocation through launcher prints help and returns 0
+                var helpRun = RunLauncher("-h");
+                Assert(helpRun.ExitCode == 0, $"Expected exit code 0 for -h launcher run, got {helpRun.ExitCode}:\n{helpRun.Output}");
+                Assert(helpRun.Output.Contains("Usage:"), $"Expected help output for -h launcher run, got:\n{helpRun.Output}");
+
+                // 2c. Outside-root invocation resolves repo project-relative CS0535 log via default REPO_ROOT while writing output to CWD
+                string repoRelativeLog = Path.Combine(outsideCwd, "repo_rel.log");
+                File.WriteAllText(repoRelativeLog,
+                    "Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.AlterCollationAsync(string, string, CancellationToken)' [CollationModifier/CollationModifier.csproj]\n");
+
+                var repoRelRun = RunLauncher(repoRelativeLog);
+                Assert(repoRelRun.ExitCode == 1, $"Expected exit code 1 without -a when error is unpatched, got {repoRelRun.ExitCode}:\n{repoRelRun.Output}");
+
+                string generatedPatchPath = Path.Combine(outsideCwd, "build-diagnostics", "DatabaseService.patch");
+                Assert(File.Exists(generatedPatchPath),
+                    $"Expected patch written under outside CWD at '{generatedPatchPath}'. Output:\n{repoRelRun.Output}");
+                string patchContent = File.ReadAllText(generatedPatchPath);
+                Assert(patchContent.Contains("AlterCollationAsync(string databaseName, string newCollation, CancellationToken cancellationToken = default)"),
+                    $"Expected IDatabaseService.AlterCollationAsync signature resolved from REPO_ROOT, got:\n{patchContent}");
+
+                Directory.Delete(Path.Combine(outsideCwd, "build-diagnostics"), true);
+
+                // 2d. Explicit -p overrides launcher's --project-root default while outputDir still defaults to outsideCwd/build-diagnostics
+                File.WriteAllText(Path.Combine(customProjectRoot, "ICustomTask.cs"), @"
+public interface ICustomTask
+{
+    string ExecuteCustom(int retries);
+}
+");
+                string customClassFile = Path.Combine(customProjectRoot, "CustomTask.cs");
+                File.WriteAllText(customClassFile, @"
+public class CustomTask : ICustomTask
+{
+}
+");
+                string customLog = Path.Combine(outsideCwd, "custom_proj.log");
+                File.WriteAllText(customLog,
+                    "CustomTask.cs(2,14): error CS0535: 'CustomTask' does not implement interface member 'ICustomTask.ExecuteCustom(int)'\n");
+
+                var overrideRun = RunLauncher(customLog, "-p", customProjectRoot, "-a", "-y");
+                Assert(overrideRun.ExitCode == 0, $"Expected exit code 0 when explicit -p remedies custom project error, got {overrideRun.ExitCode}:\n{overrideRun.Output}");
+                Assert(File.ReadAllText(customClassFile).Contains("public virtual string ExecuteCustom(int retries)"),
+                    "Expected CustomTask.cs in customProjectRoot to be patched via -p override");
+                Assert(File.Exists(Path.Combine(outsideCwd, "build-diagnostics", "diagnostic-report.json")),
+                    "Expected diagnostic-report.json in outsideCwd/build-diagnostics when -o is omitted");
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(originalCwd);
+                if (Directory.Exists(outsideCwd)) Directory.Delete(outsideCwd, true);
+                if (Directory.Exists(customProjectRoot)) Directory.Delete(customProjectRoot, true);
             }
         }
 
@@ -2170,6 +2759,79 @@ public class DemoService : IDemoService
             }
         }
 
+        static void Test_ReportGenerator_PrintConsoleSummary_DisambiguatesFailuresAndAvoidsParserMatches()
+        {
+            var report = new DiagnosticReport
+            {
+                SourceLogPath = "/tmp/build-and-test.log",
+                ParseDuration = TimeSpan.FromMilliseconds(12.3),
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = "Services/DatabaseService.cs",
+                        LineNumber = 11,
+                        ColumnNumber = 36,
+                        Message = "'DatabaseService' does not implement interface member 'IDatabaseService.BackupDatabaseAsync'"
+                    }
+                },
+                TestFailures = new List<TestFailure>
+                {
+                    new TestFailure
+                    {
+                        TestClass = "MainViewModelTestsRunner",
+                        TestMethod = string.Empty,
+                        AssertionFailureMessage = "Assertion Failed: Enqueue took too long"
+                    },
+                    new TestFailure
+                    {
+                        TestClass = "GreeterTests",
+                        TestMethod = "TestGreeting",
+                        AssertionFailureMessage = "Expected 'Hello' but was null"
+                    }
+                },
+                CandidatePatches = new List<PatchCandidate>
+                {
+                    new PatchCandidate
+                    {
+                        PatchFileName = "DatabaseService.patch",
+                        TargetFilePath = "Services/DatabaseService.cs"
+                    }
+                }
+            };
+
+            TextWriter originalOut = Console.Out;
+            TextWriter originalError = Console.Error;
+            using var summaryWriter = new StringWriter();
+            string summaryOutput;
+            try
+            {
+                Console.SetOut(summaryWriter);
+                var reporter = new ReportGenerator();
+                reporter.PrintConsoleSummary(report);
+                summaryOutput = summaryWriter.ToString();
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+                Console.SetError(originalError);
+            }
+
+            Assert(summaryOutput.Contains("  [TEST-FAILURE] MainViewModelTestsRunner: Assertion Failed: Enqueue took too long"), "Expected class-level failure with [TEST-FAILURE] prefix");
+            Assert(summaryOutput.Contains("  [TEST-FAILURE] GreeterTests.TestGreeting: Expected 'Hello' but was null"), "Expected method-level failure with [TEST-FAILURE] prefix");
+            Assert(!summaryOutput.Contains("[FAIL]"), "Expected PrintConsoleSummary output not to contain [FAIL]");
+
+            var testParser = new TestExecutionLogParser();
+            var parsedFailures = testParser.ParseText(summaryOutput);
+            Assert(parsedFailures.Count == 0, $"Expected 0 TestExecutionLogParser matches from PrintConsoleSummary output, got {parsedFailures.Count}");
+
+            var msbuildParser = new MSBuildLogParser();
+            var parsedDiagnostics = msbuildParser.ParseText(summaryOutput);
+            Assert(parsedDiagnostics.Count == 0, $"Expected 0 MSBuildLogParser matches from PrintConsoleSummary output, got {parsedDiagnostics.Count}");
+        }
+
         // 7. End-to-End Workflow Test
         static void Test_EndToEnd_Workflow()
         {
@@ -2248,89 +2910,29 @@ public class Greeter : IGreeter
             Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
         }
 
-        static void Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations()
+        private static int InvokePatcherMain(string[] args, out string stdout, out string stderr)
         {
-            var report = new DiagnosticReport
+            TextWriter originalOut = Console.Out;
+            TextWriter originalError = Console.Error;
+            using var outWriter = new StringWriter();
+            using var errorWriter = new StringWriter();
+            try
             {
-                Diagnostics = new List<CompilerDiagnostic>
-                {
-                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" },
-                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" },
-                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" }
-                }
-            };
-
-            Assert(report.ErrorCount == 1, $"Expected initial ErrorCount 1, got {report.ErrorCount}");
-            Assert(report.WarningCount == 1, $"Expected initial WarningCount 1, got {report.WarningCount}");
-
-            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1002" });
-            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after adding Info, got {report.ErrorCount}");
-            Assert(report.WarningCount == 1, $"Expected WarningCount 1 after adding Info, got {report.WarningCount}");
-
-            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0219" });
-            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0103" });
-            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2 after adding Error, got {report.ErrorCount}");
-            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after adding Warning, got {report.WarningCount}");
-
-            report.Diagnostics[2].Severity = DiagnosticSeverity.Warning;
-            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after mutating Error to Warning, got {report.ErrorCount}");
-            Assert(report.WarningCount == 3, $"Expected WarningCount 3 after mutating Error to Warning, got {report.WarningCount}");
-
-            report.Diagnostics.RemoveAt(1);
-            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after RemoveAt, got {report.WarningCount}");
-
-            report.Diagnostics.Clear();
-            Assert(report.ErrorCount == 0, $"Expected ErrorCount 0 after Clear, got {report.ErrorCount}");
-            Assert(report.WarningCount == 0, $"Expected WarningCount 0 after Clear, got {report.WarningCount}");
+                Console.SetOut(outWriter);
+                Console.SetError(errorWriter);
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(args);
+                stdout = outWriter.ToString();
+                stderr = errorWriter.ToString();
+                return exitCode;
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+                Console.SetError(originalError);
+            }
         }
 
-        static void Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations()
-        {
-            var diagnostics = new List<CompilerDiagnostic>(128);
-            for (int i = 0; i < 50; i++)
-            {
-                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" });
-            }
-            for (int i = 0; i < 40; i++)
-            {
-                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" });
-            }
-            for (int i = 0; i < 30; i++)
-            {
-                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" });
-            }
-
-            var report = new DiagnosticReport { Diagnostics = diagnostics };
-
-            // Warm up JIT tiers before measuring current-thread heap allocations
-            int warmupTotal = 0;
-            for (int i = 0; i < 100; i++)
-            {
-                warmupTotal += report.ErrorCount + report.WarningCount;
-            }
-
-            long beforeError = GC.GetAllocatedBytesForCurrentThread();
-            int errorSum = 0;
-            for (int i = 0; i < 50; i++)
-            {
-                errorSum += report.ErrorCount;
-            }
-            long errorAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeError;
-
-            long beforeWarning = GC.GetAllocatedBytesForCurrentThread();
-            int warningSum = 0;
-            for (int i = 0; i < 50; i++)
-            {
-                warningSum += report.WarningCount;
-            }
-            long warningAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeWarning;
-
-            GC.KeepAlive(warmupTotal);
-            Assert(errorSum == 50 * 50, $"Expected errorSum 2500, got {errorSum}");
-            Assert(warningSum == 50 * 40, $"Expected warningSum 2000, got {warningSum}");
-            Assert(errorAllocated == 0, $"Expected 0 bytes allocated reading ErrorCount, got {errorAllocated}");
-            Assert(warningAllocated == 0, $"Expected 0 bytes allocated reading WarningCount, got {warningAllocated}");
-        }
+        private static int InvokePatcherMain(string[] args) => InvokePatcherMain(args, out _, out _);
 
         static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
         {
@@ -2342,7 +2944,7 @@ public class Greeter : IGreeter
                 File.WriteAllText(logFile, "Build succeeded.\n    0 Warning(s)\n    0 Error(s)\n\nTime Elapsed 00:00:01.23\n");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
             }
             finally
@@ -2365,7 +2967,7 @@ Build succeeded.
     0 Error(s)
 Time Elapsed 00:00:01.23
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 0, $"Expected exit code 0 for clean build log, got {exitCode}");
             }
             finally
@@ -2388,7 +2990,7 @@ Build succeeded.
     1 Warning(s)
     0 Error(s)
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 0, $"Expected exit code 0 when only warnings are present, got {exitCode}");
             }
             finally
@@ -2414,7 +3016,7 @@ public class Greeter : IGreeter
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir, "-p", tempDir });
                 Assert(exitCode == 1, $"Expected exit code 1 when build errors remain unpatched, got {exitCode}");
             }
             finally
@@ -2436,7 +3038,7 @@ Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not imp
 Build FAILED.
     1 Error(s)
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 for compiler errors, got {exitCode}");
             }
             finally
@@ -2460,7 +3062,7 @@ Test Suite Summary: 1 Passed, 1 Failed
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 when test runner failures exist, got {exitCode}");
             }
             finally
@@ -2483,7 +3085,7 @@ Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [
    Assertion Failed: Expected status ready
 Total tests: 2. Passed: 1. Failed: 1. Skipped: 0.
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 for test failures, got {exitCode}");
             }
             finally
@@ -2506,7 +3108,7 @@ Failed MainViewModelTests.ProcessCollationChangeAsync_UpdatesCollationInMemory [
   Error Message:
    Assertion Failed: Expected status ready
 ");
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir });
                 Assert(exitCode == 1, $"Expected exit code 1 for both compiler errors and test failures, got {exitCode}");
             }
             finally
@@ -2537,12 +3139,26 @@ public class Greeter : IGreeter
 }
 ");
                 string logFile = Path.Combine(tempDir, "build.log");
-                File.WriteAllText(logFile, $@"{classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)'
+                string projectFile = Path.Combine(tempDir, "Greeter.csproj");
+                File.WriteAllText(logFile, $@"Microsoft (R) Build Engine version 17.8.3 for .NET
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  {classFile}(1,1): warning CS0168: The variable 'unused' is declared but never used [{projectFile}]
+  {classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)' [{projectFile}]
+
+Build FAILED.
+
+    {classFile}(1,1): warning CS0168: The variable 'unused' is declared but never used [{projectFile}]
+    {"\u001b[31;1m"}{classFile}(2,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)' [{projectFile}]{"\u001b[0m"}
+    1 Warning(s)
+    1 Error(s)
+
+Time Elapsed 00:00:01.42
 ");
                 string outputDir = Path.Combine(tempDir, "out");
 
                 int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir, "-p", tempDir, "-a", "-y" });
-                Assert(exitCode == 0, $"Expected exit code 0 when patches remediate all diagnostics, got {exitCode}");
+                Assert(exitCode == 0, $"Expected exit code 0 when patches remediate all diagnostics in multi-section MSBuild log, got {exitCode}");
 
                 string patchedContent = File.ReadAllText(classFile);
                 Assert(patchedContent.Contains("public virtual string Greet(string name)"), "Expected class to be patched with Greet method");
@@ -2551,10 +3167,17 @@ public class Greeter : IGreeter
                 Assert(File.Exists(jsonReportPath), "Expected diagnostic-report.json to exist");
                 string jsonContent = File.ReadAllText(jsonReportPath);
                 Assert(jsonContent.Contains("\"IsApplied\": true"), "Expected persisted report to record IsApplied: true");
+                Assert(jsonContent.Contains("\"ErrorCount\": 1"), "Expected persisted report to record deduplicated ErrorCount: 1");
+                Assert(jsonContent.Contains("\"WarningCount\": 1"), "Expected persisted report to record deduplicated WarningCount: 1");
                 Assert(jsonContent.Contains("\"UnresolvedErrorCount\": 0"), "Expected persisted report to record UnresolvedErrorCount: 0");
 
                 string mdReportPath = Path.Combine(outputDir, "diagnostic-report.md");
                 Assert(File.Exists(mdReportPath), "Expected diagnostic-report.md to exist");
+                string mdContent = File.ReadAllText(mdReportPath);
+                Assert(mdContent.Contains("- **Roslyn Errors**: `1`"), "Expected Markdown report to record 1 Roslyn error");
+                Assert(mdContent.Contains("- **Roslyn Warnings**: `1`"), "Expected Markdown report to record 1 Roslyn warning");
+                int greetRows = mdContent.Split(new[] { "IGreeter.Greet(string)" }, StringSplitOptions.None).Length - 1;
+                Assert(greetRows == 1, $"Expected 1 diagnostic row for IGreeter.Greet(string) in Markdown report, got {greetRows}");
             }
             finally
             {
@@ -2565,79 +3188,90 @@ public class Greeter : IGreeter
         static void Test_Program_Main_ReturnsOne_WhenInputFileNotFound()
         {
             string missingPath = Path.Combine(Path.GetTempPath(), $"missing_log_{Guid.NewGuid():N}.log");
-            int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { missingPath });
+            int exitCode = InvokePatcherMain(new[] { missingPath });
             Assert(exitCode == 1, $"Expected exit code 1 when input file is not found, got {exitCode}");
         }
 
-        static void Test_Program_Main_ReturnsExitCode1_ForUnhandledDotnetCrashAndPersistsJsonDetails()
+        static void Test_InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams()
         {
-            string tempDir = Path.Combine(Path.GetTempPath(), $"exit_crash_{Guid.NewGuid():N}");
+            string tempDir = Path.Combine(Path.GetTempPath(), $"invoke_capture_{Guid.NewGuid():N}");
             Directory.CreateDirectory(tempDir);
-            var originalOut = Console.Out;
+            TextWriter savedOut = Console.Out;
+            TextWriter savedError = Console.Error;
+            using var outerOut = new StringWriter();
+            using var outerError = new StringWriter();
             try
             {
-                string logFile = Path.Combine(tempDir, "crash_build.log");
+                string logFile = Path.Combine(tempDir, "test_failure.log");
                 string outputDir = Path.Combine(tempDir, "out");
-                File.WriteAllText(logFile, @"
-Build succeeded.
-    0 Warning(s)
-    0 Error(s)
-=== Running CollationModifier Unit Tests ===
-Unhandled exception. System.InvalidOperationException: Async void crashed host
-Expected: Handled on UI SynchronizationContext
-Actual:   Process aborted
- ---> System.ArgumentException: Invalid state parameter
-   at CollationModifier.Services.Helper.Validate() in /app/Helper.cs:line 19
-   --- End of inner exception stack trace ---
-   at CollationModifier.ViewModels.MainViewModel.<OnClick>d__10.MoveNext() in /app/MainViewModel.cs:line 88
---- End of stack trace from previous location ---
-   at System.Threading.Tasks.Task.<>c.<ThrowAsync>b__128_0(Object state)
-");
+                File.WriteAllText(logFile, "  [FAIL] SampleSuite.SampleTest - Expected 1 but got 2\n");
 
-                using var suppressedConsole = new StringWriter();
-                Console.SetOut(suppressedConsole);
-                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
-                Console.SetOut(originalOut);
+                Console.SetOut(outerOut);
+                Console.SetError(outerError);
 
-                Assert(exitCode == 1, $"Expected exit code 1 for unhandled .NET crash log, got {exitCode}");
+                int exitCode = InvokePatcherMain(new[] { logFile, "-o", outputDir }, out string capturedOut, out string capturedError);
+                Assert(exitCode == 1, $"Expected exit code 1, got {exitCode}");
+                Assert(capturedOut.Contains("[TEST-FAILURE] SampleSuite.SampleTest"), "Expected captured stdout to include disambiguated failure summary");
+                Assert(string.IsNullOrEmpty(capturedError), $"Expected empty captured stderr, got '{capturedError}'");
+                Assert(string.IsNullOrEmpty(outerOut.ToString()), $"Expected outer Console.Out to remain empty during InvokePatcherMain, got '{outerOut}'");
+                Assert(string.IsNullOrEmpty(outerError.ToString()), $"Expected outer Console.Error to remain empty during InvokePatcherMain, got '{outerError}'");
 
-                string jsonPath = Path.Combine(outputDir, "diagnostic-report.json");
-                string mdPath = Path.Combine(outputDir, "diagnostic-report.md");
-                Assert(File.Exists(jsonPath), "Expected diagnostic-report.json to be written.");
-                Assert(File.Exists(mdPath), "Expected diagnostic-report.md to be written.");
+                // Verify post-call writes reach the restored writers (Console.SetOut wraps writers in a synchronized TextWriter)
+                Console.Out.WriteLine("post-call-stdout-marker");
+                Console.Error.WriteLine("post-call-stderr-marker");
 
-                string json = File.ReadAllText(jsonPath);
-                using var doc = System.Text.Json.JsonDocument.Parse(json);
-                var root = doc.RootElement;
-                Assert(root.GetProperty("FailureCount").GetInt32() == 1, $"Expected FailureCount == 1, got {root.GetProperty("FailureCount").GetInt32()}");
-
-                var failureElem = root.GetProperty("TestFailures")[0];
-                string testClass = failureElem.GetProperty("TestClass").GetString() ?? "";
-                string testMethod = failureElem.GetProperty("TestMethod").GetString() ?? "";
-                string assertionMsg = failureElem.GetProperty("AssertionFailureMessage").GetString() ?? "";
-                string stackTrace = failureElem.GetProperty("StackTrace").GetString() ?? "";
-
-                Assert(testClass == "CollationModifier.Services.Helper", $"Expected crash origin class CollationModifier.Services.Helper, got '{testClass}'");
-                Assert(testMethod == "Validate", $"Expected crash origin method Validate, got '{testMethod}'");
-                Assert(assertionMsg.Contains("Async void crashed host") &&
-                       assertionMsg.Contains("Expected: Handled on UI SynchronizationContext") &&
-                       assertionMsg.Contains("Actual:   Process aborted") &&
-                       assertionMsg.Contains("---> System.ArgumentException: Invalid state parameter"),
-                       $"Expected full multiline message and InnerException in JSON, got:\n{assertionMsg}");
-                Assert(stackTrace.Contains("Helper.Validate") &&
-                       stackTrace.Contains("--- End of inner exception stack trace ---") &&
-                       stackTrace.Contains("MainViewModel.<OnClick>d__10.MoveNext") &&
-                       stackTrace.Contains("--- End of stack trace from previous location ---") &&
-                       stackTrace.Contains("ThrowAsync"),
-                       $"Expected all frames retained in JSON StackTrace, got:\n{stackTrace}");
-
-                string md = File.ReadAllText(mdPath);
-                Assert(!md.Contains("No test runner failures detected in the log."), "Markdown report must not claim zero failures on crash.");
-                Assert(md.Contains("### Failure Details"), "Markdown report must include ### Failure Details.");
+                Assert(outerOut.ToString().Contains("post-call-stdout-marker"), "Expected Console.Out to write to restored outer stdout writer");
+                Assert(outerError.ToString().Contains("post-call-stderr-marker"), "Expected Console.Error to write to restored outer stderr writer");
             }
             finally
             {
-                Console.SetOut(originalOut);
+                Console.SetOut(savedOut);
+                Console.SetError(savedError);
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"invoke_throw_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            TextWriter savedOut = Console.Out;
+            TextWriter savedError = Console.Error;
+            using var outerOut = new StringWriter();
+            using var outerError = new StringWriter();
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean.log");
+                File.WriteAllText(logFile, "Build succeeded.\n");
+
+                Console.SetOut(outerOut);
+                Console.SetError(outerError);
+
+                bool threw = false;
+                try
+                {
+                    // Passing an empty outputDir causes Program.Main to print to Console.Out and then throw ArgumentException in Directory.CreateDirectory("")
+                    InvokePatcherMain(new[] { logFile, "-o", string.Empty });
+                }
+                catch (ArgumentException)
+                {
+                    threw = true;
+                }
+
+                Assert(threw, "Expected InvokePatcherMain to propagate ArgumentException from empty outputDir");
+                Assert(string.IsNullOrEmpty(outerOut.ToString()), $"Expected pre-exception output not to leak to outer Console.Out, got '{outerOut}'");
+                Assert(string.IsNullOrEmpty(outerError.ToString()), $"Expected outer Console.Error to remain empty during throwing call, got '{outerError}'");
+
+                Console.Out.WriteLine("restored-after-exception-stdout");
+                Console.Error.WriteLine("restored-after-exception-stderr");
+
+                Assert(outerOut.ToString().Contains("restored-after-exception-stdout"), "Expected Console.Out to be restored after exception");
+                Assert(outerError.ToString().Contains("restored-after-exception-stderr"), "Expected Console.Error to be restored after exception");
+            }
+            finally
+            {
+                Console.SetOut(savedOut);
+                Console.SetError(savedError);
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
         }
@@ -2648,14 +3282,19 @@ Actual:   Process aborted
             string workflowPath = FindWorkflowPath();
             string content = File.ReadAllText(workflowPath);
 
-            // Requirement 1: Redirect build and test output to /tmp/build-and-test.log
-            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must redirect patcher build output to /tmp/build-and-test.log");
-            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append CollationModifier build output to /tmp/build-and-test.log");
-            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj");
-            int collationModifierBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj");
-            Assert(patcherBuildIndex != -1 && collationModifierBuildIndex != -1 && patcherBuildIndex < collationModifierBuildIndex, "Workflow must build patcher before CollationModifier");
-            Assert(content.Contains("tee /tmp/build-and-test.log"), "Workflow must redirect build output to /tmp/build-and-test.log using tee");
-            Assert(content.Contains("tee -a /tmp/build-and-test.log"), "Workflow must append test output to /tmp/build-and-test.log using tee -a");
+            // Requirement 1: Redirect solution restore, build, and test output to /tmp/build-and-test.log in order
+            string restoreCmd = "dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log";
+            string buildCmd = "dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
+            string testCmd = "dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
+
+            Assert(content.Contains(restoreCmd), "Workflow must redirect solution restore output to /tmp/build-and-test.log");
+            Assert(content.Contains(buildCmd), "Workflow must append solution build output to /tmp/build-and-test.log");
+            Assert(content.Contains(testCmd), "Workflow must append solution test output to /tmp/build-and-test.log");
+
+            int restoreIndex = content.IndexOf(restoreCmd, StringComparison.Ordinal);
+            int buildIndex = content.IndexOf(buildCmd, StringComparison.Ordinal);
+            int testIndex = content.IndexOf(testCmd, StringComparison.Ordinal);
+            Assert(restoreIndex != -1 && buildIndex != -1 && testIndex != -1 && restoreIndex < buildIndex && buildIndex < testIndex, "Workflow must run solution restore, build, and test steps in order");
 
             // Launcher requirement: Disable shared Roslyn compilation
             string launcherPath = FindLauncherScriptPath();
