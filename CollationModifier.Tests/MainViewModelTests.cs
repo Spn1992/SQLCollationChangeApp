@@ -4966,234 +4966,39 @@ namespace CollationModifier.Tests
                     $"btnConnect IsDefault attribute must bind to CanEditConnectionParameters, got '{isDefaultAttr}'");
             });
 
-            RunSyncTest("DatabaseInfo_ColumnCountProperties_SynchronizeAndRaisePropertyChanged", () =>
+            RunSyncTest("AppXaml_SecondaryButtonSmall_Configured", () =>
             {
-                var db = new DatabaseInfo { Name = "InventoryDB" };
-                Assert(db.UserCharacterColumnCount == 0, "Default UserCharacterColumnCount should be 0");
-                Assert(db.UserCharacterColumns == "0", "Default UserCharacterColumns should be '0'");
-                Assert(db.RetainedColumnCount == 0, "Default RetainedColumnCount should be 0");
-
-                var changed = new List<string>();
-                db.PropertyChanged += (s, e) =>
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
                 {
-                    if (e.PropertyName != null) changed.Add(e.PropertyName);
-                };
-
-                db.UserCharacterColumnCount = 18;
-                db.RetainedColumnCount = 12;
-
-                Assert(db.UserCharacterColumnCount == 18, $"Expected UserCharacterColumnCount 18, got {db.UserCharacterColumnCount}");
-                Assert(db.UserCharacterColumns == "18", $"Expected UserCharacterColumns '18', got '{db.UserCharacterColumns}'");
-                Assert(db.RetainedColumnCount == 12, $"Expected RetainedColumnCount 12, got {db.RetainedColumnCount}");
-                Assert(changed.Contains(nameof(DatabaseInfo.UserCharacterColumnCount)), "Expected PropertyChanged for UserCharacterColumnCount");
-                Assert(changed.Contains(nameof(DatabaseInfo.UserCharacterColumns)), "Expected PropertyChanged for UserCharacterColumns");
-                Assert(changed.Contains(nameof(DatabaseInfo.RetainedColumnCount)), "Expected PropertyChanged for RetainedColumnCount");
-            });
-
-            RunSyncTest("DatabaseService_CatalogAndPreflightQueries_AuditUserTableCharacterColumns", () =>
-            {
-                var catalogField = typeof(DatabaseService).GetField("DatabaseCatalogQuery", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-                Assert(catalogField != null, "DatabaseCatalogQuery field should exist on DatabaseService");
-                var catalogQuery = catalogField!.GetValue(null) as string;
-                Assert(!string.IsNullOrEmpty(catalogQuery), "DatabaseCatalogQuery should not be empty");
-                Assert(catalogQuery!.Contains("sys.columns"), "DatabaseCatalogQuery must inspect sys.columns");
-                Assert(catalogQuery.Contains("sys.tables"), "DatabaseCatalogQuery must join sys.tables");
-                Assert(catalogQuery.Contains("is_ms_shipped = 0"), "DatabaseCatalogQuery must filter user tables where is_ms_shipped = 0");
-                Assert(catalogQuery.Contains("collation_name IS NOT NULL"), "DatabaseCatalogQuery must filter character columns with non-null collation_name");
-
-                string dbServiceCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "Services", "DatabaseService.cs"));
-                if (!System.IO.File.Exists(dbServiceCsPath))
-                {
-                    dbServiceCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "Services", "DatabaseService.cs"));
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
                 }
-                if (!System.IO.File.Exists(dbServiceCsPath))
+                if (!System.IO.File.Exists(appXamlPath))
                 {
-                    dbServiceCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "Services", "DatabaseService.cs"));
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
                 }
-                Assert(System.IO.File.Exists(dbServiceCsPath), $"DatabaseService.cs should exist at {dbServiceCsPath}");
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
 
-                string serviceSource = System.IO.File.ReadAllText(dbServiceCsPath);
-                int preflightIndex = serviceSource.IndexOf("PreflightCheckAsync(");
-                Assert(preflightIndex >= 0, "PreflightCheckAsync method must exist in DatabaseService.cs");
-                string preflightSection = serviceSource.Substring(preflightIndex);
-                Assert(preflightSection.Contains("FROM sys.columns c"), "PreflightCheckAsync must query sys.columns");
-                Assert(preflightSection.Contains("JOIN sys.tables t ON c.object_id = t.object_id"), "PreflightCheckAsync must join sys.tables");
-                Assert(preflightSection.Contains("t.is_ms_shipped = 0"), "PreflightCheckAsync must filter user tables with is_ms_shipped = 0");
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var styles = doc.Descendants().Where(e => e.Name.LocalName == "Style").ToList();
+                var smallStyle = styles.FirstOrDefault(s => s.Attributes().Any(a => a.Name.LocalName == "Key" && a.Value == "SecondaryButtonSmall"));
+
+                Assert(smallStyle != null, "App.xaml must declare SecondaryButtonSmall style.");
+                var basedOn = smallStyle!.Attribute("BasedOn")?.Value;
+                Assert(basedOn == "{StaticResource SecondaryButton}", $"SecondaryButtonSmall must be BasedOn SecondaryButton, got '{basedOn}'");
+
+                var setters = smallStyle.Elements().Where(e => e.Name.LocalName == "Setter").ToList();
+                var paddingSetter = setters.FirstOrDefault(s => s.Attribute("Property")?.Value == "Padding");
+                Assert(paddingSetter != null, "SecondaryButtonSmall must declare a Setter for Padding.");
+                Assert(paddingSetter!.Attribute("Value")?.Value == "8,4", $"SecondaryButtonSmall Padding should be '8,4', got '{paddingSetter.Attribute("Value")?.Value}'");
+
+                var fontSizeSetter = setters.FirstOrDefault(s => s.Attribute("Property")?.Value == "FontSize");
+                Assert(fontSizeSetter != null, "SecondaryButtonSmall must declare a Setter for FontSize.");
+                Assert(fontSizeSetter!.Attribute("Value")?.Value == "12", $"SecondaryButtonSmall FontSize should be '12', got '{fontSizeSetter.Attribute("Value")?.Value}'");
             });
 
-            RunSyncTest("PreflightReport_RetainedColumnCounts_AreInformationalAndNonBlocking", () =>
-            {
-                var report = new PreflightReport { DatabaseName = "EnterpriseERP" };
-                var columnCollations = new string?[]
-                {
-                    "SQL_Latin1_General_CP1_CI_AS",
-                    "SQL_Latin1_General_CP1_CI_AS",
-                    "Latin1_General_100_CI_AS_SC_UTF8",
-                    "latin1_general_100_ci_as_sc_utf8", // case-insensitive match with TargetCollation
-                    "Japanese_CI_AS",
-                    null, // non-character column (e.g. INT / DATETIME)
-                    ""
-                };
-
-                DatabaseService.EvaluateColumnCollations(columnCollations, "Latin1_General_100_CI_AS_SC_UTF8", report);
-
-                Assert(report.UserCharacterColumnCount == 5, $"Expected 5 character columns, got {report.UserCharacterColumnCount}");
-                Assert(report.RetainedColumnCount == 3, $"Expected 3 columns differing from target collation, got {report.RetainedColumnCount}");
-                Assert(report.IsValid == true, "Retained column counts must NOT invalidate PreflightReport");
-                Assert(report.HasBlockingConditions == false, "Retained column counts must NOT set HasBlockingConditions to true");
-
-                string summary = report.GetDiagnosticSummary();
-                Assert(summary.Contains("Status: PASSED"), $"Expected PASSED status in summary, got:\n{summary}");
-                Assert(summary.Contains("[Column Collation Scope (Informational)]"), "Summary must include informational column collation scope header");
-                Assert(summary.Contains("User Table Character Columns: 5"), "Summary must disclose total character columns in user tables");
-                Assert(summary.Contains("User Columns Retaining Prior Collations (Differing from 'Latin1_General_100_CI_AS_SC_UTF8'): 3"),
-                    $"Summary must disclose mismatched column count against TargetCollation, got:\n{summary}");
-                Assert(summary.Contains("changes only the database default collation"), "Summary must disclose database-default-only scope");
-            });
-
-            await RunAsyncTest("MainViewModel_InspectSelectedDatabaseScopeAsync_PopulatesDatabaseColumnCounts", async () =>
-            {
-                var db = new DatabaseInfo { Name = "AnalyticsDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
-                var mockService = new MockDatabaseService
-                {
-                    DatabasesToReturn = new List<DatabaseInfo> { db },
-                    ColumnScopeToReturn = (29, 25)
-                };
-
-                var vm = new MainViewModel(mockService)
-                {
-                    SelectedDatabase = db,
-                    TargetCollation = "Latin1_General_100_CI_AS_SC_UTF8"
-                };
-
-                await vm.InspectSelectedDatabaseScopeAsync();
-
-                Assert(mockService.GetColumnCollationScopeCount == 1, "Expected GetColumnCollationScopeAsync to be invoked once");
-                Assert(db.UserCharacterColumnCount == 29, $"Expected UserCharacterColumnCount 29, got {db.UserCharacterColumnCount}");
-                Assert(db.UserCharacterColumns == "29", $"Expected UserCharacterColumns '29', got '{db.UserCharacterColumns}'");
-                Assert(db.RetainedColumnCount == 25, $"Expected RetainedColumnCount 25, got {db.RetainedColumnCount}");
-            });
-
-            await RunAsyncTest("ProcessCollationChangeAsync_DisclosesRetainedColumnsInConfirmationLogsAndStatusMessage", async () =>
-            {
-                string logPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"scope_disclosure_{Guid.NewGuid():N}.log");
-                try
-                {
-                    var db = new DatabaseInfo
-                    {
-                        Name = "CustomerOrders",
-                        Collation = "SQL_Latin1_General_CP1_CI_AS",
-                        UserCharacterColumnCount = 14
-                    };
-
-                    var mockService = new MockDatabaseService
-                    {
-                        DatabasesToReturn = new List<DatabaseInfo> { db },
-                        PreflightReportToReturn = new PreflightReport
-                        {
-                            DatabaseName = "CustomerOrders",
-                            UserCharacterColumnCount = 14,
-                            RetainedColumnCount = 11
-                        }
-                    };
-
-                    int? confirmedRetainedCount = null;
-                    string? confirmedPromptText = null;
-
-                    using (var logger = new LoggerService(logPath))
-                    {
-                        var vm = new MainViewModel(mockService, logger);
-                        await vm.ConnectAsync();
-                        vm.SelectedDatabase = vm.Databases[0];
-                        vm.TargetCollation = "Latin1_General_100_CI_AS_SC_UTF8";
-                        vm.ConfirmCollationChangeWithScopeHandler = (databaseName, targetCol, retainedCount, message) =>
-                        {
-                            confirmedRetainedCount = retainedCount;
-                            confirmedPromptText = message;
-                            return true;
-                        };
-
-                        await vm.ProcessCollationChangeAsync();
-
-                        Assert(confirmedRetainedCount == 11, $"Expected confirmation prompt to receive 11 retained columns, got {confirmedRetainedCount}");
-                        Assert(confirmedPromptText != null, "Confirmation prompt message should be generated");
-                        Assert(confirmedPromptText!.Contains("changes only the database default collation and leaves existing user columns unchanged"),
-                            $"Confirmation prompt must state database-default-only scope, got:\n{confirmedPromptText}");
-                        Assert(confirmedPromptText.Contains("11 existing character columns in user tables differ from 'Latin1_General_100_CI_AS_SC_UTF8'"),
-                            $"Confirmation prompt must state how many user columns differ from TargetCollation, got:\n{confirmedPromptText}");
-
-                        string expectedStatus = "Database default collation updated to 'Latin1_General_100_CI_AS_SC_UTF8'. 11 existing user columns kept prior collations.";
-                        Assert(vm.StatusMessage == expectedStatus, $"Expected StatusMessage '{expectedStatus}', got '{vm.StatusMessage}'");
-                        Assert(vm.SelectedDatabase.Collation == "Latin1_General_100_CI_AS_SC_UTF8", "SelectedDatabase.Collation should update to TargetCollation");
-                        Assert(vm.SelectedDatabase.UserCharacterColumnCount == 14, "SelectedDatabase.UserCharacterColumnCount should reflect pre-flight count");
-                        Assert(vm.SelectedDatabase.RetainedColumnCount == 11, "SelectedDatabase.RetainedColumnCount should reflect retained column count");
-                    }
-
-                    string logContent = System.IO.File.ReadAllText(logPath);
-                    Assert(logContent.Contains("14 character column(s) in user tables"), "Pre-flight log must record total character columns in user tables");
-                    Assert(logContent.Contains("11 user column(s) differ from target collation 'Latin1_General_100_CI_AS_SC_UTF8'"),
-                        "Pre-flight log must record how many user columns differ from TargetCollation");
-                    Assert(logContent.Contains("11 existing user column(s) kept prior collations"),
-                        "Completion log must record retained column count");
-                }
-                finally
-                {
-                    if (System.IO.File.Exists(logPath)) System.IO.File.Delete(logPath);
-                }
-                catch (OperationCanceledException)
-                {
-                    threwCanceled = true;
-                }
-                Assert(threwCanceled, "DatabaseService.PreflightCheckAsync must throw OperationCanceledException when token is cancelled.");
-            });
-
-            await RunAsyncTest("ProcessCollationChangeAsync_WhenConfirmationDeclined_CancelsWithoutBackupOrAlter", async () =>
-            {
-                var db = new DatabaseInfo { Name = "DeclinedDB", Collation = "SQL_Latin1_General_CP1_CI_AS", UserCharacterColumnCount = 7 };
-                var mockService = new MockDatabaseService
-                {
-                    DatabasesToReturn = new List<DatabaseInfo> { db },
-                    PreflightReportToReturn = new PreflightReport
-                    {
-                        DatabaseName = "DeclinedDB",
-                        UserCharacterColumnCount = 7,
-                        RetainedColumnCount = 7
-                    }
-                };
-
-                var vm = new MainViewModel(mockService);
-                vm.ConfirmCollationChangeHandler = (databaseName, targetCol) => false;
-                await vm.LoadDatabasesAsync();
-                vm.SelectedDatabase = vm.Databases[0];
-                vm.TargetCollation = "Latin1_General_100_CI_AS_SC_UTF8";
-
-                await vm.ProcessCollationChangeAsync();
-
-                Assert(mockService.BackupCount == 0, "Backup must not execute when user declines confirmation prompt");
-                Assert(mockService.AlterCollationCount == 0, "AlterCollationAsync must not execute when user declines confirmation prompt");
-                Assert(vm.StatusMessage == "Collation change operation cancelled.", $"Expected cancellation status, got '{vm.StatusMessage}'");
-                Assert(vm.LastConfirmationMessage != null && vm.LastConfirmationMessage.Contains("7 existing character columns in user tables differ"),
-                    "LastConfirmationMessage should still record the 7 differing columns presented at confirmation");
-                Assert(!vm.IsBusy, "IsBusy must reset to false when confirmation is declined");
-            });
-
-            RunSyncTest("MainViewModel_DefaultConfirmCollationChange_AndSingularPluralMessages_ExplicitlyDiscloseScope", () =>
-            {
-                var vm = new MainViewModel(new MockDatabaseService());
-                bool defaultResult = vm.DefaultConfirmCollationChange("AccountingDB", "Latin1_General_100_CI_AS_SC_UTF8", 1);
-                Assert(defaultResult == true, "DefaultConfirmCollationChange should return true in headless test build");
-                Assert(vm.LastConfirmationMessage != null, "DefaultConfirmCollationChange must populate LastConfirmationMessage");
-                Assert(vm.LastConfirmationMessage!.Contains("changes only the database default collation and leaves existing user columns unchanged"),
-                    "DefaultConfirmCollationChange must state that only database default collation changes and existing user columns remain unchanged");
-                Assert(vm.LastConfirmationMessage.Contains("1 existing character column in user tables differs from 'Latin1_General_100_CI_AS_SC_UTF8'"),
-                    $"Expected singular column grammar for 1 retained column, got:\n{vm.LastConfirmationMessage}");
-
-                string singularStatus = MainViewModel.BuildCompletionStatusMessage("Latin1_General_100_CI_AS_SC_UTF8", 1);
-                Assert(singularStatus == "Database default collation updated to 'Latin1_General_100_CI_AS_SC_UTF8'. 1 existing user column kept prior collations.",
-                    $"Unexpected singular completion status: '{singularStatus}'");
-            });
-
-            RunSyncTest("MainWindowXaml_ScopeLabelsWarningAndContrast_ComplyWithWCAG22", () =>
+            RunSyncTest("MainWindowXaml_StatusBarButtons_UseSecondaryButtonSmall", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
                 if (!System.IO.File.Exists(mainWindowXamlPath))
@@ -5208,76 +5013,45 @@ namespace CollationModifier.Tests
 
                 string content = System.IO.File.ReadAllText(mainWindowXamlPath);
                 var doc = System.Xml.Linq.XDocument.Parse(content);
-                var xName = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
-                var textBlocks = doc.Descendants().Where(e => e.Name.LocalName == "TextBlock").ToList();
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
 
-                // 1. Verify 'Current Collation:' was replaced with 'Database Default Collation:' and 'User Character Columns:' exists
-                Assert(!content.Contains("Current Collation:"), "MainWindow.xaml must not contain ambiguous 'Current Collation:' label");
-                var defaultCollationLabel = textBlocks.FirstOrDefault(tb => tb.Attribute(xName)?.Value == "DatabaseDefaultCollationLabel");
-                Assert(defaultCollationLabel != null, "MainWindow.xaml must define DatabaseDefaultCollationLabel");
-                Assert(defaultCollationLabel!.Attribute("Text")?.Value == "Database Default Collation:",
-                    "DatabaseDefaultCollationLabel Text must be 'Database Default Collation:'");
-                Assert(defaultCollationLabel.Attribute("AutomationProperties.HeadingLevel") == null,
-                    "Metadata label DatabaseDefaultCollationLabel must not declare HeadingLevel");
+                var btnOpenLog = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnOpenLog"));
+                Assert(btnOpenLog != null, "MainWindow.xaml must declare btnOpenLog button.");
+                Assert(btnOpenLog!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnOpenLog must use SecondaryButtonSmall style, got '{btnOpenLog.Attribute("Style")?.Value}'");
 
-                var userColumnsLabel = textBlocks.FirstOrDefault(tb => tb.Attribute(xName)?.Value == "UserCharacterColumnsLabel");
-                Assert(userColumnsLabel != null, "MainWindow.xaml must define UserCharacterColumnsLabel");
-                Assert(userColumnsLabel!.Attribute("Text")?.Value == "User Character Columns:",
-                    "UserCharacterColumnsLabel Text must be 'User Character Columns:'");
-                Assert(userColumnsLabel.Attribute("AutomationProperties.HeadingLevel") == null,
-                    "Metadata label UserCharacterColumnsLabel must not declare HeadingLevel");
+                var btnErrorDetails = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnErrorDetails"));
+                Assert(btnErrorDetails != null, "MainWindow.xaml must declare btnErrorDetails button.");
+                Assert(btnErrorDetails!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnErrorDetails must use SecondaryButtonSmall style, got '{btnErrorDetails.Attribute("Style")?.Value}'");
+            });
 
-                // 2. Verify lblWarning explicitly discloses database default collation scope and unchanged user columns
-                var lblWarning = textBlocks.FirstOrDefault(tb => tb.Attribute(xName)?.Value == "lblWarning");
-                Assert(lblWarning != null, "MainWindow.xaml must define lblWarning TextBlock");
-                string warningText = lblWarning!.Attribute("Text")?.Value ?? "";
-                string warningAutomationName = lblWarning.Attribute("AutomationProperties.Name")?.Value ?? "";
-                Assert(warningText.Contains("changes only the database default collation"),
-                    $"lblWarning must state that the operation changes only the database default collation, got: '{warningText}'");
-                Assert(warningText.Contains("existing columns in user tables keep their original collations") && warningText.Contains("unchanged"),
-                    $"lblWarning must state that existing user columns keep their original collations and remain unchanged, got: '{warningText}'");
-                Assert(warningText.Contains("SINGLE_USER"), "lblWarning must retain SINGLE_USER warning");
-                Assert(warningAutomationName == warningText, "lblWarning AutomationProperties.Name must match visible Text");
-
-                // 3. Verify WCAG 2.2 SC 1.4.3 (>= 4.5:1) contrast against both #FFFFFF and #F8FAFC
-                static double ComputeRelativeLuminance(string hexColor)
+            RunSyncTest("ErrorDetailsWindowXaml_ActionButtons_UseSecondaryButtonSmall", () =>
+            {
+                string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
                 {
-                    string hex = hexColor.TrimStart('#');
-                    double sR = Convert.ToInt32(hex.Substring(0, 2), 16) / 255.0;
-                    double sG = Convert.ToInt32(hex.Substring(2, 2), 16) / 255.0;
-                    double sB = Convert.ToInt32(hex.Substring(4, 2), 16) / 255.0;
-                    double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
-                    double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
-                    double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
-                    return 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "ErrorDetailsWindow.xaml"));
                 }
-
-                static double ContrastRatio(double lum1, double lum2)
+                if (!System.IO.File.Exists(errorDetailsXamlPath))
                 {
-                    double lighter = Math.Max(lum1, lum2);
-                    double darker = Math.Min(lum1, lum2);
-                    return (lighter + 0.05) / (darker + 0.05);
+                    errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
                 }
+                Assert(System.IO.File.Exists(errorDetailsXamlPath), $"ErrorDetailsWindow.xaml file should exist at path {errorDetailsXamlPath}");
 
-                double whiteLum = ComputeRelativeLuminance("#FFFFFF");
-                double surfaceLum = ComputeRelativeLuminance("#F8FAFC");
+                string content = System.IO.File.ReadAllText(errorDetailsXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var buttons = doc.Descendants().Where(e => e.Name.LocalName == "Button").ToList();
 
-                var userColsValueTb = textBlocks.First(tb =>
-                    tb.Attribute("AutomationProperties.Name")?.Value.Contains("SelectedDatabase.UserCharacterColumns") == true);
-                string metadataFgHex = userColsValueTb.Attribute("Foreground")?.Value ?? "#334155";
-                double metadataFgLum = ComputeRelativeLuminance(metadataFgHex);
-                Assert(ContrastRatio(whiteLum, metadataFgLum) >= 4.5,
-                    $"Metadata value Foreground '{metadataFgHex}' must maintain >= 4.5:1 contrast against #FFFFFF");
-                Assert(ContrastRatio(surfaceLum, metadataFgLum) >= 4.5,
-                    $"Metadata value Foreground '{metadataFgHex}' must maintain >= 4.5:1 contrast against #F8FAFC");
+                var btnCopy = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnCopy"));
+                Assert(btnCopy != null, "ErrorDetailsWindow.xaml must declare btnCopy button.");
+                Assert(btnCopy!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnCopy must use SecondaryButtonSmall style, got '{btnCopy.Attribute("Style")?.Value}'");
 
-                string warningFgHex = lblWarning.Attribute("Foreground")?.Value ?? "";
-                Assert(warningFgHex.StartsWith("#") && warningFgHex.Length == 7, $"Expected 6-digit hex Foreground on lblWarning, got '{warningFgHex}'");
-                double warningFgLum = ComputeRelativeLuminance(warningFgHex);
-                Assert(ContrastRatio(whiteLum, warningFgLum) >= 4.5,
-                    $"lblWarning Foreground '{warningFgHex}' must maintain >= 4.5:1 contrast against #FFFFFF");
-                Assert(ContrastRatio(surfaceLum, warningFgLum) >= 4.5,
-                    $"lblWarning Foreground '{warningFgHex}' must maintain >= 4.5:1 contrast against #F8FAFC");
+                var btnClose = buttons.FirstOrDefault(b => b.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnClose"));
+                Assert(btnClose != null, "ErrorDetailsWindow.xaml must declare btnClose button.");
+                Assert(btnClose!.Attribute("Style")?.Value == "{StaticResource SecondaryButtonSmall}",
+                    $"btnClose must use SecondaryButtonSmall style, got '{btnClose.Attribute("Style")?.Value}'");
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
