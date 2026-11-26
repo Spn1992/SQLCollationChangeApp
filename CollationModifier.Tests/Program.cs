@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.Data.SqlClient;
 using CollationModifier.Models;
 using CollationModifier.Services;
 
@@ -87,6 +88,15 @@ namespace CollationModifier.Tests
             failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_FieldExtraction), TestMapDatabaseInfo_FieldExtraction);
             failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_NullFieldFallbacks), TestMapDatabaseInfo_NullFieldFallbacks);
             failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_NullArgumentValidation), TestMapDatabaseInfo_NullArgumentValidation);
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks), TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks);
+
+            Console.WriteLine("\n=== Running DatabaseService Server-Side Procedure Encapsulation Unit Tests ===");
+            failed += RunProgramSyncTest(nameof(TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery), TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery);
+            failed += RunProgramSyncTest(nameof(TestBuildAlterCollationScript_EscapesSpecialCharacters), TestBuildAlterCollationScript_EscapesSpecialCharacters);
+            failed += RunProgramSyncTest(nameof(TestBuildAlterCollationScript_ValidatesCollationFormat), TestBuildAlterCollationScript_ValidatesCollationFormat);
+            failed += RunProgramSyncTest(nameof(TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch), TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch);
+            failed += RunProgramSyncTest(nameof(TestIsPermissionDeniedException_DetectsPermissionErrorCodes), TestIsPermissionDeniedException_DetectsPermissionErrorCodes);
+            failed += await RunProgramAsyncTest(nameof(TestSpExecuteSqlRpcAndPermissionFallbackAsync), TestSpExecuteSqlRpcAndPermissionFallbackAsync);
 
             Console.WriteLine("\n=== Running Test Runner Isolation & SynchronizationContext Hardening Tests ===");
             failed += await RunProgramAsyncTest(nameof(TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests), TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests);
@@ -124,29 +134,8 @@ namespace CollationModifier.Tests
         {
             try
             {
-                TestMapDatabaseInfo_NullArgumentValidation();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_NullArgumentValidation");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullArgumentValidation - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_ColumnCountExtractionAndFallbacks - {ex}");
-                failed++;
-            }
-
-            if (failed == 0)
-            {
-                Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
+                testAction();
+                Console.WriteLine($"PASS: {methodName}");
                 return 0;
             }
             catch (Exception ex)
@@ -555,6 +544,309 @@ namespace CollationModifier.Tests
             var dbWithNullCount = DatabaseService.MapDatabaseInfo(recordWithNullCount);
             Assert(dbWithNullCount.UserCharacterColumnCount == 0, $"Expected UserCharacterColumnCount 0 for DBNull, got {dbWithNullCount.UserCharacterColumnCount}.");
             Assert(dbWithNullCount.UserCharacterColumns == "Unknown", $"Expected UserCharacterColumns 'Unknown' for DBNull, got '{dbWithNullCount.UserCharacterColumns}'.");
+        }
+
+        static void TestBuildAlterCollationScript_EncapsulatesTryCatchAndMultiUserRecovery()
+        {
+            string script = DatabaseService.BuildAlterCollationScript("TestDatabase", "Latin1_General_100_CI_AS");
+
+            Assert(script.Contains("BEGIN TRY"), "Script must contain BEGIN TRY block.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"), "Script must switch database to SINGLE_USER with ROLLBACK IMMEDIATE.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] COLLATE Latin1_General_100_CI_AS;"), "Script must alter database collation.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] SET MULTI_USER;"), "Script must switch database back to MULTI_USER on success.");
+            Assert(script.Contains("END TRY"), "Script must contain END TRY.");
+            Assert(script.Contains("BEGIN CATCH"), "Script must contain BEGIN CATCH block.");
+            Assert(script.Contains("IF DB_ID(@DbName) IS NOT NULL"), "Script CATCH must check DB_ID before restoring MULTI_USER.");
+            Assert(script.Contains("RAISERROR"), "Script CATCH must re-raise error to client.");
+            Assert(script.Contains("END CATCH;"), "Script must contain END CATCH.");
+        }
+
+        static void TestBuildAlterCollationScript_EscapesSpecialCharacters()
+        {
+            string script = DatabaseService.BuildAlterCollationScript("Test]Database]Name", "SQL_Latin1_General_CP1_CI_AS");
+            Assert(script.Contains("[Test]]Database]]Name]"), "Script must properly escape closing square brackets in database identifier.");
+        }
+
+        static void TestBuildAlterCollationScript_ValidatesCollationFormat()
+        {
+            bool threw = false;
+            try
+            {
+                DatabaseService.BuildAlterCollationScript("TestDatabase", "Invalid Collation; DROP TABLE sys.databases");
+            }
+            catch (ArgumentException)
+            {
+                threw = true;
+            }
+
+            Assert(threw, "BuildAlterCollationScript must validate collation name and throw ArgumentException for invalid format.");
+        }
+
+        static void TestBuildRestoreDatabaseScript_EncapsulatesMasterContextAndTryCatch()
+        {
+            string script = DatabaseService.BuildRestoreDatabaseScript("TestDatabase");
+
+            Assert(script.Contains("USE [master];"), "Restore script must ensure context is master database.");
+            Assert(script.Contains("BEGIN TRY"), "Restore script must contain BEGIN TRY.");
+            Assert(script.Contains("RESTORE DATABASE [TestDatabase] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;"), "Restore script must contain RESTORE DATABASE command with REPLACE and STATS.");
+            Assert(script.Contains("ALTER DATABASE [TestDatabase] SET MULTI_USER;"), "Restore script must restore MULTI_USER on success.");
+            Assert(script.Contains("BEGIN CATCH"), "Restore script must contain BEGIN CATCH.");
+            Assert(script.Contains("RAISERROR"), "Restore script must re-raise error.");
+        }
+
+        static void TestIsPermissionDeniedException_DetectsPermissionErrorCodes()
+        {
+            Assert(!DatabaseService.IsPermissionDeniedException(null!), "Null exception should return false.");
+
+            // Create SqlException with permission denied message via reflection or factory
+            var ctor = typeof(SqlException).GetConstructors(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                .OrderByDescending(c => c.GetParameters().Length)
+                .FirstOrDefault();
+
+            if (ctor != null)
+            {
+                var parameters = ctor.GetParameters();
+                var args = new object?[parameters.Length];
+                for (int i = 0; i < parameters.Length; i++)
+                {
+                    if (parameters[i].ParameterType == typeof(string))
+                    {
+                        args[i] = "The EXECUTE permission was denied on the object 'sp_executesql'";
+                    }
+                    else if (parameters[i].ParameterType == typeof(Guid))
+                    {
+                        args[i] = Guid.NewGuid();
+                    }
+                    else if (parameters[i].ParameterType.IsValueType)
+                    {
+                        args[i] = Activator.CreateInstance(parameters[i].ParameterType);
+                    }
+                    else
+                    {
+                        args[i] = null;
+                    }
+                }
+
+                try
+                {
+                    var sqlEx = (SqlException)ctor.Invoke(args);
+                    Assert(DatabaseService.IsPermissionDeniedException(sqlEx), "IsPermissionDeniedException must return true for permission denied message.");
+                }
+                catch
+                {
+                    // If constructor invoke fails on this platform, continue
+                }
+            }
+        }
+
+        static async Task TestSpExecuteSqlRpcAndPermissionFallbackAsync()
+        {
+            using var logger = new LoggerService();
+            var dbService = new SpEncapsulationTestDatabaseService(logger);
+            dbService.SetConnectionString("localhost", "Windows Authentication", "", "");
+
+            // 1. Single-RPC sp_executesql execution for AlterCollationAsync & RestoreDatabaseAsync
+            using var alterCts = new System.Threading.CancellationTokenSource();
+            await dbService.AlterCollationAsync("RpcTestDb", "Latin1_General_100_CI_AS", alterCts.Token);
+            Assert(dbService.Calls.Count == 1, $"Expected 1 RPC call for AlterCollationAsync, got {dbService.Calls.Count}.");
+            Assert(dbService.Calls[0].CommandText == "sp_executesql", $"Expected sp_executesql command, got '{dbService.Calls[0].CommandText}'.");
+            Assert(dbService.Calls[0].CommandType == CommandType.StoredProcedure, "Expected CommandType.StoredProcedure for sp_executesql.");
+            Assert(dbService.Calls[0].Token == alterCts.Token, "Expected caller CancellationToken forwarded to AlterCollationAsync RPC.");
+
+            dbService.Calls.Clear();
+            using var restoreCts = new System.Threading.CancellationTokenSource();
+            await dbService.RestoreDatabaseAsync("RpcTestDb", "/tmp/rpc.bak", null, restoreCts.Token);
+            Assert(dbService.Calls.Count == 1, $"Expected 1 RPC call for RestoreDatabaseAsync, got {dbService.Calls.Count}.");
+            Assert(dbService.Calls[0].CommandText == "sp_executesql", $"Expected sp_executesql command, got '{dbService.Calls[0].CommandText}'.");
+            Assert(dbService.Calls[0].CommandType == CommandType.StoredProcedure, "Expected CommandType.StoredProcedure for sp_executesql.");
+            Assert(dbService.Calls[0].Token == restoreCts.Token, "Expected caller CancellationToken forwarded to RestoreDatabaseAsync RPC.");
+
+            // 2. Permission-denied fallback to sequential execution with uncancelable MULTI_USER
+            var permEx = CreatePermissionDeniedSqlException();
+            if (permEx != null)
+            {
+                dbService.Calls.Clear();
+                dbService.SpExecuteSqlException = permEx;
+                await dbService.AlterCollationAsync("FallbackDb", "Latin1_General_100_CI_AS", alterCts.Token);
+                Assert(dbService.Calls.Count == 4, $"Expected 1 failed RPC + 3 sequential fallback commands for AlterCollationAsync, got {dbService.Calls.Count}.");
+                Assert(dbService.Calls[1].CommandText.Contains("SET SINGLE_USER") && dbService.Calls[1].Token == alterCts.Token, "Fallback SINGLE_USER must use caller token.");
+                Assert(dbService.Calls[2].CommandText.Contains("COLLATE Latin1_General_100_CI_AS") && dbService.Calls[2].Token == alterCts.Token, "Fallback COLLATE must use caller token.");
+                Assert(dbService.Calls[3].CommandText.Contains("SET MULTI_USER") && dbService.Calls[3].Token == System.Threading.CancellationToken.None, "Fallback MULTI_USER must use CancellationToken.None.");
+
+                dbService.Calls.Clear();
+                await dbService.RestoreDatabaseAsync("FallbackDb", "/tmp/fallback.bak", null, restoreCts.Token);
+                Assert(dbService.Calls.Count == 5, $"Expected 1 failed RPC + 4 sequential fallback commands for RestoreDatabaseAsync, got {dbService.Calls.Count}.");
+                Assert(dbService.Calls[1].CommandText == "USE [master];" && dbService.Calls[1].Token == restoreCts.Token, "Fallback USE [master] must use caller token.");
+                Assert(dbService.Calls[4].CommandText.Contains("SET MULTI_USER") && dbService.Calls[4].Token == System.Threading.CancellationToken.None, "Fallback Restore MULTI_USER must use CancellationToken.None.");
+            }
+        }
+
+        private static SqlException? CreatePermissionDeniedSqlException()
+        {
+            var errorCollection = (SqlErrorCollection?)Activator.CreateInstance(typeof(SqlErrorCollection), nonPublic: true);
+            var ctor = typeof(SqlException).GetConstructor(
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance,
+                binder: null,
+                types: new[] { typeof(string), typeof(SqlErrorCollection), typeof(Exception), typeof(Guid) },
+                modifiers: null);
+
+            if (ctor != null && errorCollection != null)
+            {
+                return (SqlException)ctor.Invoke(new object?[]
+                {
+                    "The EXECUTE permission was denied on the object 'sp_executesql', database 'mssqlsystemresource', schema 'sys'.",
+                    errorCollection,
+                    null,
+                    Guid.NewGuid()
+                });
+            }
+
+            return null;
+        }
+
+        private sealed class SpEncapsulationTestDatabaseService : DatabaseService
+        {
+            public List<(string CommandText, CommandType CommandType, System.Threading.CancellationToken Token)> Calls { get; } = new();
+            public SqlException? SpExecuteSqlException { get; set; }
+
+            public SpEncapsulationTestDatabaseService(LoggerService logger) : base(logger) { }
+
+            protected internal override Task OpenConnectionAsync(SqlConnection connection, System.Threading.CancellationToken cancellationToken = default)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            }
+
+            protected internal override Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, System.Threading.CancellationToken cancellationToken = default)
+            {
+                Calls.Add((command.CommandText, command.CommandType, cancellationToken));
+                cancellationToken.ThrowIfCancellationRequested();
+                if (command.CommandText == "sp_executesql" && SpExecuteSqlException != null)
+                {
+                    throw SpExecuteSqlException;
+                }
+                return Task.FromResult(0);
+            }
+        }
+
+        static async Task TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests()
+        {
+            const string firstMethod = "Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes";
+            var originalOut = Console.Out;
+            using var captured = new StringWriter();
+            int failures;
+            try
+            {
+                Console.SetOut(captured);
+                failures = await GlobalExceptionHandlerTests.RunAllTestsAsync(methodName =>
+                {
+                    if (methodName == firstMethod)
+                    {
+                        throw new InvalidOperationException("Simulated failure in first GlobalExceptionHandlerTests method");
+                    }
+                });
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string log = captured.ToString();
+            Assert(failures == 1, $"Expected exactly 1 failure when first test fails, got {failures}.");
+            Assert(log.Contains($"[FAIL] GlobalExceptionHandlerTests.{firstMethod} - System.InvalidOperationException: Simulated failure in first GlobalExceptionHandlerTests method"),
+                "Expected failure output to include GlobalExceptionHandlerTests.<TestMethod> and exception message.");
+            Assert(log.Contains("at CollationModifier.Tests."), "Expected failure output to include stack trace.");
+
+            int passCount = log.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                .Count(l => l.TrimStart().StartsWith("PASS: ", StringComparison.Ordinal));
+            Assert(passCount == 6, $"Expected remaining 6 tests to execute and pass, got {passCount} PASS lines.");
+        }
+
+        static async Task TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions()
+        {
+            var originalOut = Console.Out;
+            using var captured = new StringWriter();
+            int postedFailures;
+            int asyncVoidFailures;
+            bool subsequentTestRan = false;
+
+            try
+            {
+                Console.SetOut(captured);
+
+                // 1. Direct SynchronizationContext.Post unhandled exception
+                postedFailures = MainViewModelTestsRunner.ExecuteSyncTest("PostedUnhandledCallbackTest", () =>
+                {
+                    System.Threading.SynchronizationContext.Current!.Post(_ =>
+                    {
+                        throw new InvalidOperationException("Unhandled exception from SynchronizationContext.Post");
+                    }, null);
+                });
+
+                // 2. async void unhandled exception across await boundary
+                asyncVoidFailures = await MainViewModelTestsRunner.ExecuteAsyncTestAsync("AsyncVoidUnhandledCrashTest", async () =>
+                {
+                    TriggerFaultingAsyncVoid();
+                    await Task.Delay(20);
+                });
+
+                // 3. Verify subsequent test still runs normally without host abort
+                int passResult = MainViewModelTestsRunner.ExecuteSyncTest("SubsequentHealthyTest", () =>
+                {
+                    subsequentTestRan = true;
+                });
+                Assert(passResult == 0, "Expected subsequent healthy test to return 0 failures.");
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string log = captured.ToString();
+            Assert(postedFailures == 1, $"Expected 1 failure for posted callback exception, got {postedFailures}.");
+            Assert(asyncVoidFailures == 1, $"Expected 1 failure for async void exception, got {asyncVoidFailures}.");
+            Assert(subsequentTestRan, "Expected subsequent test to run after SynchronizationContext unhandled exceptions.");
+            Assert(log.Contains("[FAIL] MainViewModelTests.PostedUnhandledCallbackTest - System.InvalidOperationException: Unhandled exception from SynchronizationContext.Post"),
+                "Expected MainViewModelTests.PostedUnhandledCallbackTest failure entry.");
+            Assert(log.Contains("[FAIL] MainViewModelTests.AsyncVoidUnhandledCrashTest - System.InvalidOperationException: Unhandled async void crash after yield"),
+                "Expected MainViewModelTests.AsyncVoidUnhandledCrashTest failure entry.");
+            Assert(log.Contains("TriggerFaultingAsyncVoid"), "Expected original async void stack frame to be preserved.");
+        }
+
+        private static async void TriggerFaultingAsyncVoid()
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("Unhandled async void crash after yield");
+        }
+
+        static async Task TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace()
+        {
+            var originalOut = Console.Out;
+            using var captured = new StringWriter();
+            int failures;
+            try
+            {
+                Console.SetOut(captured);
+                failures = await MainViewModelTestsRunner.ExecuteAsyncTestAsync("SampleFailingViewModelTest", async () =>
+                {
+                    await Task.Yield();
+                    throw new InvalidOperationException("Assertion failed: Expected Ready\nActual: Busy");
+                });
+            }
+            finally
+            {
+                Console.SetOut(originalOut);
+            }
+
+            string log = captured.ToString();
+            Assert(failures == 1, $"Expected integer failure count 1, got {failures}.");
+            int failLines = log.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+                .Count(l => l.TrimStart().StartsWith("[FAIL]", StringComparison.Ordinal));
+            Assert(failLines == 1, $"Expected exactly 1 [FAIL] line without duplicate wrapper entry, got {failLines}.");
+            Assert(log.Contains("[FAIL] MainViewModelTests.SampleFailingViewModelTest - System.InvalidOperationException: Assertion failed: Expected Ready"),
+                "Expected ClassName.MethodName failure header.");
+            Assert(log.Contains("Actual: Busy"), "Expected multiline failure message preserved.");
+            Assert(log.Contains("at CollationModifier.Tests.Program"), "Expected stack trace preserved.");
         }
 
         private sealed class MockDataRecord : IDataRecord

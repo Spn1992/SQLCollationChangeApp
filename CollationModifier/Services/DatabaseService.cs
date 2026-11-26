@@ -922,6 +922,117 @@ namespace CollationModifier.Services
             }
         }
 
+        public static string BuildRestoreDatabaseScript(string databaseName)
+        {
+            var safeDbName = EscapeIdentifier(databaseName);
+            return $@"
+USE [master];
+BEGIN TRY
+    IF DB_ID(@DbName) IS NOT NULL
+    BEGIN
+        ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    END;
+    RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;
+    ALTER DATABASE [{safeDbName}] SET MULTI_USER;
+END TRY
+BEGIN CATCH
+    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
+    DECLARE @ErrorState INT = ERROR_STATE();
+
+    BEGIN TRY
+        IF DB_ID(@DbName) IS NOT NULL
+        BEGIN
+            ALTER DATABASE [{safeDbName}] SET MULTI_USER;
+        END;
+    END TRY
+    BEGIN CATCH
+    END CATCH;
+
+    IF @ErrorSeverity < 11 SET @ErrorSeverity = 16;
+    IF @ErrorState < 1 SET @ErrorState = 1;
+    RAISERROR(N'%s', @ErrorSeverity, @ErrorState, @ErrorMessage);
+END CATCH;";
+        }
+
+        public static string BuildAlterCollationScript(string databaseName, string newCollation)
+        {
+            ValidateCollationFormat(newCollation);
+            var safeDbName = EscapeIdentifier(databaseName);
+            return $@"
+BEGIN TRY
+    ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    ALTER DATABASE [{safeDbName}] COLLATE {newCollation};
+    ALTER DATABASE [{safeDbName}] SET MULTI_USER;
+END TRY
+BEGIN CATCH
+    DECLARE @ErrorMessage NVARCHAR(4000) = ERROR_MESSAGE();
+    DECLARE @ErrorSeverity INT = ERROR_SEVERITY();
+    DECLARE @ErrorState INT = ERROR_STATE();
+
+    BEGIN TRY
+        IF DB_ID(@DbName) IS NOT NULL
+        BEGIN
+            ALTER DATABASE [{safeDbName}] SET MULTI_USER;
+        END;
+    END TRY
+    BEGIN CATCH
+    END CATCH;
+
+    IF @ErrorSeverity < 11 SET @ErrorSeverity = 16;
+    IF @ErrorState < 1 SET @ErrorState = 1;
+    RAISERROR(N'%s', @ErrorSeverity, @ErrorState, @ErrorMessage);
+END CATCH;";
+        }
+
+        public static bool IsPermissionDeniedException(SqlException ex)
+        {
+            if (ex == null)
+            {
+                return false;
+            }
+
+            if (ex.Errors != null)
+            {
+                foreach (SqlError error in ex.Errors)
+                {
+                    if (error.Number == 229 || error.Number == 262 || error.Number == 297)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            var message = ex.Message ?? string.Empty;
+            return message.IndexOf("permission denied", StringComparison.OrdinalIgnoreCase) >= 0
+                || message.IndexOf("EXECUTE permission was denied", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        protected internal virtual Task<int> ExecuteSpExecuteSqlAsync(
+            SqlConnection connection,
+            string script,
+            int timeoutSeconds = 3600,
+            CancellationToken cancellationToken = default,
+            string? parameterDefinitions = null,
+            params SqlParameter[] parameters)
+        {
+            var spParameters = new List<SqlParameter>
+            {
+                new SqlParameter("@stmt", SqlDbType.NVarChar) { Value = script }
+            };
+
+            if (!string.IsNullOrEmpty(parameterDefinitions))
+            {
+                spParameters.Add(new SqlParameter("@params", SqlDbType.NVarChar) { Value = parameterDefinitions });
+                if (parameters != null && parameters.Length > 0)
+                {
+                    spParameters.AddRange(parameters);
+                }
+            }
+
+            return ExecuteNonQueryAsync(connection, "sp_executesql", timeoutSeconds, cancellationToken, spParameters.ToArray());
+        }
+
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
@@ -930,14 +1041,63 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await OpenConnectionAsync(connection, CancellationToken.None);
-                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, CancellationToken.None);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", CancellationToken.None);
-                    var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, CancellationToken.None, new SqlParameter("@BackupFile", backupFile));
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
+                    await OpenConnectionAsync(connection, cancellationToken);
+
+                    try
+                    {
+                        var restoreScript = BuildRestoreDatabaseScript(databaseName);
+                        await ExecuteSpExecuteSqlAsync(
+                            connection,
+                            restoreScript,
+                            3600,
+                            cancellationToken,
+                            "@DbName NVARCHAR(128), @BackupFile NVARCHAR(4000)",
+                            new SqlParameter("@DbName", SqlDbType.NVarChar, 128) { Value = databaseName },
+                            new SqlParameter("@BackupFile", SqlDbType.NVarChar, 4000) { Value = backupFile });
+                    }
+                    catch (SqlException ex) when (IsPermissionDeniedException(ex) && !cancellationToken.IsCancellationRequested)
+                    {
+                        _logger.LogWarning($"Procedure/dynamic SQL execution permission restricted on server: {ex.Message}. Falling back to standard command execution.");
+                        await ExecuteNonQueryAsync(connection, "USE [master];", 3600, cancellationToken);
+                        await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
+                        var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
+                        await ExecuteNonQueryAsync(connection, restoreQuery, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
+                        await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
+                    }
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
+            }
+            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogInfo($"Restore cancelled for database: {databaseName}");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following restore cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Restore cancelled for database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        new OperationCanceledException($"Restore cancelled for database: {databaseName}", ex, cancellationToken), resetEx);
+                }
+                throw new OperationCanceledException($"Restore cancelled for database: {databaseName}", ex, cancellationToken);
+            }
+            catch (OperationCanceledException oce)
+            {
+                _logger.LogInfo($"Restore cancelled for database: {databaseName}");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following restore cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Restore cancelled for database '{databaseName}' ({oce.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        oce, resetEx);
+                }
+                throw;
             }
             catch (Exception ex)
             {
@@ -969,21 +1129,59 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     await OpenConnectionAsync(connection, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
-                    var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
-                    await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", cancellationToken);
+
+                    try
+                    {
+                        var alterScript = BuildAlterCollationScript(databaseName, newCollation);
+                        await ExecuteSpExecuteSqlAsync(
+                            connection,
+                            alterScript,
+                            3600,
+                            cancellationToken,
+                            "@DbName NVARCHAR(128)",
+                            new SqlParameter("@DbName", SqlDbType.NVarChar, 128) { Value = databaseName });
+                    }
+                    catch (SqlException ex) when (IsPermissionDeniedException(ex) && !cancellationToken.IsCancellationRequested)
+                    {
+                        _logger.LogWarning($"Procedure/dynamic SQL execution permission restricted on server: {ex.Message}. Falling back to standard command execution.");
+                        await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
+                        var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
+                        await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
+                        await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
+                    }
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
             }
             catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
             {
                 _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following collation cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Collation alteration cancelled for database '{databaseName}' ({ex.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        new OperationCanceledException($"Collation alteration cancelled for database: {databaseName}", ex, cancellationToken), resetEx);
+                }
                 throw new OperationCanceledException($"Collation alteration cancelled for database: {databaseName}", ex, cancellationToken);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException oce)
             {
                 _logger.LogInfo($"Collation alteration cancelled for database: {databaseName}");
+                try
+                {
+                    await TrySetMultiUserAsync(databaseName, CancellationToken.None);
+                }
+                catch (Exception resetEx)
+                {
+                    _logger.LogError($"Emergency MULTI_USER reset failed following collation cancellation on {databaseName}", resetEx);
+                    throw new AggregateException(
+                        $"Collation alteration cancelled for database '{databaseName}' ({oce.Message}) and emergency MULTI_USER reset failed: {resetEx.Message}",
+                        oce, resetEx);
+                }
                 throw;
             }
             catch (Exception ex)
@@ -1027,17 +1225,28 @@ namespace CollationModifier.Services
             return identifier.Replace("]", "]]");
         }
 
-        protected virtual Task OpenConnectionAsync(SqlConnection connection, CancellationToken cancellationToken)
+        internal Func<SqlCommand, CancellationToken, Task<int>>? NonQueryCommandExecutor { get; set; }
+
+        protected internal virtual Task OpenConnectionAsync(
+            SqlConnection connection,
+            CancellationToken cancellationToken = default)
         {
             return connection.OpenAsync(cancellationToken);
         }
 
-        protected virtual Task<int> ExecuteCommandNonQueryAsync(SqlCommand command, CancellationToken cancellationToken)
+        protected internal virtual Task<int> ExecuteCommandNonQueryAsync(
+            SqlCommand command,
+            CancellationToken cancellationToken = default)
         {
+            if (NonQueryCommandExecutor != null)
+            {
+                return NonQueryCommandExecutor(command, cancellationToken);
+            }
+
             return command.ExecuteNonQueryAsync(cancellationToken);
         }
 
-        protected virtual async Task<int> ExecuteNonQueryAsync(
+        protected internal virtual async Task<int> ExecuteNonQueryAsync(
             SqlConnection connection,
             string commandText,
             int timeoutSeconds = 3600,
@@ -1046,6 +1255,10 @@ namespace CollationModifier.Services
         {
             using (var command = new SqlCommand(commandText, connection))
             {
+                if (string.Equals(commandText, "sp_executesql", StringComparison.OrdinalIgnoreCase))
+                {
+                    command.CommandType = CommandType.StoredProcedure;
+                }
                 command.CommandTimeout = timeoutSeconds;
                 if (parameters != null && parameters.Length > 0)
                 {
@@ -1062,7 +1275,11 @@ namespace CollationModifier.Services
             }
         }
 
-        private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode, CancellationToken cancellationToken = default)
+        protected internal virtual async Task SetDatabaseUserModeAsync(
+            SqlConnection connection,
+            string databaseName,
+            string mode,
+            CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
             bool isSingleUser = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase);
@@ -1070,7 +1287,8 @@ namespace CollationModifier.Services
                 ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-            await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
+            var effectiveToken = isSingleUser ? cancellationToken : CancellationToken.None;
+            await ExecuteNonQueryAsync(connection, query, 3600, effectiveToken);
         }
 
         private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)
