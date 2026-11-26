@@ -36,6 +36,7 @@ namespace CollationModifier.ViewModels
             SelectedAuthenticationType = AuthenticationTypes[0];
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
+            RefreshDatabasesCommand = new RelayCommand(async _ => await RefreshDatabasesAsync(), _ => IsConnected && !IsBusy);
             RunPreflightCheckCommand = new RelayCommand(async _ => await RunPreflightCheckAsync(), _ => CanRunPreflightCheck());
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy && !IsCancelling);
@@ -333,6 +334,7 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _backupDirectory, value))
                 {
+                    _hasCustomBackupDirectory = !string.IsNullOrWhiteSpace(value);
                     ClearPreflightReport();
                 }
             }
@@ -386,6 +388,7 @@ namespace CollationModifier.ViewModels
         #region Commands
 
         public ICommand ConnectCommand { get; }
+        public ICommand RefreshDatabasesCommand { get; }
         public ICommand RunPreflightCheckCommand { get; }
         public ICommand ProcessCommand { get; }
         public ICommand CancelCommand { get; }
@@ -741,13 +744,81 @@ namespace CollationModifier.ViewModels
         {
             if (SelectedDatabase == null) return;
 
+            IsCancelling = false;
+            IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
+            string dbName = SelectedDatabase.Name;
+            _logger.LogInfo($"Running standalone pre-flight check for database: {dbName}");
+            SetStatus($"Running pre-flight checks for '{dbName}'...");
+            ProgressPercent = 0;
+            IsIndeterminateProgress = true;
+
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                ClearPreflightReport();
+
+                var report = await _databaseService.PreflightCheckAsync(dbName, BackupDirectory, TargetCollation, token);
+                token.ThrowIfCancellationRequested();
+
+                if (!report.HasValidationErrors && SelectedDatabase != null)
+                {
+                    SelectedDatabase.UserCharacterColumnCount = report.UserCharacterColumnCount;
+                    SelectedDatabase.RetainedColumnCount = report.RetainedColumnCount;
+                }
+
+                CurrentPreflightReport = report;
+                if (report.HasBlockingConditions)
+                {
+                    string summary = report.GetDiagnosticSummary().TrimEnd();
+                    _logger.LogWarning($"Pre-flight check found blocking conditions for {dbName}:\n{summary}");
+                    string singleLine = $"Pre-flight check blocked for '{dbName}': {report.GetSingleLineFailureSummary().TrimEnd('.')}.";
+                    SetStatus(singleLine, singleLine, summary);
+                }
+                else
+                {
+                    _logger.LogInfo($"Pre-flight check passed for {dbName}.");
+                    SetStatus($"Pre-flight check passed for '{dbName}'. Ready for collation change.");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Pre-flight check was cancelled by user.");
+                SetStatus("Operation cancelled by user.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Pre-flight check failed for {dbName}.", ex);
+                string summary = PreflightReport.NormalizeSingleLine(ErrorFormattingHelper.GetSafeErrorMessage(ex), PreflightReport.MaxRenderedDetailLength);
+                string detailed = ErrorFormattingHelper.GetDetailedErrorText(ex);
+                string status = $"Pre-flight check error: {summary}";
+                SetStatus(status, status, detailed);
+            }
+            finally
+            {
+                _cts?.Dispose();
+                _cts = null;
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
+                IsCancelling = false;
+                IsBusy = false;
+            }
+        }
+
+        public async Task ProcessCollationChangeAsync()
+        {
+            if (SelectedDatabase == null) return;
+
+            IsCancelling = false;
             IsBusy = true;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
 
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
-            bool enteredDestructivePhase = false;
+            bool alterPhaseStarted = false;
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
@@ -767,21 +838,23 @@ namespace CollationModifier.ViewModels
                     SelectedDatabase.RetainedColumnCount = preflightReport.RetainedColumnCount;
                 }
 
+                CurrentPreflightReport = preflightReport;
                 if (preflightReport.HasBlockingConditions)
                 {
-                    var summary = preflightReport.GetDiagnosticSummary();
+                    string summary = preflightReport.GetDiagnosticSummary().TrimEnd();
                     _logger.LogWarning($"Pre-flight validation failed for {SelectedDatabase.Name}:\n{summary}");
-                    throw new PreflightValidationException(preflightReport);
+                    throw new PreflightValidationException(preflightReport.GetSingleLineFailureSummary(), preflightReport, summary);
                 }
 
                 int retainedColumns = preflightReport.RetainedColumnCount;
                 _logger.LogInfo(
                     $"Pre-flight check passed for '{SelectedDatabase.Name}': {preflightReport.UserCharacterColumnCount} character column(s) in user tables; " +
                     $"{retainedColumns} user column(s) differ from target collation '{TargetCollation}' and will retain prior collations.\n" +
-                    preflightReport.GetDiagnosticSummary());
+                    preflightReport.GetDiagnosticSummary().TrimEnd());
 
                 token.ThrowIfCancellationRequested();
 
+                // 2. Confirm SINGLE_USER transition only after pre-flight checks pass
                 string confirmationMessage = BuildConfirmationMessage(SelectedDatabase.Name, TargetCollation, retainedColumns);
                 LastConfirmationMessage = confirmationMessage;
 
@@ -800,21 +873,6 @@ namespace CollationModifier.ViewModels
 
                 token.ThrowIfCancellationRequested();
 
-                // 2. Confirm SINGLE_USER transition only after pre-flight checks pass
-                bool confirmed = ConfirmCollationChangeHandler != null
-                    ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
-                    : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
-
-                if (!confirmed)
-                {
-                    _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
-                    StatusMessage = "Collation change operation cancelled.";
-                    return;
-                }
-
-                token.ThrowIfCancellationRequested();
-                enteredDestructivePhase = true;
-
                 // 3. Automated Backup
                 StatusMessage = "Starting automated backup...";
                 var backupProgress = new Progress<int>(percent =>
@@ -831,12 +889,11 @@ namespace CollationModifier.ViewModels
 
                 token.ThrowIfCancellationRequested();
 
-                // 3. Execution Phase
+                // 4. Execution Phase
                 alterPhaseStarted = true;
                 StatusMessage = "Altering database collation... This may take a while.";
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
-                alterPhaseStarted = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 string completionStatus = BuildCompletionStatusMessage(TargetCollation, retainedColumns);
@@ -852,16 +909,7 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
 
-                if (!alterPhaseStarted)
-                {
-                    if (!string.IsNullOrEmpty(backupFile))
-                    {
-                        _logger.LogInfo($"Skipping database restore because collation alteration had not started. Unused backup file retained at: {backupFile}");
-                    }
-                    SetStatus("Operation cancelled by user.");
-                }
-
-                if (enteredDestructivePhase && SelectedDatabase != null)
+                if ((backupFile != null || alterPhaseStarted) && SelectedDatabase != null)
                 {
                     Exception? restoreEx = null;
                     Exception? resetEx = null;
@@ -885,7 +933,7 @@ namespace CollationModifier.ViewModels
                         }
                     }
 
-                    if (SelectedDatabase != null)
+                    if (alterPhaseStarted && SelectedDatabase != null)
                     {
                         try
                         {
@@ -917,6 +965,15 @@ namespace CollationModifier.ViewModels
                         SetStatus("Operation cancelled by user.");
                     }
                 }
+                else
+                {
+                    SetStatus("Operation cancelled by user.");
+                }
+            }
+            catch (PreflightValidationException preflightEx)
+            {
+                var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(preflightEx, null);
+                SetStatus(statusText, toolTipText, detailedError);
             }
             catch (Exception ex)
             {
