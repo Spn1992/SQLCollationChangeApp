@@ -564,6 +564,7 @@ namespace CollationModifier.ViewModels
 
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
+            bool alterPhaseStarted = false;
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
@@ -600,6 +601,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Altering database collation... This may take a while.";
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
+                alterPhaseStarted = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 SetStatus("Collation changed successfully!");
@@ -628,7 +630,7 @@ namespace CollationModifier.ViewModels
                     }
                 }
 
-                if (SelectedDatabase != null)
+                if (alterPhaseStarted && SelectedDatabase != null)
                 {
                     try
                     {
