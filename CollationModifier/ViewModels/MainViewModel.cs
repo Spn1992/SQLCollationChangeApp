@@ -38,7 +38,7 @@ namespace CollationModifier.ViewModels
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
             RunPreflightCheckCommand = new RelayCommand(async _ => await RunPreflightCheckAsync(), _ => CanRunPreflightCheck());
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
-            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
+            CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy && !IsCancelling);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
             ShowErrorDetailsCommand = new RelayCommand(_ => ShowErrorDetails(), _ => HasDetailedError);
 
@@ -76,6 +76,19 @@ namespace CollationModifier.ViewModels
         }
         public bool IsNotBusy => !IsBusy;
         public bool IsConnecting => IsBusy && !IsConnected;
+
+        private bool _isCancelling;
+        public bool IsCancelling
+        {
+            get => _isCancelling;
+            set
+            {
+                if (SetProperty(ref _isCancelling, value))
+                {
+                    InvalidateRequerySuggested();
+                }
+            }
+        }
 
         private string _statusMessage = "Ready";
         public string StatusMessage
@@ -128,6 +141,15 @@ namespace CollationModifier.ViewModels
             DetailedError = detailedError;
         }
 
+        private void ClearErrorDiagnosticsIfPresent()
+        {
+            if (HasDetailedError || !string.IsNullOrEmpty(StatusToolTip))
+            {
+                DetailedError = null;
+                StatusToolTip = null;
+            }
+        }
+
         private int _progressPercent;
         public int ProgressPercent
         {
@@ -147,7 +169,13 @@ namespace CollationModifier.ViewModels
         public string ServerName
         {
             get => _serverName;
-            set => SetProperty(ref _serverName, value);
+            set
+            {
+                if (SetProperty(ref _serverName, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
+            }
         }
 
         public ObservableCollection<string> AuthenticationTypes { get; }
@@ -162,7 +190,9 @@ namespace CollationModifier.ViewModels
                 string previous = _selectedAuthenticationType;
                 if (SetProperty(ref _selectedAuthenticationType, value))
                 {
+                    ClearErrorDiagnosticsIfPresent();
                     OnPropertyChanged(nameof(IsSqlServerAuth));
+                    OnPropertyChanged(nameof(CanEditSqlCredentials));
                     if (!string.IsNullOrEmpty(previous) && previous != value)
                     {
                         if (value == "SQL Server Authentication")
@@ -184,14 +214,26 @@ namespace CollationModifier.ViewModels
         public string Username
         {
             get => _username;
-            set => SetProperty(ref _username, value);
+            set
+            {
+                if (SetProperty(ref _username, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
+            }
         }
 
         private string _password = string.Empty;
         public string Password
         {
             get => _password;
-            set => SetProperty(ref _password, value);
+            set
+            {
+                if (SetProperty(ref _password, value))
+                {
+                    ClearErrorDiagnosticsIfPresent();
+                }
+            }
         }
 
         private bool _isConnected;
@@ -352,10 +394,12 @@ namespace CollationModifier.ViewModels
 
         public void Cancel()
         {
-            if (_cts != null && !_cts.IsCancellationRequested)
+            if (!IsCancelling && _cts != null && !_cts.IsCancellationRequested)
             {
                 try
                 {
+                    IsCancelling = true;
+                    IsIndeterminateProgress = true;
                     StatusMessage = "Cancelling operation...";
                     _logger.LogInfo("Cancellation requested by user.");
                     _cts.Cancel();
@@ -363,6 +407,10 @@ namespace CollationModifier.ViewModels
                 catch (ObjectDisposedException)
                 {
                     // Ignored if already disposed concurrently
+                    if (!IsBusy)
+                    {
+                        IsCancelling = false;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -473,11 +521,12 @@ namespace CollationModifier.ViewModels
                 return;
             }
 
+            IsCancelling = false;
             IsBusy = true;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
 
-            StatusMessage = "Connecting to server...";
+            SetStatus("Connecting to server...");
             _logger.LogInfo($"Attempting to connect to server: {ServerName} using {SelectedAuthenticationType}");
 
             try
@@ -527,6 +576,7 @@ namespace CollationModifier.ViewModels
             {
                 _cts?.Dispose();
                 _cts = null;
+                IsCancelling = false;
                 IsBusy = false;
             }
         }
@@ -711,6 +761,7 @@ namespace CollationModifier.ViewModels
         {
             if (SelectedDatabase == null) return;
 
+            IsCancelling = false;
             IsBusy = true;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
@@ -721,6 +772,7 @@ namespace CollationModifier.ViewModels
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
+            SetStatus("Running pre-flight checks...");
 
             try
             {
@@ -759,6 +811,10 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Starting automated backup...";
                 var backupProgress = new Progress<int>(percent =>
                 {
+                    if (IsCancelling || token.IsCancellationRequested)
+                    {
+                        return;
+                    }
                     ProgressPercent = percent;
                     IsIndeterminateProgress = false;
                     StatusMessage = $"Backing up database... {percent}%";
@@ -768,6 +824,7 @@ namespace CollationModifier.ViewModels
                 token.ThrowIfCancellationRequested();
 
                 // 3. Execution Phase
+                alterPhaseStarted = true;
                 StatusMessage = "Altering database collation... This may take a while.";
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
@@ -784,59 +841,77 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
 
-                Exception? restoreEx = null;
-                Exception? resetEx = null;
-
-                if (backupFile != null && SelectedDatabase != null)
+                if (!alterPhaseStarted)
                 {
-                    try
+                    if (!string.IsNullOrEmpty(backupFile))
                     {
-                        await RestoreDatabaseRollbackAsync(backupFile);
+                        _logger.LogInfo($"Skipping database restore because collation alteration had not started. Unused backup file retained at: {backupFile}");
                     }
-                    catch (Exception rex)
-                    {
-                        restoreEx = rex;
-                        _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
-                    }
+                    SetStatus("Operation cancelled by user.");
                 }
 
                 if (enteredDestructivePhase && SelectedDatabase != null)
                 {
-                    try
+                    Exception? restoreEx = null;
+                    Exception? resetEx = null;
+
+                    if (backupFile != null && SelectedDatabase != null)
                     {
-                        await _databaseService.TrySetMultiUserAsync(SelectedDatabase.Name, CancellationToken.None);
+                        try
+                        {
+                            var restoreProgress = new Progress<int>(percent =>
+                            {
+                                ProgressPercent = percent;
+                                IsIndeterminateProgress = false;
+                                StatusMessage = $"Restoring database... {percent}%";
+                            });
+                            await _databaseService.RestoreDatabaseAsync(SelectedDatabase.Name, backupFile, restoreProgress, CancellationToken.None);
+                        }
+                        catch (Exception rex)
+                        {
+                            restoreEx = rex;
+                            _logger.LogError("Rollback/Restore failed after cancellation.", restoreEx);
+                        }
                     }
-                    catch (Exception rex)
+
+                    if (SelectedDatabase != null)
                     {
-                        resetEx = rex;
-                        _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
+                        try
+                        {
+                            await _databaseService.TrySetMultiUserAsync(SelectedDatabase.Name, CancellationToken.None);
+                        }
+                        catch (Exception rex)
+                        {
+                            resetEx = rex;
+                            _logger.LogError($"Emergency MULTI_USER reset failed during cancellation on {SelectedDatabase.Name}", resetEx);
+                        }
                     }
-                }
 
-                if (restoreEx != null || resetEx != null)
-                {
-                    Exception recoveryEx = (restoreEx != null && resetEx != null)
-                        ? new AggregateException(restoreEx, resetEx)
-                        : (restoreEx ?? resetEx)!;
+                    if (restoreEx != null || resetEx != null)
+                    {
+                        Exception recoveryEx = (restoreEx != null && resetEx != null)
+                            ? new AggregateException(restoreEx, resetEx)
+                            : (restoreEx ?? resetEx)!;
 
-                    var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(
-                        ex,
-                        backupFile,
-                        recoveryEx,
-                        restoreAttempted: backupFile != null);
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(
+                            ex,
+                            backupFile,
+                            recoveryEx,
+                            restoreAttempted: backupFile != null);
 
-                    SetStatus(statusText, toolTipText, detailedError);
-                }
-                else
-                {
-                    SetStatus("Operation cancelled by user.");
+                        SetStatus(statusText, toolTipText, detailedError);
+                    }
+                    else
+                    {
+                        SetStatus("Operation cancelled by user.");
+                    }
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError("Process collation change failed.", ex);
 
-                if (backupFile != null)
+                if (alterPhaseStarted && backupFile != null)
                 {
                     try
                     {
@@ -853,6 +928,10 @@ namespace CollationModifier.ViewModels
                 }
                 else
                 {
+                    if (!string.IsNullOrEmpty(backupFile))
+                    {
+                        _logger.LogInfo($"Skipping database restore because collation alteration had not started. Unused backup file retained at: {backupFile}");
+                    }
                     var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, null);
                     SetStatus(statusText, toolTipText, detailedError);
                 }
@@ -863,6 +942,7 @@ namespace CollationModifier.ViewModels
                 _cts = null;
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
+                IsCancelling = false;
                 IsBusy = false;
             }
         }

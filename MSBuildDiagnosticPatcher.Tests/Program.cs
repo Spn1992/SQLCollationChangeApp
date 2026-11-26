@@ -34,13 +34,19 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors", Test_MSBuildLogParser_ParseLine_ExtractsNuGetVulnerabilityAuditErrors);
             RunTest("MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError", Test_MSBuildLogParser_ParseLine_ExtractsNetSdkCoordinateFreeError);
             RunTest("MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity", Test_MSBuildLogParser_ParseLine_ExtractsCoordinateFreeInformationalSeverity);
-            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError);
+            RunTest("MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedAndMessageSeverity_ReturnsNull", Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedAndMessageSeverity_ReturnsNull);
             RunTest("MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates", Test_MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates);
             RunTest("MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber", Test_MSBuildLogParser_ParseLine_SpacedPathWithCoordinatesWithoutColumnNumber);
             RunTest("MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates", Test_MSBuildLogParser_ParseLine_FatalErrorSeverityWithCoordinates);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynErrors_CS_BC_FS);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError", Test_MSBuildLogParser_ParseLine_CoordinateFreeRoslynFatalError);
             RunTest("MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon", Test_MSBuildLogParser_ParseLine_CoordinateFreeSpacedPathWithDriveColon);
+            RunTest("MSBuildLogParser_ParseLine_SpecialPathCharacters_X86_At_Plus", Test_MSBuildLogParser_ParseLine_SpecialPathCharacters_X86_At_Plus);
+            RunTest("MSBuildLogParser_ParseLine_ParallelNodePrefixes_1_And_1Colon7", Test_MSBuildLogParser_ParseLine_ParallelNodePrefixes_1_And_1Colon7);
+            RunTest("MSBuildLogParser_ParseLine_ThreeAndFourTupleCoordinates", Test_MSBuildLogParser_ParseLine_ThreeAndFourTupleCoordinates);
+            RunTest("MSBuildLogParser_ParseLine_PrefixFreeNuGetAndNetSdkLines", Test_MSBuildLogParser_ParseLine_PrefixFreeNuGetAndNetSdkLines);
+            RunTest("MSBuildLogParser_ParseLine_McCaAndSyslibCodes", Test_MSBuildLogParser_ParseLine_McCaAndSyslibCodes);
+            RunTest("MSBuildLogParser_ParseLine_SubcategoryWarningsAndErrors", Test_MSBuildLogParser_ParseLine_SubcategoryWarningsAndErrors);
             RunTest("MSBuildLogParser_ParsePerformance_Under10Seconds", Test_MSBuildLogParser_ParsePerformance_Under10Seconds);
 
             // 1.5 AnsiCleaner Tests
@@ -309,17 +315,27 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(diag.Message.Contains("Skipping restore for project"), "Expected info message to match");
         }
 
-        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedSeverity_DefaultsToError()
+        static void Test_MSBuildLogParser_ParseLine_CoordinateFreeUnrecognizedAndMessageSeverity_ReturnsNull()
         {
             var parser = new MSBuildLogParser();
-            string line = "MSBUILD : unexpected MSB1003: Unrecognized build failure.";
 
-            var diag = parser.ParseLine(line);
-            Assert(diag != null, "Expected diagnostic with unrecognized severity to be parsed.");
-            Assert(diag!.Code == "MSB1003", $"Expected code MSB1003, got {diag.Code}");
-            Assert(diag.Severity == DiagnosticSeverity.Error, $"Expected unrecognized severity to default to Error, got {diag.Severity}");
-            Assert(diag.LineNumber == 0, $"Expected line 0, got {diag.LineNumber}");
-            Assert(diag.ColumnNumber == 0, $"Expected column 0, got {diag.ColumnNumber}");
+            string unexpectedLine = "MSBUILD : unexpected MSB1003: Unrecognized build failure.";
+            Assert(parser.ParseLine(unexpectedLine) == null, "Expected unrecognized 'unexpected' severity line to return null.");
+
+            string msbuildMessageLine = "MSBUILD : message MSB1001: Informational build message.";
+            Assert(parser.ParseLine(msbuildMessageLine) == null, "Expected 'message' severity line with origin to return null.");
+
+            string highMessageLine = "MSBUILD : high message MSB4000: High importance informational message.";
+            Assert(parser.ParseLine(highMessageLine) == null, "Expected subcategory 'high message' line to return null.");
+
+            string coordMessageLine = "Services/DatabaseService.cs(11,36): message CS8001: Informational compiler message.";
+            Assert(parser.ParseLine(coordMessageLine) == null, "Expected coordinate-bearing 'message' line to return null.");
+
+            string prefixFreeMessageLine = "message NU1500: Restore informational output.";
+            Assert(parser.ParseLine(prefixFreeMessageLine) == null, "Expected prefix-free 'message' line to return null.");
+
+            string quotedErrorInsideMessageLine = "message MSB4000: error CS1002: Quoted error inside message text";
+            Assert(parser.ParseLine(quotedErrorInsideMessageLine) == null, "Expected prefix-free 'message' line containing quoted error text to return null.");
         }
 
         static void Test_MSBuildLogParser_ParseLine_SpacedPathWithDriveColonAndCoordinates()
@@ -438,6 +454,223 @@ namespace MSBuildDiagnosticPatcher.Tests
             Assert(colonDiag != null, "Expected diagnostic with colons in message to parse.");
             Assert(colonDiag!.FilePath == @"C:\Source Code\Project\File.cs", $"Expected file path without trailing delimiters, got '{colonDiag.FilePath}'");
             Assert(colonDiag.Message == "Multiple colons in message: part 1: part 2", $"Expected full message preserved, got '{colonDiag.Message}'");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_SpecialPathCharacters_X86_At_Plus()
+        {
+            var parser = new MSBuildLogParser();
+
+            string x86Line = @"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Microsoft.Common.CurrentVersion.targets(2301,5): error MSB3245: Could not resolve this reference. [C:\Work@2\My+App\CollationModifier.csproj]";
+            var x86Diag = parser.ParseLine(x86Line);
+            Assert(x86Diag != null, "Expected (x86) path diagnostic to parse.");
+            Assert(x86Diag!.FilePath == @"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\MSBuild\Current\Bin\Microsoft.Common.CurrentVersion.targets", $"Unexpected FilePath '{x86Diag.FilePath}'");
+            Assert(x86Diag.LineNumber == 2301, $"Expected line 2301, got {x86Diag.LineNumber}");
+            Assert(x86Diag.ColumnNumber == 5, $"Expected col 5, got {x86Diag.ColumnNumber}");
+            Assert(x86Diag.Severity == DiagnosticSeverity.Error, $"Expected Error, got {x86Diag.Severity}");
+            Assert(x86Diag.Code == "MSB3245", $"Expected MSB3245, got {x86Diag.Code}");
+            Assert(x86Diag.ProjectPath == @"C:\Work@2\My+App\CollationModifier.csproj", $"Unexpected ProjectPath '{x86Diag.ProjectPath}'");
+
+            string atPlusCoordLine = "/home/runner/work/repo@2/src/Collation+Modifier/Program.cs(42,10): warning CS0168: The variable 'ex' is declared but never used [/home/runner/work/repo@2/src/Collation+Modifier/App.csproj]";
+            var atPlusDiag = parser.ParseLine(atPlusCoordLine);
+            Assert(atPlusDiag != null, "Expected @ and + path diagnostic with coordinates to parse.");
+            Assert(atPlusDiag!.FilePath == "/home/runner/work/repo@2/src/Collation+Modifier/Program.cs", $"Unexpected FilePath '{atPlusDiag.FilePath}'");
+            Assert(atPlusDiag.LineNumber == 42 && atPlusDiag.ColumnNumber == 10, $"Expected (42,10), got ({atPlusDiag.LineNumber},{atPlusDiag.ColumnNumber})");
+            Assert(atPlusDiag.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {atPlusDiag.Severity}");
+
+            string numericDirLine = @"C:\Build (2022)\Program Files (x86)\Module.cs(18,4): error CS1002: ; expected";
+            var numericDirDiag = parser.ParseLine(numericDirLine);
+            Assert(numericDirDiag != null, "Expected numeric directory path before coordinates to parse.");
+            Assert(numericDirDiag!.FilePath == @"C:\Build (2022)\Program Files (x86)\Module.cs", $"Unexpected FilePath '{numericDirDiag.FilePath}'");
+            Assert(numericDirDiag.LineNumber == 18 && numericDirDiag.ColumnNumber == 4, $"Expected (18,4), got ({numericDirDiag.LineNumber},{numericDirDiag.ColumnNumber})");
+
+            string coordFreeSpecialPath = @"C:\Program Files (x86)\dotnet\sdk@8\My+Targets.targets : error NETSDK1045: The current .NET SDK does not support targeting .NET 9.0.";
+            var coordFreeDiag = parser.ParseLine(coordFreeSpecialPath);
+            Assert(coordFreeDiag != null, "Expected coordinate-free (x86)/@/+ path diagnostic to parse.");
+            Assert(coordFreeDiag!.FilePath == @"C:\Program Files (x86)\dotnet\sdk@8\My+Targets.targets", $"Unexpected FilePath '{coordFreeDiag.FilePath}'");
+            Assert(coordFreeDiag.LineNumber == 0 && coordFreeDiag.ColumnNumber == 0, "Expected 0 coordinates.");
+            Assert(coordFreeDiag.Code == "NETSDK1045", $"Expected NETSDK1045, got {coordFreeDiag.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ParallelNodePrefixes_1_And_1Colon7()
+        {
+            var parser = new MSBuildLogParser();
+
+            string node1Coord = "1>Services/DatabaseService.cs(11,36): error CS0535: 'DatabaseService' does not implement interface member [CollationModifier.csproj]";
+            var diag1 = parser.ParseLine(node1Coord);
+            Assert(diag1 != null, "Expected 1> coordinate diagnostic to parse.");
+            Assert(diag1!.FilePath == "Services/DatabaseService.cs", $"Expected 'Services/DatabaseService.cs', got '{diag1.FilePath}'");
+            Assert(diag1.LineNumber == 11 && diag1.ColumnNumber == 36, $"Expected (11,36), got ({diag1.LineNumber},{diag1.ColumnNumber})");
+            Assert(diag1.Code == "CS0535", $"Expected CS0535, got {diag1.Code}");
+
+            string node1Colon7Coord = "1:7>Views/MainWindow.xaml(15,6,15,24): error MC3074: The tag 'InvalidTag' does not exist in XML namespace [CollationModifier.csproj]";
+            var diag17 = parser.ParseLine(node1Colon7Coord);
+            Assert(diag17 != null, "Expected 1:7> coordinate diagnostic to parse.");
+            Assert(diag17!.FilePath == "Views/MainWindow.xaml", $"Expected 'Views/MainWindow.xaml', got '{diag17.FilePath}'");
+            Assert(diag17.LineNumber == 15 && diag17.ColumnNumber == 6, $"Expected (15,6), got ({diag17.LineNumber},{diag17.ColumnNumber})");
+            Assert(diag17.Code == "MC3074", $"Expected MC3074, got {diag17.Code}");
+
+            string nodeSpacedCoordFree = @"2>  C:\Program Files (x86)\App\App.csproj : warning NU1701: Package restored using fallback framework.";
+            var diagSpaced = parser.ParseLine(nodeSpacedCoordFree);
+            Assert(diagSpaced != null, "Expected spaced 2> coordinate-free diagnostic to parse.");
+            Assert(diagSpaced!.FilePath == @"C:\Program Files (x86)\App\App.csproj", $"Unexpected FilePath '{diagSpaced.FilePath}'");
+            Assert(diagSpaced.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagSpaced.Severity}");
+            Assert(diagSpaced.Code == "NU1701", $"Expected NU1701, got {diagSpaced.Code}");
+
+            string nodePrefixFree = "1:7>error NU1101: Unable to find package Bogus.Package.";
+            var diagPrefixFree = parser.ParseLine(nodePrefixFree);
+            Assert(diagPrefixFree != null, "Expected 1:7> prefix-free NuGet error to parse.");
+            Assert(diagPrefixFree!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagPrefixFree.FilePath}'");
+            Assert(diagPrefixFree.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagPrefixFree.Severity}");
+            Assert(diagPrefixFree.Code == "NU1101", $"Expected NU1101, got {diagPrefixFree.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_ThreeAndFourTupleCoordinates()
+        {
+            var parser = new MSBuildLogParser();
+
+            string threeTuple = "Services/Parser.cs(42,8,20): warning CA1822: Member 'Parse' does not access instance data and can be marked as static [CollationModifier.csproj]";
+            var diag3 = parser.ParseLine(threeTuple);
+            Assert(diag3 != null, "Expected 3-tuple coordinate diagnostic to parse.");
+            Assert(diag3!.FilePath == "Services/Parser.cs", $"Expected 'Services/Parser.cs', got '{diag3.FilePath}'");
+            Assert(diag3.LineNumber == 42, $"Expected line 42, got {diag3.LineNumber}");
+            Assert(diag3.ColumnNumber == 8, $"Expected col 8, got {diag3.ColumnNumber}");
+            Assert(diag3.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diag3.Severity}");
+            Assert(diag3.Code == "CA1822", $"Expected CA1822, got {diag3.Code}");
+
+            string fourTuple = "Views/MainWindow.xaml(14,6,14,28): error MC3074: The tag 'BadControl' does not exist in XML namespace [CollationModifier.csproj]";
+            var diag4 = parser.ParseLine(fourTuple);
+            Assert(diag4 != null, "Expected 4-tuple coordinate diagnostic to parse.");
+            Assert(diag4!.FilePath == "Views/MainWindow.xaml", $"Expected 'Views/MainWindow.xaml', got '{diag4.FilePath}'");
+            Assert(diag4.LineNumber == 14, $"Expected line 14, got {diag4.LineNumber}");
+            Assert(diag4.ColumnNumber == 6, $"Expected col 6, got {diag4.ColumnNumber}");
+            Assert(diag4.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diag4.Severity}");
+            Assert(diag4.Code == "MC3074", $"Expected MC3074, got {diag4.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_PrefixFreeNuGetAndNetSdkLines()
+        {
+            var parser = new MSBuildLogParser();
+
+            string nuError = "  error NU1101: Unable to find package NonExistent.Package. No packages exist with this id in source(s): nuget.org";
+            var diagNu = parser.ParseLine(nuError);
+            Assert(diagNu != null, "Expected prefix-free NU1101 error to parse.");
+            Assert(diagNu!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagNu.FilePath}'");
+            Assert(diagNu.LineNumber == 0 && diagNu.ColumnNumber == 0, $"Expected (0,0), got ({diagNu.LineNumber},{diagNu.ColumnNumber})");
+            Assert(diagNu.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagNu.Severity}");
+            Assert(diagNu.Code == "NU1101", $"Expected NU1101, got {diagNu.Code}");
+            Assert(diagNu.Message.Contains("Unable to find package NonExistent.Package"), $"Unexpected message '{diagNu.Message}'");
+
+            string netSdkError = "error NETSDK1045: The current .NET SDK does not support targeting .NET 9.0. [/app/CollationModifier/CollationModifier.csproj]";
+            var diagSdk = parser.ParseLine(netSdkError);
+            Assert(diagSdk != null, "Expected prefix-free NETSDK1045 error to parse.");
+            Assert(diagSdk!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagSdk.FilePath}'");
+            Assert(diagSdk.LineNumber == 0 && diagSdk.ColumnNumber == 0, $"Expected (0,0), got ({diagSdk.LineNumber},{diagSdk.ColumnNumber})");
+            Assert(diagSdk.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagSdk.Severity}");
+            Assert(diagSdk.Code == "NETSDK1045", $"Expected NETSDK1045, got {diagSdk.Code}");
+            Assert(diagSdk.ProjectPath == "/app/CollationModifier/CollationModifier.csproj", $"Unexpected ProjectPath '{diagSdk.ProjectPath}'");
+
+            string nuWarning = "warning NU1701: Package 'LegacyLib 1.0.0' was restored using '.NETFramework,Version=v4.6.1'.";
+            var diagWarn = parser.ParseLine(nuWarning);
+            Assert(diagWarn != null, "Expected prefix-free NU1701 warning to parse.");
+            Assert(diagWarn!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagWarn.FilePath}'");
+            Assert(diagWarn.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagWarn.Severity}");
+            Assert(diagWarn.Code == "NU1701", $"Expected NU1701, got {diagWarn.Code}");
+
+            // Guard check: prefix-free severity must not be consumed as <file> when message itself contains a colon and secondary code
+            string nestedErrorText = "error NU1101: Restore failed: error MSB1003: Inner detail";
+            var diagNested = parser.ParseLine(nestedErrorText);
+            Assert(diagNested != null, "Expected nested colon prefix-free NU1101 to parse.");
+            Assert(diagNested!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagNested.FilePath}'");
+            Assert(diagNested.Code == "NU1101", $"Expected outer code NU1101, got {diagNested.Code}");
+            Assert(diagNested.Message == "Restore failed: error MSB1003: Inner detail", $"Unexpected message '{diagNested.Message}'");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_McCaAndSyslibCodes()
+        {
+            var parser = new MSBuildLogParser();
+
+            string mcCoordFree = "Views/MainWindow.xaml : error MC3000: 'Cannot find type' [CollationModifier.csproj]";
+            var diagMc = parser.ParseLine(mcCoordFree);
+            Assert(diagMc != null, "Expected coordinate-free MC3000 error to parse.");
+            Assert(diagMc!.FilePath == "Views/MainWindow.xaml", $"Unexpected FilePath '{diagMc.FilePath}'");
+            Assert(diagMc.Severity == DiagnosticSeverity.Error, $"Expected Error, got {diagMc.Severity}");
+            Assert(diagMc.Code == "MC3000", $"Expected MC3000, got {diagMc.Code}");
+
+            string caCoordFree = "CSC : warning CA1062: Validate arguments of public methods [CollationModifier.csproj]";
+            var diagCa = parser.ParseLine(caCoordFree);
+            Assert(diagCa != null, "Expected coordinate-free CA1062 warning to parse.");
+            Assert(diagCa!.FilePath == "CSC", $"Expected FilePath 'CSC', got '{diagCa.FilePath}'");
+            Assert(diagCa.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagCa.Severity}");
+            Assert(diagCa.Code == "CA1062", $"Expected CA1062, got {diagCa.Code}");
+
+            string syslibCoordFree = "Security/Crypto.cs : warning SYSLIB1045: Convert to 'GeneratedRegexAttribute' [CollationModifier.csproj]";
+            var diagSyslib = parser.ParseLine(syslibCoordFree);
+            Assert(diagSyslib != null, "Expected coordinate-free SYSLIB1045 warning to parse.");
+            Assert(diagSyslib!.FilePath == "Security/Crypto.cs", $"Unexpected FilePath '{diagSyslib.FilePath}'");
+            Assert(diagSyslib.Severity == DiagnosticSeverity.Warning, $"Expected Warning, got {diagSyslib.Severity}");
+            Assert(diagSyslib.Code == "SYSLIB1045", $"Expected SYSLIB1045, got {diagSyslib.Code}");
+        }
+
+        static void Test_MSBuildLogParser_ParseLine_SubcategoryWarningsAndErrors()
+        {
+            var parser = new MSBuildLogParser();
+
+            string coordSubcatWarn = "Views/MainWindow.xaml(22,10): Localization warning MC6000: Invalid localization comment [CollationModifier.csproj]";
+            var diagCoordWarn = parser.ParseLine(coordSubcatWarn);
+            Assert(diagCoordWarn != null, "Expected coordinate subcategory warning to parse.");
+            Assert(diagCoordWarn!.Severity == DiagnosticSeverity.Warning, $"Expected Warning for Localization warning, got {diagCoordWarn.Severity}");
+            Assert(diagCoordWarn.Code == "MC6000", $"Expected MC6000, got {diagCoordWarn.Code}");
+
+            string coordSubcatErr = "Views/MainWindow.xaml(12,5): XamlInternalError error MC1000: Unknown build error [CollationModifier.csproj]";
+            var diagCoordErr = parser.ParseLine(coordSubcatErr);
+            Assert(diagCoordErr != null, "Expected coordinate subcategory error to parse.");
+            Assert(diagCoordErr!.Severity == DiagnosticSeverity.Error, $"Expected Error for XamlInternalError error, got {diagCoordErr.Severity}");
+            Assert(diagCoordErr.Code == "MC1000", $"Expected MC1000, got {diagCoordErr.Code}");
+
+            string coordFreeSubcatWarn = "CSC : compiler warning CS8002: Referenced assembly 'LegacyLib' does not have a strong name.";
+            var diagCoordFreeWarn = parser.ParseLine(coordFreeSubcatWarn);
+            Assert(diagCoordFreeWarn != null, "Expected coordinate-free subcategory warning to parse.");
+            Assert(diagCoordFreeWarn!.FilePath == "CSC", $"Expected FilePath 'CSC', got '{diagCoordFreeWarn.FilePath}'");
+            Assert(diagCoordFreeWarn.Severity == DiagnosticSeverity.Warning, $"Expected Warning for compiler warning, got {diagCoordFreeWarn.Severity}");
+            Assert(diagCoordFreeWarn.Code == "CS8002", $"Expected CS8002, got {diagCoordFreeWarn.Code}");
+
+            string multiWordSubcatWarn = "CSC : Command line warning CS2002: Source file 'Program.cs' specified multiple times";
+            var diagMultiWarn = parser.ParseLine(multiWordSubcatWarn);
+            Assert(diagMultiWarn != null, "Expected multi-word subcategory warning to parse.");
+            Assert(diagMultiWarn!.Severity == DiagnosticSeverity.Warning, $"Expected Warning for Command line warning, got {diagMultiWarn.Severity}");
+            Assert(diagMultiWarn.Code == "CS2002", $"Expected CS2002, got {diagMultiWarn.Code}");
+
+            string prefixFreeSubcatWarn = "restore warning NU1603: Package dependency resolved to higher version.";
+            var diagPrefixFreeWarn = parser.ParseLine(prefixFreeSubcatWarn);
+            Assert(diagPrefixFreeWarn != null, "Expected prefix-free subcategory warning to parse.");
+            Assert(diagPrefixFreeWarn!.FilePath == string.Empty, $"Expected empty FilePath, got '{diagPrefixFreeWarn.FilePath}'");
+            Assert(diagPrefixFreeWarn.Severity == DiagnosticSeverity.Warning, $"Expected Warning for restore warning, got {diagPrefixFreeWarn.Severity}");
+            Assert(diagPrefixFreeWarn.Code == "NU1603", $"Expected NU1603, got {diagPrefixFreeWarn.Code}");
+
+            // Verify Program.Main returns 0 on logs with message lines and subcategory warnings
+            string tempDir = Path.Combine(Path.GetTempPath(), $"subcat_clean_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                string logFile = Path.Combine(tempDir, "clean_with_messages_and_subcat_warnings.log");
+                string outputDir = Path.Combine(tempDir, "out");
+                File.WriteAllText(logFile, string.Join("\n", new[]
+                {
+                    "MSBUILD : message MSB1001: Informational build trace.",
+                    "CSC : compiler warning CS8002: Referenced assembly 'LegacyLib' does not have a strong name.",
+                    "Views/MainWindow.xaml(22,10): Localization warning MC6000: Invalid localization comment [CollationModifier.csproj]",
+                    "Build succeeded.",
+                    "    2 Warning(s)",
+                    "    0 Error(s)"
+                }));
+
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[] { logFile, "-o", outputDir });
+                Assert(exitCode == 0, $"Expected exit code 0 when only message lines and subcategory warnings exist, got {exitCode}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
         }
 
         static void Test_MSBuildLogParser_ParsePerformance_Under10Seconds()

@@ -85,50 +85,21 @@
                         <StackPanel IsEnabled="{Binding IsConnected}" AutomationProperties.Name="Database Operations">
                             <Label Content="Database Operations" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level1" FontSize="20" Margin="0,0,0,24" />
 
-                        <!-- Database Selector -->
-                        <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
-                        <Grid Margin="0,0,0,24">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <ComboBox x:Name="SelectDatabaseInput" Grid.Column="0"
-                                      ItemsSource="{Binding Databases}"
+                            <!-- Database Selector -->
+                            <TextBlock x:Name="SelectDatabaseLabel" Text="Select Database" Margin="0,0,0,8" FontWeight="SemiBold" />
+                            <ComboBox x:Name="SelectDatabaseInput" ItemsSource="{Binding Databases}"
                                       SelectedItem="{Binding SelectedDatabase}" DisplayMemberPath="Name"
                                       AutomationProperties.LabeledBy="{Binding ElementName=SelectDatabaseLabel}"
                                       AutomationProperties.Name="Select Database"
-                                      IsEnabled="{Binding IsNotBusy}" />
-                            <Button x:Name="btnRefreshDatabases" Grid.Column="1"
-                                    Content="Refresh"
-                                    Command="{Binding RefreshDatabasesCommand}"
-                                    Style="{StaticResource SecondaryButton}"
-                                    MinHeight="24"
-                                    Padding="12,6"
-                                    Margin="8,0,0,0"
-                                    AutomationProperties.Name="Refresh"
-                                    AutomationProperties.HelpText="Reload database catalog from SQL Server"
-                                    ToolTip="Reload database catalog from SQL Server" />
-                        </Grid>
+                                      Margin="0,0,0,24" IsEnabled="{Binding IsNotBusy}" />
 
-                        <!-- Metadata Panel -->
-                        <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
-                                BorderBrush="#E2E8F0" BorderThickness="1">
-                            <Border.Effect>
-                                <DropShadowEffect Color="#CBD5E1" BlurRadius="10" ShadowDepth="2" Opacity="0.3" />
-                            </Border.Effect>
-                            <Grid>
-                                <!-- Property Grid (Visible when a database is selected) -->
-                                <Grid x:Name="MetadataPropertyGrid">
-                                    <Grid.Style>
-                                        <Style TargetType="Grid">
-                                            <Setter Property="Visibility" Value="Collapsed" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding HasSelectedDatabase}" Value="True">
-                                                    <Setter Property="Visibility" Value="Visible" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </Grid.Style>
+                            <!-- Metadata Panel -->
+                            <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
+                                    BorderBrush="#E2E8F0" BorderThickness="1">
+                                <Border.Effect>
+                                    <DropShadowEffect Color="#CBD5E1" BlurRadius="10" ShadowDepth="2" Opacity="0.3" />
+                                </Border.Effect>
+                                <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
@@ -160,66 +131,54 @@
                                                AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
                                                AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
                                 </Grid>
+                            </Border>
 
-                                <!-- Empty State Guidance Panel (Visible when no database is selected) -->
-                                <StackPanel x:Name="MetadataEmptyStateContainer" VerticalAlignment="Center" HorizontalAlignment="Center" Margin="12">
-                                    <StackPanel.Style>
-                                        <Style TargetType="StackPanel">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                            <Style.Triggers>
-                                                <DataTrigger Binding="{Binding HasSelectedDatabase}" Value="True">
-                                                    <Setter Property="Visibility" Value="Collapsed" />
-                                                </DataTrigger>
-                                            </Style.Triggers>
-                                        </Style>
-                                    </StackPanel.Style>
-                                    <TextBlock x:Name="lblMetadataEmptyState" Text="{Binding MetadataEmptyStateText}"
-                                               FontSize="14" HorizontalAlignment="Center"
-                                               TextWrapping="Wrap"
-                                               AutomationProperties.Name="{Binding MetadataEmptyStateText}"
-                                               AutomationProperties.HelpText="Metadata empty state guidance message."
-                                               AutomationProperties.LiveSetting="Polite" />
+                            <!-- Action Area -->
+                            <Label Content="Target Configuration" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level2" Margin="0,0,0,8" />
+
+                            <StackPanel Margin="0,0,0,24">
+                                <StackPanel Margin="0,0,0,16">
+                                    <TextBlock x:Name="TargetCollationLabel" Text="New Collation Name" Margin="0,0,0,4" />
+                                    <ComboBox x:Name="TargetCollationInput"
+                                              ItemsSource="{Binding SupportedCollations}"
+                                              Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
+                                              Loaded="TargetCollationInput_Loaded"
+                                              IsEditable="True"
+                                              IsTextSearchEnabled="True"
+                                              VirtualizingPanel.IsVirtualizing="True"
+                                              VirtualizingPanel.VirtualizationMode="Recycling"
+                                              ScrollViewer.CanContentScroll="True"
+                                              AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
+                                              AutomationProperties.Name="New Collation Name"
+                                              AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
+                                              ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}">
+                                        <ComboBox.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <VirtualizingStackPanel />
+                                            </ItemsPanelTemplate>
+                                        </ComboBox.ItemsPanel>
+                                    </ComboBox>
                                 </StackPanel>
-                            </Grid>
-                        </Border>
 
-                        <!-- Action Area -->
-                        <Label Content="Target Configuration" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level2" Margin="0,0,0,8" />
-
-                        <StackPanel Margin="0,0,0,24">
-                            <StackPanel Margin="0,0,0,16">
-                                <TextBlock x:Name="TargetCollationLabel" Text="New Collation Name" Margin="0,0,0,4" />
-                                <ComboBox x:Name="TargetCollationInput"
-                                          ItemsSource="{Binding SupportedCollations}"
-                                          Text="{Binding TargetCollation, UpdateSourceTrigger=PropertyChanged}"
-                                          Loaded="TargetCollationInput_Loaded"
-                                          IsEditable="True"
-                                          IsTextSearchEnabled="True"
-                                          VirtualizingPanel.IsVirtualizing="True"
-                                          VirtualizingPanel.VirtualizationMode="Recycling"
-                                          ScrollViewer.CanContentScroll="True"
-                                          AutomationProperties.LabeledBy="{Binding ElementName=TargetCollationLabel}"
-                                          AutomationProperties.Name="New Collation Name"
-                                          AutomationProperties.HelpText="E.g., SQL_Latin1_General_CP1_CI_AS"
-                                          ToolTip="E.g., SQL_Latin1_General_CP1_CI_AS" IsEnabled="{Binding IsNotBusy}">
-                                    <ComboBox.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <VirtualizingStackPanel />
-                                        </ItemsPanelTemplate>
-                                    </ComboBox.ItemsPanel>
-                                </ComboBox>
+                                <StackPanel>
+                                    <TextBlock x:Name="BackupDirectoryLabel" Text="Backup Directory (Server Host)" Margin="0,0,0,4"
+                                               ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
+                                    <TextBox Text="{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsNotBusy}"
+                                             AutomationProperties.LabeledBy="{Binding ElementName=BackupDirectoryLabel}"
+                                             AutomationProperties.Name="Backup Directory (Server Host)"
+                                             AutomationProperties.HelpText="Path is evaluated on the SQL Server host filesystem, not the local client."
+                                             ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
+                                </StackPanel>
                             </StackPanel>
 
-                            <StackPanel>
-                                <TextBlock x:Name="BackupDirectoryLabel" Text="Backup Directory (Server Host)" Margin="0,0,0,4"
-                                           ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
-                                <TextBox Text="{Binding BackupDirectory, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding IsNotBusy}"
-                                         AutomationProperties.LabeledBy="{Binding ElementName=BackupDirectoryLabel}"
-                                         AutomationProperties.Name="Backup Directory (Server Host)"
-                                         AutomationProperties.HelpText="Path is evaluated on the SQL Server host filesystem, not the local client."
-                                         ToolTip="Path is evaluated on the SQL Server host filesystem, not the local client." />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                                <Button Content="Process Collation Change" Command="{Binding ProcessCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,12,0"
+                                        AutomationProperties.DescribedBy="{Binding ElementName=lblWarning}"
+                                        AutomationProperties.HelpText="Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections" />
+                                <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
+                                        Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                        AutomationProperties.Name="Cancel Operation" />
                             </StackPanel>
-                        </StackPanel>
 
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button x:Name="btnRunPreflightCheck"
