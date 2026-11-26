@@ -907,8 +907,7 @@ namespace CollationModifier.ViewModels
                         var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(
                             ex,
                             backupFile,
-                            recoveryEx,
-                            restoreAttempted: backupFile != null);
+                            recoveryEx);
 
                         SetStatus(statusText, toolTipText, detailedError);
                     }
@@ -927,13 +926,13 @@ namespace CollationModifier.ViewModels
                     try
                     {
                         await RestoreDatabaseRollbackAsync(backupFile);
-                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: null, restoreAttempted: true);
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx: null);
                         SetStatus(statusText, toolTipText, detailedError);
                     }
                     catch (Exception restoreEx)
                     {
                         _logger.LogError("Rollback/Restore failed.", restoreEx);
-                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx, true);
+                        var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatProcessError(ex, backupFile, restoreEx);
                         SetStatus(statusText, toolTipText, detailedError);
                     }
                 }

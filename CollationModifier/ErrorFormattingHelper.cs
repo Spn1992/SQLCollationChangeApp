@@ -113,7 +113,7 @@ namespace CollationModifier
                    msg.IndexOf("emergency MULTI_USER reset", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        public static (string StatusText, string ToolTipText, string DetailedError) FormatProcessError(Exception ex, string? backupFile, Exception? restoreEx = null, bool restoreAttempted = false)
+        public static (string StatusText, string ToolTipText, string DetailedError) FormatProcessError(Exception ex, string? backupFile, Exception? restoreEx = null)
         {
             string primarySummary = GetSafeErrorMessage(ex);
             string detailedPrimary = GetDetailedErrorText(ex);
@@ -121,38 +121,29 @@ namespace CollationModifier
 
             if (backupFile != null)
             {
-                if (restoreAttempted)
+                if (restoreEx != null)
                 {
-                    if (restoreEx != null)
-                    {
-                        string restoreSummary = GetSafeErrorMessage(restoreEx);
-                        string detailedRestore = GetDetailedErrorText(restoreEx);
-                        string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
-                        string status = $"Process failed: {primarySummary}. CRITICAL: Auto-restore also failed: {restoreSummary}.{lockWarning}";
-                        string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\n=== CRITICAL: Auto-restore failed ({backupFile}) ===\n{detailedRestore}\n\n{lockWarning.Trim()}";
-                        return (status, status, detailed.Trim());
-                    }
-                    else
-                    {
-                        if (isSingleUserLocked)
-                        {
-                            string status = $"Process failed: {primarySummary}. WARNING: Database remains locked in SINGLE_USER mode.";
-                            string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\nWARNING: Database remains locked in SINGLE_USER mode.";
-                            return (status, status, detailed);
-                        }
-                        else
-                        {
-                            string status = $"Process failed: {primarySummary}. Database restored to MULTI_USER mode successfully.";
-                            string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\nDatabase was restored to MULTI_USER mode successfully from backup: {backupFile}";
-                            return (status, status, detailed);
-                        }
-                    }
+                    string restoreSummary = GetSafeErrorMessage(restoreEx);
+                    string detailedRestore = GetDetailedErrorText(restoreEx);
+                    string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
+                    string status = $"Process failed: {primarySummary}. CRITICAL: Auto-restore also failed: {restoreSummary}.{lockWarning}";
+                    string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\n=== CRITICAL: Auto-restore failed ({backupFile}) ===\n{detailedRestore}\n\n{lockWarning.Trim()}";
+                    return (status, status, detailed.Trim());
                 }
                 else
                 {
-                    string status = $"Process failed: {primarySummary}. Attempting to restore from backup...";
-                    string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\nAttempting to restore from backup: {backupFile}...";
-                    return (status, status, detailed);
+                    if (isSingleUserLocked)
+                    {
+                        string status = $"Process failed: {primarySummary}. WARNING: Database remains locked in SINGLE_USER mode.";
+                        string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\nWARNING: Database remains locked in SINGLE_USER mode.";
+                        return (status, status, detailed);
+                    }
+                    else
+                    {
+                        string status = $"Process failed: {primarySummary}. Database restored to MULTI_USER mode successfully.";
+                        string detailed = $"Process failed: {primarySummary}\n\n=== Primary Error Details ===\n{detailedPrimary}\n\nDatabase was restored to MULTI_USER mode successfully from backup: {backupFile}";
+                        return (status, status, detailed);
+                    }
                 }
             }
             else
