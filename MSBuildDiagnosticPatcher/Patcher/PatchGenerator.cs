@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,6 +24,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
             "public", "private", "protected", "internal", "static", "virtual",
             "override", "abstract", "sealed", "async", "extern", "unsafe",
             "new", "partial", "readonly", "volatile", "required"
+        };
+
+        private static readonly HashSet<string> NonReturnTypeKeywords = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "public", "private", "protected", "internal", "static", "virtual",
+            "override", "abstract", "sealed", "async", "extern", "unsafe",
+            "new", "partial", "readonly", "volatile", "required",
+            "return", "throw", "await", "yield", "if", "else", "while", "for",
+            "foreach", "switch", "case", "do", "using", "lock", "catch", "when",
+            "where", "in", "out", "ref", "class", "struct", "interface", "record",
+            "enum", "namespace", "event", "delegate"
         };
 
         internal readonly struct DiffLine : IEquatable<DiffLine>
@@ -59,12 +69,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var candidates = new List<PatchCandidate>();
             bool hasExplicitProjectRoot = !string.IsNullOrWhiteSpace(projectRoot);
             string root = hasExplicitProjectRoot ? Path.GetFullPath(projectRoot!) : Directory.GetCurrentDirectory();
-            var pathComparer = OperatingSystem.IsWindows()
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal;
+            bool isCaseInsensitiveFs = OperatingSystem.IsWindows();
 
-            // Parse and group CS0535 diagnostics by (targetFilePath, ClassName)
-            var parsedEntries = new List<(string TargetFilePath, string ClassName, string InterfaceName, string MemberName, string ExpectedParamTypes, DiagnosticSeverity Severity)>();
+            var parsedEntries = new List<(
+                string TargetFilePath,
+                string ClassName,
+                string InterfaceName,
+                string MemberName,
+                string ExpectedParamTypes,
+                DiagnosticSeverity Severity,
+                string ProjectPath)>();
 
             foreach (var diag in diagnostics)
             {
@@ -79,18 +93,21 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                string targetFilePath = ResolveAbsoluteFilePath(diag.FilePath, root);
+                string targetFilePath = ResolveAbsoluteFilePath(diag.FilePath, root, diag.ProjectPath);
                 parsedEntries.Add((
                     targetFilePath,
                     parsed.Value.ClassName,
                     parsed.Value.InterfaceName,
                     parsed.Value.MemberName,
                     parsed.Value.ExpectedParamTypes,
-                    diag.Severity));
+                    diag.Severity,
+                    diag.ProjectPath));
             }
 
             var groupedByFileAndType = parsedEntries
-                .GroupBy(e => (FileKey: e.TargetFilePath.ToUpperInvariant(), e.ClassName))
+                .GroupBy(e => (
+                    FileKey: isCaseInsensitiveFs ? e.TargetFilePath.ToUpperInvariant() : e.TargetFilePath,
+                    e.ClassName))
                 .ToList();
 
             var typeCountPerFile = groupedByFileAndType
@@ -111,6 +128,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
                 var (contentWithoutBom, _, hasUtf8Bom) = ReadFileWithEncoding(targetFilePath);
                 string newline = DetectNewline(contentWithoutBom);
+                var scannedClass = CSharpLexer.Scan(contentWithoutBom);
 
                 var memberInfos = new List<InterfaceMemberInfo>();
                 var seenMembers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -138,7 +156,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     string interfaceSearchRoot = hasExplicitProjectRoot
                         ? root
                         : FindRepoRoot(targetFilePath)
-                            ?? ResolveProjectDirectory(diag.ProjectPath, root)
+                            ?? ResolveProjectDirectory(entry.ProjectPath, root)
                             ?? root;
 
                     var member = _resolver.ResolveInterfaceMember(
@@ -164,15 +182,29 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                var stubsBuilder = new StringBuilder();
                 var overloadCache = new Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>(StringComparer.Ordinal);
+                var memberEntries = new List<PatchMemberEntry>(memberInfos.Count);
+
                 foreach (var member in memberInfos)
                 {
-                    string stub = GenerateMemberStub(member, originalContent, targetClassName);
-                    stubsBuilder.AppendLine(stub);
+                    string rawStub = GenerateMemberStubCore(member, scannedClass, targetClassName, overloadCache, out bool omitVirtual).Trim('\r', '\n');
+                    string normalizedStub = NormalizeNewlines(rawStub, newline);
+                    string signature = BuildMemberSignature(member, omitVirtual);
+
+                    memberEntries.Add(new PatchMemberEntry
+                    {
+                        MemberName = member.MemberName,
+                        ReturnType = member.ReturnType,
+                        ParameterList = member.ParameterList,
+                        ParameterTypes = ExtractNormalizedParameterTypes(member.ParameterList),
+                        IsProperty = member.IsProperty,
+                        MemberSignature = signature,
+                        GeneratedCode = normalizedStub
+                    });
                 }
 
-                string stubsCode = stubsBuilder.ToString().TrimEnd();
+                string stubsCode = string.Join(newline + newline, memberEntries.Select(m => m.GeneratedCode));
+                string diffSourceContent = hasUtf8Bom ? "\uFEFF" + contentWithoutBom : contentWithoutBom;
                 string interfaceSummary = string.Join(", ", distinctInterfaces);
 
                 bool hasMultipleTypesInFile = typeCountPerFile.TryGetValue(group.Key.FileKey, out int count) && count > 1;
@@ -185,6 +217,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     targetClassName,
                     interfaceSummary,
                     root,
+                    memberEntries,
                     patchFileName);
 
                 if (patchCandidate != null)
@@ -262,27 +295,30 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         public string GenerateMemberStub(InterfaceMemberInfo member, string classSource, string? targetClassName = null)
         {
-            return GenerateMemberStub(member, classSource, overloadCache: null);
+            var scannedClass = CSharpLexer.Scan(classSource);
+            return GenerateMemberStubCore(member, scannedClass, targetClassName, overloadCache: null, out _);
         }
 
-        private string GenerateMemberStub(
+        private static string GenerateMemberStubCore(
             InterfaceMemberInfo member,
-            string classSource,
-            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache)
+            ScannedSource scannedClass,
+            string? targetClassName,
+            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache,
+            out bool omitVirtual)
         {
             var sb = new StringBuilder();
+            omitVirtual = false;
 
-            bool omitVirtual = false;
-            string searchScopeSource = CSharpLexer.StripComments(classSource);
+            int scopeStart = 0;
+            int scopeEnd = scannedClass.CommentsAndLiteralsMasked.Length;
 
-            if (CSharpLexer.TryFindTypeScope(classSource, targetClassName, out var scope))
+            if (CSharpLexer.TryFindTypeScopeFromMasked(scannedClass.CommentsAndLiteralsMasked, targetClassName, out var scope))
             {
                 omitVirtual = scope.IsSealed || scope.IsStruct;
                 if (!string.IsNullOrWhiteSpace(targetClassName) && scope.CloseBraceIndex > scope.OpenBraceIndex)
                 {
-                    searchScopeSource = searchScopeSource.Substring(
-                        scope.OpenBraceIndex + 1,
-                        scope.CloseBraceIndex - scope.OpenBraceIndex - 1);
+                    scopeStart = scope.OpenBraceIndex + 1;
+                    scopeEnd = scope.CloseBraceIndex;
                 }
             }
 
@@ -304,8 +340,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return sb.ToString();
             }
 
-            // Check if target class has an existing overload of the same method
-            string? delegationCall = FindDelegationCall(member, searchScopeSource);
+            string? delegationCall = FindDelegationCall(member, scannedClass, scopeStart, scopeEnd, overloadCache);
 
             sb.AppendLine($"        {modifierPrefix} {member.ReturnType} {member.MemberName}({member.ParameterList})");
             sb.AppendLine("        {");
@@ -330,13 +365,38 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return sb.ToString();
         }
 
-        private static string? FindDelegationCall(InterfaceMemberInfo member, string strippedClassSource)
+        private static string BuildMemberSignature(InterfaceMemberInfo member, bool omitVirtual)
         {
-            var pattern = new Regex(
-                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s\[\]\(\)]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^;{{}}]*?)\)\s*(?:\{{|=>)");
+            string modifierPrefix = omitVirtual ? "public" : "public virtual";
+            if (member.IsProperty)
+            {
+                return $"{modifierPrefix} {member.ReturnType} {member.MemberName}";
+            }
+            return $"{modifierPrefix} {member.ReturnType} {member.MemberName}({member.ParameterList})";
+        }
 
-            var matches = pattern.Matches(strippedClassSource);
-            var myParamNames = ExtractParameterNames(member.ParameterList);
+        private static string? FindDelegationCall(
+            InterfaceMemberInfo member,
+            ScannedSource scannedClass,
+            int scopeStart,
+            int scopeEnd,
+            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache)
+        {
+            string baseName = CSharpLexer.StripGenericArity(member.MemberName).TrimStart('@');
+            if (string.IsNullOrEmpty(baseName))
+            {
+                return null;
+            }
+
+            List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>? overloads = null;
+            if (overloadCache == null || !overloadCache.TryGetValue(baseName, out overloads))
+            {
+                overloads = ExtractMethodOverloadParameters(scannedClass, scopeStart, scopeEnd, baseName);
+                if (overloadCache != null)
+                {
+                    overloadCache[baseName] = overloads;
+                }
+            }
 
             if (overloads.Count == 0)
             {
@@ -345,9 +405,11 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             var myParamNames = ExtractParameterNames(member.ParameterList);
 
+            foreach (var existingParams in overloads)
+            {
                 if (existingParams.Count > myParamNames.Count)
                 {
-                    var callArgs = new List<string>();
+                    var callArgs = new List<string>(existingParams.Count);
                     bool canDelegate = true;
 
                     for (int i = 0; i < existingParams.Count; i++)
@@ -389,64 +451,297 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return null;
         }
 
-        private static List<string> ExtractParameterNames(string paramList)
+        private static List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>> ExtractMethodOverloadParameters(
+            ScannedSource scannedClass,
+            int scopeStart,
+            int scopeEnd,
+            string baseMemberName)
         {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(paramList)) return result;
+            var results = new List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>();
+            string masked = scannedClass.CommentsAndLiteralsMasked;
+            string stripped = scannedClass.CommentStripped;
+            ReadOnlySpan<char> maskedSpan = masked.AsSpan();
+            ReadOnlySpan<char> targetName = baseMemberName.AsSpan();
+            int searchStart = scopeStart;
 
-            var parts = CSharpLexer.SplitTopLevelCommas(paramList);
-            foreach (var part in parts)
+            while (searchStart < scopeEnd)
             {
-                string clean = StripTopLevelDefaultValue(part, out _, out _);
-                string typePart = InterfaceDefinitionResolver.ExtractParameterType(clean);
-                if (!string.IsNullOrEmpty(typePart) && clean.Length > typePart.Length)
+                int relIdx = maskedSpan.Slice(searchStart, scopeEnd - searchStart).IndexOf(targetName, StringComparison.Ordinal);
+                if (relIdx < 0)
                 {
-                    int idx = clean.LastIndexOf(' ');
-                    if (idx >= 0 && idx + 1 < clean.Length)
-                    {
-                        result.Add(clean.Substring(idx + 1).Trim());
-                        continue;
-                    }
+                    break;
                 }
 
-                var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (tokens.Length >= 2)
+                int nameIdx = searchStart + relIdx;
+                searchStart = nameIdx + 1;
+
+                if (nameIdx <= scopeStart || !char.IsWhiteSpace(masked[nameIdx - 1]))
                 {
-                    result.Add(tokens[tokens.Length - 1]);
+                    continue;
                 }
+
+                int afterName = nameIdx + targetName.Length;
+                if (afterName < scopeEnd && (char.IsLetterOrDigit(masked[afterName]) || masked[afterName] == '_'))
+                {
+                    continue;
+                }
+
+                afterName = CSharpLexer.SkipWhitespace(masked, afterName, scopeEnd);
+                if (afterName < scopeEnd && masked[afterName] == '<')
+                {
+                    afterName = CSharpLexer.SkipBalanced(masked, afterName, scopeEnd, '<', '>');
+                    afterName = CSharpLexer.SkipWhitespace(masked, afterName, scopeEnd);
+                }
+
+                if (afterName >= scopeEnd || masked[afterName] != '(')
+                {
+                    continue;
+                }
+
+                if (!HasPrecedingReturnType(masked, scopeStart, nameIdx))
+                {
+                    continue;
+                }
+
+                int afterCloseParen = CSharpLexer.SkipBalanced(masked, afterName, scopeEnd, '(', ')');
+                if (afterCloseParen <= afterName + 1 || afterCloseParen > scopeEnd || masked[afterCloseParen - 1] != ')')
+                {
+                    continue;
+                }
+
+                int closeParen = afterCloseParen - 1;
+                if (!HasMethodBodyOpenerAfterParens(masked, afterCloseParen, scopeEnd))
+                {
+                    continue;
+                }
+
+                string existingParamList = stripped.Substring(afterName + 1, closeParen - afterName - 1).Trim();
+                results.Add(ParseParameters(existingParamList));
+                searchStart = afterCloseParen;
             }
-            return result;
+
+            return results;
         }
 
-        private static List<(string Type, string Name, bool HasDefault, string DefaultValue)> ParseParameters(string paramList)
+        private static bool HasPrecedingReturnType(string masked, int minIndex, int nameIdx)
         {
-            var result = new List<(string, string, bool, string)>();
-            if (string.IsNullOrWhiteSpace(paramList)) return result;
-
-            var parts = CSharpLexer.SplitTopLevelCommas(paramList);
-            foreach (var part in parts)
+            int i = nameIdx - 1;
+            while (i >= minIndex && char.IsWhiteSpace(masked[i]))
             {
-                string clean = StripTopLevelDefaultValue(part, out bool hasDefault, out string defVal);
-                string extractedType = InterfaceDefinitionResolver.ExtractParameterType(clean);
-                if (!string.IsNullOrEmpty(extractedType) && clean.Length > extractedType.Length)
-                {
-                    int lastSpace = clean.LastIndexOf(' ');
-                    if (lastSpace > 0 && lastSpace + 1 < clean.Length)
-                    {
-                        string name = clean.Substring(lastSpace + 1).Trim();
-                        result.Add((extractedType, name, hasDefault, defVal));
-                        continue;
-                    }
-                }
+                i--;
+            }
 
-                var tokens = clean.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-                if (tokens.Length >= 2)
+            if (i < minIndex)
+            {
+                return false;
+            }
+
+            // Unwrap trailing '?' nullability markers
+            while (i >= minIndex && masked[i] == '?')
+            {
+                i--;
+                while (i >= minIndex && char.IsWhiteSpace(masked[i]))
                 {
-                    string name = tokens[tokens.Length - 1];
-                    string type = string.Join(" ", tokens.Take(tokens.Length - 1));
-                    result.Add((type, name, hasDefault, defVal));
+                    i--;
                 }
             }
+
+            if (i < minIndex)
+            {
+                return false;
+            }
+
+            char endChar = masked[i];
+
+            // Reject '=>' or '->' arrows immediately before method name
+            if (endChar == '>')
+            {
+                if (i > minIndex && (masked[i - 1] == '=' || masked[i - 1] == '-'))
+                {
+                    return false;
+                }
+
+                int openAngle = FindMatchingOpenAngleInRange(masked, minIndex, i);
+                return openAngle > minIndex;
+            }
+
+            if (endChar == ']')
+            {
+                int openBracket = FindMatchingOpenBracketInRange(masked, minIndex, i);
+                return openBracket > minIndex;
+            }
+
+            if (endChar == ')')
+            {
+                int openParen = FindMatchingOpenParenInRange(masked, minIndex, i);
+                return openParen >= minIndex;
+            }
+
+            if (char.IsLetterOrDigit(endChar) || endChar == '_')
+            {
+                int wordStart = i;
+                while (wordStart > minIndex && (char.IsLetterOrDigit(masked[wordStart - 1]) || masked[wordStart - 1] == '_'))
+                {
+                    wordStart--;
+                }
+
+                string word = masked.Substring(wordStart, i - wordStart + 1);
+                return !NonReturnTypeKeywords.Contains(word);
+            }
+
+            return false;
+        }
+
+        private static bool HasMethodBodyOpenerAfterParens(string masked, int pos, int scopeEnd)
+        {
+            int cur = CSharpLexer.SkipWhitespace(masked, pos, scopeEnd);
+            if (cur >= scopeEnd)
+            {
+                return false;
+            }
+
+            if (masked[cur] == '{')
+            {
+                return true;
+            }
+
+            if (masked[cur] == '=' && cur + 1 < scopeEnd && masked[cur + 1] == '>')
+            {
+                return true;
+            }
+
+            // Allow optional generic 'where T : ...' constraints before '{' or '=>'
+            if (cur + 5 <= scopeEnd &&
+                masked.AsSpan(cur, 5).Equals("where".AsSpan(), StringComparison.Ordinal) &&
+                (cur + 5 == scopeEnd || char.IsWhiteSpace(masked[cur + 5])))
+            {
+                int i = cur + 5;
+                int parenDepth = 0;
+                int angleDepth = 0;
+                while (i < scopeEnd)
+                {
+                    char c = masked[i];
+                    if (c == '(') parenDepth++;
+                    else if (c == ')' && parenDepth > 0) parenDepth--;
+                    else if (c == '<' && parenDepth == 0) angleDepth++;
+                    else if (c == '>' && parenDepth == 0 && angleDepth > 0) angleDepth--;
+                    else if (parenDepth == 0 && angleDepth == 0)
+                    {
+                        if (c == '{') return true;
+                        if (c == '=' && i + 1 < scopeEnd && masked[i + 1] == '>') return true;
+                        if (c == ';') return false;
+                    }
+                    i++;
+                }
+            }
+
+            return false;
+        }
+
+        private static int FindMatchingOpenAngleInRange(string text, int minIndex, int closeIndex)
+        {
+            int depth = 0;
+            for (int i = closeIndex; i >= minIndex; i--)
+            {
+                if (text[i] == '>')
+                {
+                    if (i > minIndex && (text[i - 1] == '=' || text[i - 1] == '-'))
+                    {
+                        return -1;
+                    }
+                    depth++;
+                }
+                else if (text[i] == '<')
+                {
+                    depth--;
+                    if (depth == 0) return i;
+                }
+            }
+            return -1;
+        }
+
+        private static int FindMatchingOpenBracketInRange(string text, int minIndex, int closeIndex)
+        {
+            int depth = 0;
+            for (int i = closeIndex; i >= minIndex; i--)
+            {
+                if (text[i] == ']') depth++;
+                else if (text[i] == '[')
+                {
+                    depth--;
+                    if (depth == 0) return i;
+                }
+            }
+            return -1;
+        }
+
+        private static int FindMatchingOpenParenInRange(string text, int minIndex, int closeIndex)
+        {
+            int depth = 0;
+            for (int i = closeIndex; i >= minIndex; i--)
+            {
+                if (text[i] == ')') depth++;
+                else if (text[i] == '(')
+                {
+                    depth--;
+                    if (depth == 0) return i;
+                }
+            }
+            return -1;
+        }
+
+        private static List<string> ExtractParameterNames(string? paramList)
+        {
+            return ParseParameters(paramList)
+                .Select(p => p.Name)
+                .ToList();
+        }
+
+        private static List<(string Type, string Name, bool HasDefault, string DefaultValue)> ParseParameters(string? paramList)
+        {
+            var result = new List<(string, string, bool, string)>();
+            if (string.IsNullOrWhiteSpace(paramList))
+            {
+                return result;
+            }
+
+            var parts = CSharpLexer.SplitTopLevelCommas(paramList!);
+            foreach (var part in parts)
+            {
+                if (string.IsNullOrWhiteSpace(part))
+                {
+                    continue;
+                }
+
+                string clean = StripTopLevelDefaultValue(part, out bool hasDefault, out string defVal);
+                if (string.IsNullOrWhiteSpace(clean))
+                {
+                    continue;
+                }
+
+                int end = clean.Length;
+                int nameStart = end;
+                while (nameStart > 0 && (char.IsLetterOrDigit(clean[nameStart - 1]) || clean[nameStart - 1] == '_'))
+                {
+                    nameStart--;
+                }
+                if (nameStart < end && nameStart > 0 && clean[nameStart - 1] == '@')
+                {
+                    nameStart--;
+                }
+
+                if (nameStart > 0 && nameStart < end)
+                {
+                    string name = clean.Substring(nameStart).Trim();
+                    string rawType = clean.Substring(0, nameStart);
+                    string collapsedType = CollapseWhitespace(rawType);
+                    if (!string.IsNullOrEmpty(collapsedType) && !string.IsNullOrEmpty(name))
+                    {
+                        result.Add((collapsedType, name, hasDefault, defVal));
+                    }
+                }
+            }
+
             return result;
         }
 
@@ -487,9 +782,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string className,
             string interfaceName,
             string projectRoot,
+            IReadOnlyList<PatchMemberEntry>? members = null,
             string? patchFileNameOverride = null)
         {
-            int insertPos = FindClassInsertionPoint(originalContent, className);
+            string effectiveOriginal = originalContent;
+            if (!effectiveOriginal.StartsWith('\uFEFF') && HasUtf8BomOnDisk(targetFilePath))
+            {
+                effectiveOriginal = "\uFEFF" + effectiveOriginal;
+            }
+
+            int insertPos = FindClassInsertionPoint(effectiveOriginal, className);
             if (insertPos < 0)
             {
                 return null;
@@ -499,7 +801,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string normalizedStubs = NormalizeNewlines(stubsCode.Trim('\r', '\n'), newline);
             string newContent = SpliceCodeAtInsertionPoint(effectiveOriginal, insertPos, normalizedStubs, newline);
 
-            // Format relative path for diff headers (prefer git root if found)
             string baseDir = FindRepoRoot(targetFilePath) ?? projectRoot;
             string relPath = GetRelativePath(baseDir, targetFilePath).Replace('\\', '/');
 
@@ -564,38 +865,57 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return -1;
             }
 
-            var scanned = CSharpLexer.Scan(source);
-            string masked = scanned.CommentsAndLiteralsMasked;
+            string masked = CSharpLexer.MaskCommentsAndLiterals(source);
 
-            if (string.IsNullOrWhiteSpace(className))
+            if (!string.IsNullOrWhiteSpace(className) &&
+                CSharpLexer.TryFindTypeScopeFromMasked(masked, className, out var scope))
             {
-                return masked.LastIndexOf('}');
+                return ResolveClosingBraceInsertionIndex(source, scope.OpenBraceIndex, scope.CloseBraceIndex);
             }
 
-            if (CSharpLexer.TryFindTypeScopeFromMasked(masked, className, out var scope))
+            int fallbackBrace = masked.LastIndexOf('}');
+            if (fallbackBrace < 0)
             {
-                int openBrace = scope.OpenBraceIndex;
-                int closeBrace = scope.CloseBraceIndex;
+                return -1;
+            }
 
-                int lineStart = source.LastIndexOf('\n', closeBrace);
-                if (lineStart > openBrace && IsWhitespaceOnly(source, lineStart + 1, closeBrace))
+            return ResolveClosingBraceInsertionIndex(source, -1, fallbackBrace);
+        }
+
+        internal static int FindMatchingClosingBrace(string maskedSource, int openBrace)
+        {
+            return CSharpLexer.FindMatchingBrace(maskedSource, openBrace);
+        }
+
+        private static int ResolveClosingBraceInsertionIndex(string source, int openBrace, int closingBrace)
+        {
+            int lineBreakPos = -1;
+            for (int i = closingBrace - 1; i >= 0; i--)
+            {
+                if (source[i] == '\n' || source[i] == '\r')
+                {
+                    lineBreakPos = i;
+                    break;
+                }
+            }
+
+            if (lineBreakPos >= 0)
+            {
+                int lineStart = lineBreakPos + 1;
+                if (lineStart > openBrace && IsHorizontalWhitespaceOnly(source, lineStart, closingBrace))
                 {
                     return lineStart;
                 }
-
-                return closeBrace;
             }
-            return -1;
+
+            return closingBrace;
         }
 
-            return -1;
-        }
-
-        private static bool IsWhitespaceOnly(string text, int start, int endExclusive)
+        private static bool IsHorizontalWhitespaceOnly(string text, int start, int endExclusive)
         {
             for (int i = start; i < endExclusive; i++)
             {
-                if (!char.IsWhiteSpace(text[i]))
+                if (text[i] != ' ' && text[i] != '\t')
                 {
                     return false;
                 }
@@ -613,8 +933,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var newLines = SplitLinesWithTerminators(newText);
 
             int startCommon = 0;
-            while (startCommon < oldLines.Length && startCommon < newLines.Length &&
-                   oldLines[startCommon] == newLines[startCommon])
+            while (startCommon < oldLines.Count && startCommon < newLines.Count &&
+                   oldLines[startCommon].Equals(newLines[startCommon]))
+            {
+                startCommon++;
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("--- ").Append(oldHeader).Append('\n');
+            sb.Append("+++ ").Append(newHeader).Append('\n');
+
+            if (startCommon == oldLines.Count && startCommon == newLines.Count)
             {
                 return sb.ToString();
             }
@@ -624,12 +953,13 @@ namespace MSBuildDiagnosticPatcher.Patcher
             while (endCommonOld >= startCommon && endCommonNew >= startCommon &&
                    oldLines[endCommonOld].Equals(newLines[endCommonNew]))
             {
-                commonPrefixChars--;
+                endCommonOld--;
+                endCommonNew--;
             }
 
             int contextBefore = Math.Max(0, startCommon - 3);
-            int contextAfterOld = Math.Min(oldLines.Length, endCommonOld + 4);
-            int contextAfterNew = Math.Min(newLines.Length, endCommonNew + 4);
+            int contextAfterOld = Math.Min(oldLines.Count, endCommonOld + 4);
+            int contextAfterNew = Math.Min(newLines.Count, endCommonNew + 4);
 
             int hunkOldCount = contextAfterOld - contextBefore;
             int hunkNewCount = contextAfterNew - contextBefore;
@@ -643,17 +973,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 AppendDiffLine(sb, ' ', oldLines[i]);
             }
 
-            if (oldRemHasMore)
+            for (int i = startCommon; i <= endCommonOld; i++)
             {
                 AppendDiffLine(sb, '-', oldLines[i]);
             }
 
-            if (newRemHasMore)
+            for (int i = startCommon; i <= endCommonNew; i++)
             {
                 AppendDiffLine(sb, '+', newLines[i]);
             }
 
-            // Context lines after
             for (int i = endCommonOld + 1; i < contextAfterOld; i++)
             {
                 AppendDiffLine(sb, ' ', oldLines[i]);
@@ -798,12 +1127,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
         }
 
-            for (int i = startCommon; i <= endCommonOld; i++)
+        internal static string DetectNewline(string text)
+        {
+            if (string.IsNullOrEmpty(text))
             {
                 return "\n";
             }
 
-            for (int i = startCommon; i <= endCommonNew; i++)
+            int crlfCount = 0;
+            int lfOnlyCount = 0;
+            for (int i = 0; i < text.Length; i++)
             {
                 if (text[i] == '\r')
                 {
@@ -819,8 +1152,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            int afterLinesCount = Math.Min(oldLines.Length - (endCommonOld + 1), 3);
-            for (int i = 0; i < afterLinesCount; i++)
+            return crlfCount > 0 && crlfCount >= lfOnlyCount ? "\r\n" : "\n";
+        }
+
+        internal static string NormalizeNewlines(string text, string newline)
+        {
+            if (string.IsNullOrEmpty(text))
             {
                 return string.Empty;
             }
@@ -848,302 +1185,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return sb.ToString();
         }
 
-        /// <summary>
-        /// Replaces characters inside C# comments, character literals, and string literals
-        /// (including verbatim, raw, and interpolated strings) with spaces while preserving
-        /// exact string length and line terminators (\r and \n).
-        /// </summary>
         internal static string MaskCommentsAndStrings(string source)
         {
-            if (string.IsNullOrEmpty(source))
-            {
-                return source;
-            }
-
-            char[] chars = source.ToCharArray();
-            int n = source.Length;
-            var interpolationStack = new Stack<(bool IsVerbatim, int BraceDepth)>();
-
-            int i = 0;
-            while (i < n)
-            {
-                // If we are inside an interpolated string literal (and not currently inside an { expression } hole)
-                if (interpolationStack.Count > 0 && interpolationStack.Peek().BraceDepth == 0)
-                {
-                    bool isVerbatim = interpolationStack.Peek().IsVerbatim;
-                    char ch = source[i];
-
-                    if (!isVerbatim && ch == '\\' && i + 1 < n)
-                    {
-                        MaskChar(chars, i);
-                        MaskChar(chars, i + 1);
-                        i += 2;
-                        continue;
-                    }
-
-                    if (isVerbatim && ch == '"' && i + 1 < n && source[i + 1] == '"')
-                    {
-                        chars[i] = ' ';
-                        chars[i + 1] = ' ';
-                        i += 2;
-                        continue;
-                    }
-
-                    if ((ch == '{' && i + 1 < n && source[i + 1] == '{') ||
-                        (ch == '}' && i + 1 < n && source[i + 1] == '}'))
-                    {
-                        chars[i] = ' ';
-                        chars[i + 1] = ' ';
-                        i += 2;
-                        continue;
-                    }
-
-                    if (ch == '{')
-                    {
-                        chars[i] = ' ';
-                        var top = interpolationStack.Pop();
-                        interpolationStack.Push((top.IsVerbatim, 1));
-                        i++;
-                        continue;
-                    }
-
-                    if (ch == '"' || (!isVerbatim && (ch == '\r' || ch == '\n')))
-                    {
-                        MaskChar(chars, i);
-                        interpolationStack.Pop();
-                        i++;
-                        continue;
-                    }
-
-                    MaskChar(chars, i);
-                    i++;
-                    continue;
-                }
-
-                // Normal code mode (or inside an interpolation hole { ... })
-                char c = source[i];
-
-                // Track braces for active interpolation hole
-                if (interpolationStack.Count > 0 && interpolationStack.Peek().BraceDepth > 0)
-                {
-                    if (c == '{')
-                    {
-                        chars[i] = ' ';
-                        var top = interpolationStack.Pop();
-                        interpolationStack.Push((top.IsVerbatim, top.BraceDepth + 1));
-                        i++;
-                        continue;
-                    }
-                    if (c == '}')
-                    {
-                        chars[i] = ' ';
-                        var top = interpolationStack.Pop();
-                        interpolationStack.Push((top.IsVerbatim, top.BraceDepth - 1));
-                        i++;
-                        continue;
-                    }
-                }
-
-                // Single-line comment //
-                if (c == '/' && i + 1 < n && source[i + 1] == '/')
-                {
-                    chars[i] = ' ';
-                    chars[i + 1] = ' ';
-                    i += 2;
-                    while (i < n && source[i] != '\r' && source[i] != '\n')
-                    {
-                        chars[i] = ' ';
-                        i++;
-                    }
-                    continue;
-                }
-
-                // Multi-line block comment /* ... */
-                if (c == '/' && i + 1 < n && source[i + 1] == '*')
-                {
-                    chars[i] = ' ';
-                    chars[i + 1] = ' ';
-                    i += 2;
-                    while (i < n)
-                    {
-                        if (source[i] == '*' && i + 1 < n && source[i + 1] == '/')
-                        {
-                            chars[i] = ' ';
-                            chars[i + 1] = ' ';
-                            i += 2;
-                            break;
-                        }
-                        MaskChar(chars, i);
-                        i++;
-                    }
-                    continue;
-                }
-
-                // Character literal '...'
-                if (c == '\'')
-                {
-                    chars[i] = ' ';
-                    i++;
-                    while (i < n && source[i] != '\r' && source[i] != '\n')
-                    {
-                        if (source[i] == '\\' && i + 1 < n)
-                        {
-                            MaskChar(chars, i);
-                            MaskChar(chars, i + 1);
-                            i += 2;
-                            continue;
-                        }
-                        if (source[i] == '\'')
-                        {
-                            chars[i] = ' ';
-                            i++;
-                            break;
-                        }
-                        MaskChar(chars, i);
-                        i++;
-                    }
-                    continue;
-                }
-
-                // Interpolated verbatim string $@"..." or @$"..."
-                if ((c == '$' && i + 2 < n && source[i + 1] == '@' && source[i + 2] == '"') ||
-                    (c == '@' && i + 2 < n && source[i + 1] == '$' && source[i + 2] == '"'))
-                {
-                    chars[i] = ' ';
-                    chars[i + 1] = ' ';
-                    chars[i + 2] = ' ';
-                    interpolationStack.Push((IsVerbatim: true, BraceDepth: 0));
-                    i += 3;
-                    continue;
-                }
-
-                // Interpolated regular or raw string $"..." or $"""..."""
-                if (c == '$' && i + 1 < n && source[i + 1] == '"')
-                {
-                    if (i + 3 < n && source[i + 2] == '"' && source[i + 3] == '"')
-                    {
-                        chars[i] = ' ';
-                        i = ConsumeRawStringLiteral(source, chars, i + 1);
-                        continue;
-                    }
-                    chars[i] = ' ';
-                    chars[i + 1] = ' ';
-                    interpolationStack.Push((IsVerbatim: false, BraceDepth: 0));
-                    i += 2;
-                    continue;
-                }
-
-                // Verbatim string @"..."
-                if (c == '@' && i + 1 < n && source[i + 1] == '"')
-                {
-                    chars[i] = ' ';
-                    chars[i + 1] = ' ';
-                    i += 2;
-                    while (i < n)
-                    {
-                        if (source[i] == '"' && i + 1 < n && source[i + 1] == '"')
-                        {
-                            chars[i] = ' ';
-                            chars[i + 1] = ' ';
-                            i += 2;
-                            continue;
-                        }
-                        if (source[i] == '"')
-                        {
-                            chars[i] = ' ';
-                            i++;
-                            break;
-                        }
-                        MaskChar(chars, i);
-                        i++;
-                    }
-                    continue;
-                }
-
-                // Raw string """...""" or regular string "..."
-                if (c == '"')
-                {
-                    if (i + 2 < n && source[i + 1] == '"' && source[i + 2] == '"')
-                    {
-                        i = ConsumeRawStringLiteral(source, chars, i);
-                        continue;
-                    }
-
-                    chars[i] = ' ';
-                    i++;
-                    while (i < n && source[i] != '\r' && source[i] != '\n')
-                    {
-                        if (source[i] == '\\' && i + 1 < n)
-                        {
-                            MaskChar(chars, i);
-                            MaskChar(chars, i + 1);
-                            i += 2;
-                            continue;
-                        }
-                        if (source[i] == '"')
-                        {
-                            chars[i] = ' ';
-                            i++;
-                            break;
-                        }
-                        MaskChar(chars, i);
-                        i++;
-                    }
-                    continue;
-                }
-
-                i++;
-            }
-
-            return new string(chars);
-        }
-
-        private static int ConsumeRawStringLiteral(string source, char[] chars, int quoteStart)
-        {
-            int n = source.Length;
-            int qCount = 0;
-            int i = quoteStart;
-            while (i < n && source[i] == '"')
-            {
-                chars[i] = ' ';
-                qCount++;
-                i++;
-            }
-
-            while (i < n)
-            {
-                if (source[i] == '"')
-                {
-                    int run = 0;
-                    while (i + run < n && source[i + run] == '"')
-                    {
-                        run++;
-                    }
-                    for (int k = 0; k < run; k++)
-                    {
-                        chars[i + k] = ' ';
-                    }
-                    i += run;
-                    if (run >= qCount)
-                    {
-                        break;
-                    }
-                    continue;
-                }
-
-                MaskChar(chars, i);
-                i++;
-            }
-
-            return i;
-        }
-
-        private static void MaskChar(char[] chars, int index)
-        {
-            if (chars[index] != '\r' && chars[index] != '\n')
-            {
-                chars[index] = ' ';
-            }
+            return CSharpLexer.MaskCommentsAndLiterals(source);
         }
 
         internal static List<PatchMemberEntry> ParseMemberEntriesFromCode(string generatedCode, string? fallbackSignature)
@@ -1297,16 +1341,14 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return null;
             }
 
-            // Exclude type declarations and events
             if (Regex.IsMatch(clean, @"\b(?:class|struct|interface|record|enum|event|delegate|namespace)\b"))
             {
                 return null;
             }
 
-            // Strip trailing generic constraints: "where T : ..."
             clean = StripTrailingGenericConstraints(clean).Trim();
 
-            if (clean.EndsWith(")"))
+            if (clean.EndsWith(")", StringComparison.Ordinal))
             {
                 int openParen = FindMatchingOpenParen(clean, clean.Length - 1);
                 if (openParen < 0)
@@ -1315,7 +1357,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
 
                 string beforeParen = clean.Substring(0, openParen).Trim();
-                // Field/delegate assignment check: '=' before '(' means field initializer, not method
                 if (beforeParen.Contains('='))
                 {
                     return null;
@@ -1323,9 +1364,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
                 string rawParams = clean.Substring(openParen + 1, clean.Length - openParen - 2).Trim();
 
-                // Check for generic type parameter list on method name, e.g., Foo<T1, T2>
                 string genericAritySuffix = string.Empty;
-                if (beforeParen.EndsWith(">"))
+                if (beforeParen.EndsWith(">", StringComparison.Ordinal))
                 {
                     int openAngle = FindMatchingOpenAngle(beforeParen, beforeParen.Length - 1);
                     if (openAngle > 0)
@@ -1343,7 +1383,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     return null;
                 }
 
-                // Strip explicit interface prefix if present (e.g., IDatabaseService.BackupDatabaseAsync)
                 string simpleMemberName = ExtractUnqualifiedMemberName(rawMemberName) + genericAritySuffix;
                 var normalizedParamTypes = ExtractNormalizedParameterTypes(rawParams);
 
@@ -1351,10 +1390,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
             else
             {
-                // Property header (no parentheses, no '=' field assignment)
                 if (clean.Contains('=') || clean.Contains('['))
                 {
-                    // Allow array return types like byte[] Prop, reject indexers this[...]
                     if (Regex.IsMatch(clean, @"\bthis\s*\["))
                     {
                         return null;
@@ -1384,12 +1421,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return (string.Empty, string.Empty);
             }
 
-            // Read trailing qualified identifier (e.g. "Greet" or "IDatabaseService.Greet")
             int end = trimmed.Length;
             int pos = end - 1;
             while (pos >= 0 && (char.IsLetterOrDigit(trimmed[pos]) || trimmed[pos] == '_' || trimmed[pos] == '.' || trimmed[pos] == '<' || trimmed[pos] == '>' || trimmed[pos] == ',' || trimmed[pos] == ' '))
             {
-                // Only continue across '.' if part of explicit interface name; stop at whitespace before identifier
                 if (trimmed[pos] == ' ' || trimmed[pos] == '>' || trimmed[pos] == '<' || trimmed[pos] == ',')
                 {
                     break;
@@ -1397,7 +1432,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 pos--;
             }
 
-            // If explicit interface name had generic args (e.g. IRepo<int>.Get), step over IRepo<int>.
             while (pos >= 0 && trimmed[pos] == '>' && pos + 1 < trimmed.Length && trimmed[pos + 1] == '.')
             {
                 int openAngle = FindMatchingOpenAngle(trimmed, pos);
@@ -1418,7 +1452,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string memberName = trimmed.Substring(nameStart).Trim();
             string prefix = trimmed.Substring(0, nameStart).Trim();
 
-            // Strip leading modifiers from prefix to verify a real return type exists (excludes constructors)
             string returnType = StripLeadingModifiers(prefix);
             if (string.IsNullOrWhiteSpace(returnType))
             {
@@ -1497,7 +1530,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         private static string StripTrailingGenericConstraints(string header)
         {
-            // Match " where Identifier :" after ')'
             int closeParen = header.LastIndexOf(')');
             if (closeParen < 0 || closeParen + 1 >= header.Length)
             {
@@ -1581,7 +1613,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                // Handle parameter modifiers
                 bool isByRef = false;
                 while (true)
                 {
@@ -1639,8 +1670,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return string.Empty;
             }
 
-            // If parameter ends with an identifier preceded by a valid type (e.g. "string name", "List<int> items", "IProgress<int>? p"),
-            // strip the trailing parameter name; otherwise (e.g. "string", "List<int>", "string?"), the entire token is the type.
             int end = s.Length - 1;
             if (char.IsLetterOrDigit(s[end]) || s[end] == '_')
             {
@@ -1651,7 +1680,9 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
 
                 string beforeId = s.Substring(0, idStart + 1).Trim();
-                if (!string.IsNullOrEmpty(beforeId) && ! beforeId.EndsWith(".", StringComparison.Ordinal) && !beforeId.EndsWith("::", StringComparison.Ordinal))
+                if (!string.IsNullOrEmpty(beforeId) &&
+                    !beforeId.EndsWith(".", StringComparison.Ordinal) &&
+                    !beforeId.EndsWith("::", StringComparison.Ordinal))
                 {
                     return beforeId;
                 }
@@ -1673,7 +1704,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 t = t.Substring(8).TrimStart();
             }
 
-            // Handle array rank suffixes like [], [,]
             if (t.EndsWith("?", StringComparison.Ordinal))
             {
                 string withoutQ = t.Substring(0, t.Length - 1).TrimEnd();
@@ -1692,7 +1722,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            // Handle tuple types (T1 Name1, T2 Name2) -> (NormT1,NormT2)
             if (t.StartsWith("(", StringComparison.Ordinal) && t.EndsWith(")", StringComparison.Ordinal) &&
                 FindMatchingOpenParen(t, t.Length - 1) == 0)
             {
@@ -1702,7 +1731,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return "(" + string.Join(",", elems) + ")";
             }
 
-            // Handle generic types Outer<Arg1, Arg2>
             if (t.EndsWith(">", StringComparison.Ordinal))
             {
                 int openAngle = FindMatchingOpenAngle(t, t.Length - 1);
@@ -1771,68 +1799,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         internal static List<string> SplitTopLevelParameters(string list)
         {
-            var result = new List<string>();
-            if (string.IsNullOrWhiteSpace(list))
-            {
-                return result;
-            }
-
-            int angleDepth = 0;
-            int parenDepth = 0;
-            int bracketDepth = 0;
-            int start = 0;
-
-            for (int i = 0; i < list.Length; i++)
-            {
-                char c = list[i];
-                if (c == '<') angleDepth++;
-                else if (c == '>' && angleDepth > 0) angleDepth--;
-                else if (c == '(') parenDepth++;
-                else if (c == ')' && parenDepth > 0) parenDepth--;
-                else if (c == '[') bracketDepth++;
-                else if (c == ']' && bracketDepth > 0) bracketDepth--;
-                else if (c == ',' && angleDepth == 0 && parenDepth == 0 && bracketDepth == 0)
-                {
-                    result.Add(list.Substring(start, i - start).Trim());
-                    start = i + 1;
-                }
-            }
-
-            string tail = list.Substring(start).Trim();
-            if (!string.IsNullOrEmpty(tail))
-            {
-                result.Add(tail);
-            }
-
-            return result;
+            return CSharpLexer.SplitTopLevelCommas(list);
         }
 
         private static string StripTopLevelDefaultValue(string param)
         {
-            int eqIdx = FindTopLevelEquals(param);
-            return eqIdx >= 0 ? param.Substring(0, eqIdx).Trim() : param;
-        }
-
-        private static int FindTopLevelEquals(string param)
-        {
-            int angleDepth = 0;
-            int parenDepth = 0;
-            int bracketDepth = 0;
-            for (int i = 0; i < param.Length; i++)
-            {
-                char c = param[i];
-                if (c == '<') angleDepth++;
-                else if (c == '>' && angleDepth > 0) angleDepth--;
-                else if (c == '(') parenDepth++;
-                else if (c == ')' && parenDepth > 0) parenDepth--;
-                else if (c == '[') bracketDepth++;
-                else if (c == ']' && bracketDepth > 0) bracketDepth--;
-                else if (c == '=' && angleDepth == 0 && parenDepth == 0 && bracketDepth == 0)
-                {
-                    return i;
-                }
-            }
-            return -1;
+            return StripTopLevelDefaultValue(param, out _, out _);
         }
 
         internal static string CollapseWhitespace(string text)
@@ -1873,151 +1845,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             return trimmedEnd.Substring(lineStart);
-        }
-
-        private static string ResolveAbsoluteFilePath(string path, string root)
-        {
-            int idx = span.Slice(0, end).LastIndexOfAny('\r', '\n');
-            if (idx < 0)
-            {
-                slice = new LineSlice(0, end);
-                ReadOnlySpan<char> line = span.Slice(0, end);
-                end = 0;
-                hasMore = false;
-                return line;
-            }
-            else
-            {
-                int lineStart = idx + 1;
-                int len = end - lineStart;
-                slice = new LineSlice(lineStart, len);
-                ReadOnlySpan<char> line = span.Slice(lineStart, len);
-                if (span[idx] == '\n' && idx > 0 && span[idx - 1] == '\r')
-                {
-                    end = idx - 1;
-                }
-                else
-                {
-                    end = idx;
-                }
-
-                return line;
-            }
-        }
-
-        private static int FindWindowStart(ReadOnlySpan<char> content, int pos, int maxBreaks)
-        {
-            int end = pos;
-            for (int b = 0; b < maxBreaks; b++)
-            {
-                if (end <= 0)
-                {
-                    return 0;
-                }
-
-                int idx = content.Slice(0, end).LastIndexOfAny('\r', '\n');
-                if (idx < 0)
-                {
-                    return 0;
-                }
-
-                if (b == maxBreaks - 1)
-                {
-                    return idx + 1;
-                }
-
-                if (content[idx] == '\n' && idx > 0 && content[idx - 1] == '\r')
-                {
-                    end = idx - 1;
-                }
-                else
-                {
-                    end = idx;
-                }
-            }
-
-            return 0;
-        }
-
-        private static int FindWindowEnd(ReadOnlySpan<char> content, int startPos, int maxBreaks)
-        {
-            int pos = startPos;
-            for (int b = 0; b < maxBreaks; b++)
-            {
-                if (pos >= content.Length)
-                {
-                    return content.Length;
-                }
-
-                int idx = content.Slice(pos).IndexOfAny('\r', '\n');
-                if (idx < 0)
-                {
-                    return content.Length;
-                }
-
-                int breakStart = pos + idx;
-                if (b == maxBreaks - 1)
-                {
-                    return breakStart;
-                }
-
-                pos = breakStart + 1;
-                if (content[breakStart] == '\r' && pos < content.Length && content[pos] == '\n')
-                {
-                    pos++;
-                }
-            }
-
-            return content.Length;
-        }
-
-        private static int CountLineBreaks(ReadOnlySpan<char> span)
-        {
-            int count = 0;
-            int pos = 0;
-            while (pos < span.Length)
-            {
-                int idx = span.Slice(pos).IndexOfAny('\r', '\n');
-                if (idx < 0)
-                {
-                    break;
-                }
-
-                pos += idx + 1;
-                if (span[pos - 1] == '\r' && pos < span.Length && span[pos] == '\n')
-                {
-                    pos++;
-                }
-
-                count++;
-            }
-
-            return count;
-        }
-
-        private static int CommonSuffixLength(ReadOnlySpan<char> a, ReadOnlySpan<char> b)
-        {
-            int max = Math.Min(a.Length, b.Length);
-            int matched = 0;
-
-            while (matched + 256 <= max &&
-                   a.Slice(a.Length - matched - 256, 256).SequenceEqual(b.Slice(b.Length - matched - 256, 256)))
-            {
-                matched += 256;
-            }
-
-            while (matched + 16 <= max &&
-                   a.Slice(a.Length - matched - 16, 16).SequenceEqual(b.Slice(b.Length - matched - 16, 16)))
-            {
-                matched += 16;
-            }
-
-            while (matched < max && a[a.Length - 1 - matched] == b[b.Length - 1 - matched])
-            {
-                matched++;
-            }
-
-            return matched;
         }
 
         private static string ResolveAbsoluteFilePath(string path, string root, string? projectPath = null)

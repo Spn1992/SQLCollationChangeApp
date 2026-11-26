@@ -53,11 +53,8 @@ jobs:
       - name: Verify CollationModifier net8.0-windows build
         run: dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
-      - name: Run unit tests
-        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Run MSBuildDiagnosticPatcher unit tests
-        run: dotnet run --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+      - name: Run solution unit tests
+        run: dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Generate diagnostics and candidate patches
         if: failure()
