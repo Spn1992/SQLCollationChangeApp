@@ -326,17 +326,7 @@ namespace CollationModifier.Tests
 
         private static void Test_AppXamlCs_ConfigurationAndRegistrationVerification()
         {
-            string appXamlCsPath = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml.cs"));
-            if (!File.Exists(appXamlCsPath))
-            {
-                appXamlCsPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml.cs"));
-            }
-            if (!File.Exists(appXamlCsPath))
-            {
-                appXamlCsPath = Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml.cs"));
-            }
-
-            Assert(File.Exists(appXamlCsPath), $"App.xaml.cs file should exist at path {appXamlCsPath}");
+            string appXamlCsPath = MainViewModelTestsRunner.ResolveCollationModifierFilePath("App.xaml.cs");
 
             string code = File.ReadAllText(appXamlCsPath);
 
