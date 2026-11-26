@@ -36,6 +36,7 @@ namespace CollationModifier.ViewModels
             SelectedAuthenticationType = AuthenticationTypes[0];
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
+            RefreshDatabasesCommand = new RelayCommand(async _ => await RefreshDatabasesAsync(), _ => IsConnected && !IsBusy);
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
@@ -206,6 +207,7 @@ namespace CollationModifier.ViewModels
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
                     OnPropertyChanged(nameof(IsConnecting));
+                    InvalidateRequerySuggested();
                     if (previous != value)
                     {
                         if (value)
@@ -275,11 +277,16 @@ namespace CollationModifier.ViewModels
             }
         }
 
+        private bool _hasCustomBackupDirectory;
         private string _backupDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "SQLBackups");
         public string BackupDirectory
         {
             get => _backupDirectory;
-            set => SetProperty(ref _backupDirectory, value);
+            set
+            {
+                SetProperty(ref _backupDirectory, value);
+                _hasCustomBackupDirectory = !string.IsNullOrWhiteSpace(value);
+            }
         }
 
         #endregion
@@ -305,6 +312,7 @@ namespace CollationModifier.ViewModels
         #region Commands
 
         public ICommand ConnectCommand { get; }
+        public ICommand RefreshDatabasesCommand { get; }
         public ICommand ProcessCommand { get; }
         public ICommand CancelCommand { get; }
         public ICommand OpenLogCommand { get; }
@@ -445,9 +453,13 @@ namespace CollationModifier.ViewModels
                 _databaseService.SetConnectionString(ServerName, SelectedAuthenticationType, Username, Password);
                 var initData = await _databaseService.GetServerInitializationDataAsync(token);
 
-                if (!string.IsNullOrWhiteSpace(initData.DefaultBackupDirectory))
+                if (_hasCustomBackupDirectory && !string.IsNullOrWhiteSpace(BackupDirectory))
                 {
-                    BackupDirectory = initData.DefaultBackupDirectory;
+                    _logger.LogInfo($"Preserving custom backup directory: {BackupDirectory}");
+                }
+                else if (!string.IsNullOrWhiteSpace(initData.DefaultBackupDirectory))
+                {
+                    SetProperty(ref _backupDirectory, initData.DefaultBackupDirectory, nameof(BackupDirectory));
                     _logger.LogInfo($"Auto-populated backup directory from target SQL Server instance: {initData.DefaultBackupDirectory}");
                 }
                 else
@@ -488,12 +500,56 @@ namespace CollationModifier.ViewModels
         }
 
 
+        public async Task RefreshDatabasesAsync()
+        {
+            if (!IsConnected || IsBusy)
+            {
+                return;
+            }
+
+            IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
+            StatusMessage = "Refreshing database catalog...";
+            _logger.LogInfo("Refreshing database catalog...");
+
+            try
+            {
+                bool loaded = await LoadDatabasesAsync(token);
+                if (loaded)
+                {
+                    SetStatus($"Database catalog refreshed ({Databases.Count} databases found).");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                SetStatus("Operation cancelled by user.");
+            }
+            finally
+            {
+                _cts?.Dispose();
+                _cts = null;
+                IsBusy = false;
+            }
+        }
+
         public async Task<bool> LoadDatabasesAsync(CancellationToken cancellationToken = default)
         {
+            string? previousSelectedName = SelectedDatabase?.Name;
             try
             {
                 var dbs = await _databaseService.GetDatabasesAsync(cancellationToken);
                 Databases.ReplaceRange(dbs);
+                if (!string.IsNullOrWhiteSpace(previousSelectedName))
+                {
+                    SelectedDatabase = Databases.FirstOrDefault(db =>
+                        db != null && string.Equals(db.Name, previousSelectedName, StringComparison.OrdinalIgnoreCase));
+                }
+                else
+                {
+                    SelectedDatabase = null;
+                }
                 _logger.LogInfo($"Fetched {Databases.Count} databases.");
                 return true;
             }
@@ -506,6 +562,7 @@ namespace CollationModifier.ViewModels
             catch (Exception ex)
             {
                 Databases.Clear();
+                SelectedDatabase = null;
                 _logger.LogError("Failed to load databases.", ex);
                 var (statusText, toolTipText, detailedError) = ErrorFormattingHelper.FormatLoadDatabasesError(ex);
                 SetStatus(statusText, toolTipText, detailedError);

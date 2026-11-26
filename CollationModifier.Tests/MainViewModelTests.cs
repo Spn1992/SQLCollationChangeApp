@@ -39,6 +39,7 @@ namespace CollationModifier.Tests
         public Func<CancellationToken, Task>? OnPreflightCheck { get; set; }
         public Func<CancellationToken, Task>? OnBackupDatabase { get; set; }
         public Func<CancellationToken, Task>? OnAlterCollation { get; set; }
+        public Func<CancellationToken, Task>? OnGetDatabases { get; set; }
         public Action<IProgress<int>?>? BackupProgressSimulator { get; set; }
         public Action<IProgress<int>?>? RestoreProgressSimulator { get; set; }
         public Func<CancellationToken, Task<bool>>? OnTestConnection { get; set; }
@@ -94,15 +95,19 @@ namespace CollationModifier.Tests
 
         public Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default) => Task.FromResult<string?>(null);
 
-        public Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
+        public async Task<List<DatabaseInfo>> GetDatabasesAsync(CancellationToken cancellationToken = default)
         {
+            if (OnGetDatabases != null)
+            {
+                await OnGetDatabases(cancellationToken);
+            }
             cancellationToken.ThrowIfCancellationRequested();
             GetDatabasesCount++;
             if (ThrowOnGetDatabases)
             {
                 throw new InvalidOperationException("Failed to reach database catalog.");
             }
-            return Task.FromResult(DatabasesToReturn);
+            return DatabasesToReturn;
         }
 
         public Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default)
@@ -781,6 +786,140 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage.Contains("Failed to load databases"), $"Expected StatusMessage to contain error details, got '{vm.StatusMessage}'");
             });
 
+            RunSyncTest("RefreshDatabasesCommand_GatedByIsConnectedAndIsNotBusy", () =>
+            {
+                var vm = new MainViewModel(new MockDatabaseService());
+                Assert(vm.RefreshDatabasesCommand != null, "RefreshDatabasesCommand must be initialized");
+                Assert(!vm.RefreshDatabasesCommand!.CanExecute(null), "RefreshDatabasesCommand must be disabled when disconnected");
+
+                vm.IsConnected = true;
+                Assert(vm.RefreshDatabasesCommand.CanExecute(null), "RefreshDatabasesCommand must be enabled when connected and not busy");
+
+                vm.IsBusy = true;
+                Assert(!vm.RefreshDatabasesCommand.CanExecute(null), "RefreshDatabasesCommand must be disabled when busy");
+
+                vm.IsBusy = false;
+                Assert(vm.RefreshDatabasesCommand.CanExecute(null), "RefreshDatabasesCommand must re-enable when no longer busy");
+
+                vm.Disconnect();
+                Assert(!vm.RefreshDatabasesCommand.CanExecute(null), "RefreshDatabasesCommand must be disabled after disconnecting");
+            });
+
+            await RunAsyncTest("RefreshDatabasesAsync_ReloadsInPlace_AndPreservesSelectedDatabaseCaseInsensitively", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo>
+                    {
+                        new DatabaseInfo { Name = "SalesDB", Collation = "SQL_Latin1_General_CP1_CI_AS", Size = "120 MB" },
+                        new DatabaseInfo { Name = "InventoryDB", Collation = "SQL_Latin1_General_CP1_CI_AS", Size = "80 MB" }
+                    },
+                    DefaultBackupDirectoryToReturn = @"D:\SQLServer\Backups"
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                vm.BackupDirectory = @"E:\CustomBackups\Nightly";
+                vm.SetStatus("Stale error", "Stale tooltip", "Stale detailed error");
+
+                var updatedSalesDb = new DatabaseInfo { Name = "salesdb", Collation = "Latin1_General_CI_AS", Size = "150 MB" };
+                var newAnalyticsDb = new DatabaseInfo { Name = "AnalyticsDB", Collation = "SQL_Latin1_General_CP1_CI_AS", Size = "40 MB" };
+                mockService.DatabasesToReturn = new List<DatabaseInfo> { newAnalyticsDb, updatedSalesDb };
+
+                int resetCount = 0;
+                vm.Databases.CollectionChanged += (s, e) =>
+                {
+                    if (e.Action == NotifyCollectionChangedAction.Reset)
+                    {
+                        resetCount++;
+                    }
+                };
+
+                await vm.RefreshDatabasesAsync();
+
+                Assert(vm.IsConnected, "IsConnected must remain true after RefreshDatabasesAsync");
+                Assert(!vm.IsBusy, "IsBusy must reset to false after RefreshDatabasesAsync");
+                Assert(resetCount == 1, $"Expected exactly 1 Reset notification during refresh, got {resetCount}");
+                Assert(vm.Databases.Count == 2, $"Expected 2 databases after refresh, got {vm.Databases.Count}");
+                Assert(ReferenceEquals(vm.SelectedDatabase, updatedSalesDb), "SelectedDatabase must rebind to the refreshed DatabaseInfo instance matching by case-insensitive Name");
+                Assert(vm.SelectedDatabase?.Size == "150 MB", $"Expected refreshed Size '150 MB', got '{vm.SelectedDatabase?.Size}'");
+                Assert(vm.BackupDirectory == @"E:\CustomBackups\Nightly", "RefreshDatabasesAsync must preserve custom BackupDirectory");
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand must remain enabled when SelectedDatabase and TargetCollation are preserved");
+                Assert(!vm.HasDetailedError, "Successful RefreshDatabasesAsync must clear stale DetailedError via SetStatus");
+                Assert(vm.StatusMessage.Contains("refreshed", StringComparison.OrdinalIgnoreCase), $"Expected StatusMessage to confirm catalog refresh, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("LoadDatabasesAsync_ClearsSelectedDatabaseAndDisablesProcessCommand_WhenDroppedOrFaulted", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo>
+                    {
+                        new DatabaseInfo { Name = "DroppedDB", Collation = "SQL_Latin1_General_CP1_CI_AS" },
+                        new DatabaseInfo { Name = "RetainedDB", Collation = "SQL_Latin1_General_CP1_CI_AS" }
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand should be enabled initially");
+
+                // 1. Server drops DroppedDB
+                mockService.DatabasesToReturn = new List<DatabaseInfo>
+                {
+                    new DatabaseInfo { Name = "RetainedDB", Collation = "SQL_Latin1_General_CP1_CI_AS" }
+                };
+                await vm.RefreshDatabasesAsync();
+
+                Assert(vm.SelectedDatabase == null, "SelectedDatabase must be cleared when dropped on server");
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand must be disabled when SelectedDatabase is cleared");
+
+                // 2. Reselect RetainedDB, then simulate fault during refresh
+                vm.SelectedDatabase = vm.Databases[0];
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand should re-enable after selecting RetainedDB");
+
+                mockService.ThrowOnGetDatabases = true;
+                await vm.RefreshDatabasesAsync();
+
+                Assert(vm.Databases.Count == 0, "Databases should be cleared when GetDatabasesAsync faults");
+                Assert(vm.SelectedDatabase == null, "SelectedDatabase must be cleared when GetDatabasesAsync faults");
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand must be disabled when GetDatabasesAsync faults");
+                Assert(vm.StatusMessage.Contains("Failed to load databases"), $"Expected error status on faulted refresh, got '{vm.StatusMessage}'");
+            });
+
+            await RunAsyncTest("ConnectAsync_PreservesCustomBackupDirectoryOnReconnect_AndRepopulatesWhenCleared", async () =>
+            {
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { new DatabaseInfo { Name = "DB1" } },
+                    DefaultBackupDirectoryToReturn = @"D:\ServerDefault\Backups"
+                };
+
+                var vm = new MainViewModel(mockService);
+
+                // Initial connect populates server default backup path
+                await vm.ConnectAsync();
+                Assert(vm.BackupDirectory == @"D:\ServerDefault\Backups", $"Expected server default path on initial connect, got '{vm.BackupDirectory}'");
+
+                // User enters a custom backup path, then disconnects and reconnects
+                vm.BackupDirectory = @"Z:\DBA\CustomBackups";
+                vm.Disconnect();
+                mockService.DefaultBackupDirectoryToReturn = @"E:\AnotherServerDefault\Backups";
+                await vm.ConnectAsync();
+                Assert(vm.BackupDirectory == @"Z:\DBA\CustomBackups", $"Expected custom BackupDirectory to be preserved on reconnect, got '{vm.BackupDirectory}'");
+
+                // Clearing BackupDirectory to whitespace falls back to server default on reconnect
+                vm.BackupDirectory = "   ";
+                vm.Disconnect();
+                await vm.ConnectAsync();
+                Assert(vm.BackupDirectory == @"E:\AnotherServerDefault\Backups", $"Expected server default BackupDirectory when custom path was cleared, got '{vm.BackupDirectory}'");
+            });
+
             await RunAsyncTest("ConnectAsync_WhenLoadDatabasesFails_DefersIsConnectedToFalseAndPreservesErrorStatus", async () =>
             {
                 var mockService = new MockDatabaseService
@@ -957,6 +1096,106 @@ namespace CollationModifier.Tests
                 Assert(caughtCancellation, "Expected OperationCanceledException when LoadDatabasesAsync is called with a canceled token");
                 Assert(mockService.GetDatabasesCount == 1, "Expected GetDatabasesCount to remain 1 after cancellation prior to database query");
                 Assert(vm.StatusMessage == "Operation cancelled by user.", "Expected StatusMessage to be 'Operation cancelled by user.'");
+            });
+
+            await RunAsyncTest("RefreshDatabasesAsync_WhenCancelledViaCancelCommand_CatchesCancellationAndKeepsSelectionIntact", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "PrimaryDB", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var refreshStarted = new TaskCompletionSource<bool>();
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                mockService.OnGetDatabases = async token =>
+                {
+                    refreshStarted.SetResult(true);
+                    var tcs = new TaskCompletionSource<bool>();
+                    using var reg = token.Register(() => tcs.TrySetCanceled(token));
+                    await tcs.Task;
+                };
+
+                var refreshTask = vm.RefreshDatabasesAsync();
+                await refreshStarted.Task;
+
+                Assert(vm.IsBusy, "IsBusy must be true while RefreshDatabasesAsync is in progress");
+                Assert(!vm.IsConnecting, "IsConnecting must remain false while refreshing an active connection");
+                Assert(!vm.RefreshDatabasesCommand.CanExecute(null), "RefreshDatabasesCommand must be disabled while refresh is in progress");
+                Assert(vm.CancelCommand.CanExecute(null), "CancelCommand must be enabled while refresh is in progress");
+
+                vm.CancelCommand.Execute(null);
+                await refreshTask;
+
+                Assert(!vm.IsBusy, "IsBusy must reset to false after cancelling refresh");
+                Assert(vm.IsConnected, "IsConnected must remain true after cancelling refresh");
+                Assert(vm.Databases.Count == 1 && ReferenceEquals(vm.Databases[0], initialDb), "Existing Databases collection must remain intact when refresh is cancelled");
+                Assert(ReferenceEquals(vm.SelectedDatabase, initialDb), "SelectedDatabase must remain intact when refresh is cancelled");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected cancellation StatusMessage, got '{vm.StatusMessage}'");
+            });
+
+            RunSyncTest("MainWindowXaml_RefreshDatabasesButton_LayoutAndAccessibility_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                var selectDbCombo = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "ComboBox" &&
+                    e.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "SelectDatabaseInput"));
+                Assert(selectDbCombo != null, "MainWindow.xaml must declare SelectDatabaseInput ComboBox");
+
+                var btnRefresh = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Button" &&
+                    e.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "btnRefreshDatabases"));
+                Assert(btnRefresh != null, "MainWindow.xaml must declare btnRefreshDatabases Button");
+
+                var parentGrid = selectDbCombo!.Parent;
+                Assert(parentGrid != null && parentGrid.Name.LocalName == "Grid", "SelectDatabaseInput must be placed inside a Grid");
+                Assert(ReferenceEquals(parentGrid, btnRefresh!.Parent), "SelectDatabaseInput and btnRefreshDatabases must share the same two-column Grid");
+
+                var colDefs = parentGrid!.Elements()
+                    .Where(e => e.Name.LocalName == "Grid.ColumnDefinitions")
+                    .SelectMany(e => e.Elements().Where(c => c.Name.LocalName == "ColumnDefinition"))
+                    .ToList();
+                Assert(colDefs.Count == 2, $"Database selector Grid must define 2 columns, got {colDefs.Count}");
+                Assert(colDefs[0].Attribute("Width")?.Value == "*", $"First column must be Width='*', got '{colDefs[0].Attribute("Width")?.Value}'");
+                Assert(colDefs[1].Attribute("Width")?.Value == "Auto", $"Second column must be Width='Auto', got '{colDefs[1].Attribute("Width")?.Value}'");
+
+                Assert((selectDbCombo.Attribute("Grid.Column")?.Value ?? "0") == "0", "SelectDatabaseInput must be in Grid.Column='0'");
+                Assert(btnRefresh.Attribute("Grid.Column")?.Value == "1", "btnRefreshDatabases must be in Grid.Column='1'");
+
+                var refreshContent = btnRefresh.Attribute("Content")?.Value;
+                var refreshCommand = btnRefresh.Attribute("Command")?.Value;
+                var refreshStyle = btnRefresh.Attribute("Style")?.Value;
+                var refreshMinHeight = btnRefresh.Attribute("MinHeight")?.Value;
+                var refreshAutomationName = btnRefresh.Attributes().FirstOrDefault(a =>
+                    (a.Name.LocalName == "Name" && a.Name.NamespaceName.Contains("AutomationProperties")) ||
+                    a.Name.ToString().Contains("AutomationProperties.Name"))?.Value;
+                var refreshHelpText = btnRefresh.Attributes().FirstOrDefault(a =>
+                    (a.Name.LocalName == "HelpText" && a.Name.NamespaceName.Contains("AutomationProperties")) ||
+                    a.Name.ToString().Contains("AutomationProperties.HelpText"))?.Value;
+
+                Assert(refreshContent == "Refresh", $"btnRefreshDatabases Content must be 'Refresh', got '{refreshContent}'");
+                Assert(refreshCommand == "{Binding RefreshDatabasesCommand}", $"btnRefreshDatabases Command must bind to RefreshDatabasesCommand, got '{refreshCommand}'");
+                Assert(refreshStyle == "{StaticResource SecondaryButton}", $"btnRefreshDatabases Style must use SecondaryButton, got '{refreshStyle}'");
+                Assert(refreshMinHeight == "24", $"btnRefreshDatabases MinHeight must be '24', got '{refreshMinHeight}'");
+                Assert(refreshAutomationName == "Refresh", $"btnRefreshDatabases AutomationProperties.Name must match visible Content 'Refresh' per WCAG 2.2 SC 2.5.3, got '{refreshAutomationName}'");
+                Assert(refreshAutomationName == refreshContent, "btnRefreshDatabases AutomationProperties.Name must equal Content");
+                Assert(!string.IsNullOrWhiteSpace(refreshHelpText), "btnRefreshDatabases must declare non-empty AutomationProperties.HelpText");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_HaltsBeforeBackup_WhenActiveSessionsExist", async () =>
