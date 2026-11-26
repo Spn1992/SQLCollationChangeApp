@@ -8,15 +8,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
 {
     public class InterfaceMemberInfo
     {
-        public string InterfaceName { get; set; } = string.Empty;
         public string MemberName { get; set; } = string.Empty;
         public string ReturnType { get; set; } = "void";
         public string ParameterList { get; set; } = string.Empty;
         public bool IsProperty { get; set; }
         public bool HasGetter { get; set; } = true;
         public bool HasSetter { get; set; }
-        public string FullSignature { get; set; } = string.Empty;
-        public string InterfaceFilePath { get; set; } = string.Empty;
     }
 
     public class InterfaceDefinitionResolver
@@ -40,7 +37,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
         private readonly Dictionary<string, string?> _filePathCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string?> _rootSearchCache = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _fileContentCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        private readonly Dictionary<string, (int Start, int Length)> _interfaceBodyOffsetsCache = new Dictionary<string, (int Start, int Length)>(StringComparer.OrdinalIgnoreCase);
 
         public void ClearCache()
         {
@@ -49,7 +45,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 _filePathCache.Clear();
                 _rootSearchCache.Clear();
                 _fileContentCache.Clear();
-                _interfaceBodyOffsetsCache.Clear();
             }
         }
 
@@ -132,7 +127,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     var memberInfo = ExtractMemberFromInterfaceSource(content, interfaceName, memberName, expectedParamTypes);
                     if (memberInfo != null)
                     {
-                        memberInfo.InterfaceFilePath = interfaceFile;
                         return memberInfo;
                     }
                 }
@@ -147,14 +141,13 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     var contextMember = ExtractMemberFromInterfaceSource(contextContent, interfaceName, memberName, expectedParamTypes);
                     if (contextMember != null)
                     {
-                        contextMember.InterfaceFilePath = contextFilePath;
                         return contextMember;
                     }
                 }
             }
 
             // Fallback: construct signature directly from diagnostic error if interface definition is not found
-            return FallbackMemberInfo(interfaceName, memberName, expectedParamTypes, interfaceFile);
+            return FallbackMemberInfo(memberName, expectedParamTypes);
         }
 
         private static bool ContainsInterfaceDeclaration(string sourceCode, string interfaceName)
@@ -173,29 +166,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
         {
             var segments = CSharpLexer.SplitQualifiedTypeSegments(interfaceName);
             return segments.Count > 0 ? segments[segments.Count - 1].TrimStart('@') : CSharpLexer.StripGenericArity(interfaceName).TrimStart('@');
-        }
-
-        private (int Start, int Length) GetOrComputeInterfaceBodyOffsets(string filePath, string interfaceName, string content)
-        {
-            string cacheKey = $"{filePath}|{interfaceName}";
-            lock (_cacheLock)
-            {
-                if (_interfaceBodyOffsetsCache.TryGetValue(cacheKey, out var cached) &&
-                    cached.Start >= 0 &&
-                    cached.Length >= 0 &&
-                    cached.Start + cached.Length <= content.Length)
-                {
-                    return cached;
-                }
-            }
-
-            var computed = FindInterfaceBodyOffsets(content.AsSpan(), interfaceName);
-            lock (_cacheLock)
-            {
-                _interfaceBodyOffsetsCache[cacheKey] = computed;
-            }
-
-            return computed;
         }
 
         private string? GetOrReadFileContent(string filePath)
@@ -322,7 +292,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             foreach (var (declStripped, declMasked) in declarations)
             {
-                if (TryParseMethodDeclaration(declStripped, declMasked, interfaceName, targetBaseMemberName, typeParamMap, out var methodInfo))
+                if (TryParseMethodDeclaration(declStripped, declMasked, targetBaseMemberName, typeParamMap, out var methodInfo))
                 {
                     if (MatchesParameterTypes(methodInfo.ParameterList, expectedParamTypes))
                     {
@@ -339,7 +309,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             foreach (var (declStripped, declMasked) in declarations)
             {
-                if (TryParsePropertyDeclaration(declStripped, declMasked, interfaceName, targetBaseMemberName, typeParamMap, out var propInfo))
+                if (TryParsePropertyDeclaration(declStripped, declMasked, targetBaseMemberName, typeParamMap, out var propInfo))
                 {
                     return propInfo;
                 }
@@ -465,7 +435,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
         private static bool TryParseMethodDeclaration(
             string declStripped,
             string declMasked,
-            string interfaceName,
             string targetBaseMemberName,
             Dictionary<string, string>? typeParamMap,
             out InterfaceMemberInfo info)
@@ -618,12 +587,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             info = new InterfaceMemberInfo
             {
-                InterfaceName = interfaceName,
                 MemberName = emittedMemberName,
                 ReturnType = returnType,
                 ParameterList = paramList,
-                IsProperty = false,
-                FullSignature = $"{returnType} {emittedMemberName}({paramList})"
+                IsProperty = false
             };
             return true;
         }
@@ -631,7 +598,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
         private static bool TryParsePropertyDeclaration(
             string declStripped,
             string declMasked,
-            string interfaceName,
             string targetBaseMemberName,
             Dictionary<string, string>? typeParamMap,
             out InterfaceMemberInfo info)
@@ -729,13 +695,11 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             info = new InterfaceMemberInfo
             {
-                InterfaceName = interfaceName,
                 MemberName = parsedName,
                 ReturnType = returnType,
                 IsProperty = true,
                 HasGetter = Regex.IsMatch(access, @"\bget\b"),
-                HasSetter = Regex.IsMatch(access, @"\bset\b"),
-                FullSignature = $"{returnType} {parsedName} {{ {access} }}"
+                HasSetter = Regex.IsMatch(access, @"\bset\b")
             };
             return true;
         }
@@ -1038,10 +1002,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
         }
 
         private static InterfaceMemberInfo FallbackMemberInfo(
-            string interfaceName,
             string memberName,
-            string expectedParamTypes,
-            string? interfaceFile = null)
+            string expectedParamTypes)
         {
             bool isAsync = memberName.EndsWith("Async", StringComparison.OrdinalIgnoreCase);
             string returnType = isAsync ? "Task" : "void";
@@ -1069,13 +1031,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string paramList = string.Join(", ", paramsWithNames);
             return new InterfaceMemberInfo
             {
-                InterfaceName = interfaceName,
                 MemberName = memberName,
                 ReturnType = returnType,
                 ParameterList = paramList,
-                IsProperty = false,
-                FullSignature = $"{returnType} {memberName}({paramList})",
-                InterfaceFilePath = interfaceFile ?? string.Empty
+                IsProperty = false
             };
         }
 

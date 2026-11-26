@@ -1603,7 +1603,6 @@ public class DatabaseService : IDatabaseService
 
             var member = new InterfaceMemberInfo
             {
-                InterfaceName = "IDatabaseService",
                 MemberName = "BackupDatabaseAsync",
                 ReturnType = "Task<string>",
                 ParameterList = "string databaseName, string backupDirectory, CancellationToken cancellationToken = default"
@@ -1630,7 +1629,6 @@ public class DatabaseService : IDatabaseService
 
             var member1 = new InterfaceMemberInfo
             {
-                InterfaceName = "IDatabaseService",
                 MemberName = "BackupDatabaseAsync",
                 ReturnType = "Task<string>",
                 ParameterList = "string databaseName, string backupDirectory"
@@ -1651,7 +1649,6 @@ public class OperationsService : IOperationsService
 
             var member2 = new InterfaceMemberInfo
             {
-                InterfaceName = "IOperationsService",
                 MemberName = "ExecuteOperation",
                 ReturnType = "void",
                 ParameterList = "string operationName"
@@ -1672,7 +1669,6 @@ public class CacheService : ICacheService
 
             var member3 = new InterfaceMemberInfo
             {
-                InterfaceName = "ICacheService",
                 MemberName = "CacheItem",
                 ReturnType = "void",
                 ParameterList = "string key"
@@ -1758,7 +1754,6 @@ public class BackupCoordinator : IBackupCoordinator
 
             var member = new InterfaceMemberInfo
             {
-                InterfaceName = "IBackupCoordinator",
                 MemberName = "RunBackupAsync",
                 ReturnType = "Task<bool>",
                 ParameterList = "  string   sourceDatabase ,  string?   backupDirectory ,  CancellationToken   cancellationToken = default  "
@@ -1772,7 +1767,6 @@ public class BackupCoordinator : IBackupCoordinator
             // Also verify empty parameter list on missing member delegates cleanly when all candidate parameters have defaults or are nullable
             var parameterlessMember = new InterfaceMemberInfo
             {
-                InterfaceName = "IBackupCoordinator",
                 MemberName = "PingAsync",
                 ReturnType = "Task",
                 ParameterList = "   "
@@ -1803,7 +1797,6 @@ public class EmptyService : ISampleService
 
             var member = new InterfaceMemberInfo
             {
-                InterfaceName = "ISampleService",
                 MemberName = "ExecuteQuery",
                 ReturnType = "void",
                 ParameterList = "string sql"
@@ -3938,8 +3931,6 @@ namespace DemoModule
                 Assert(member != null, "Expected interface in same context file to be resolved.");
                 Assert(member!.ReturnType == "(byte[] Data, int Checksum)",
                     $"Expected tuple return type from same-file interface, got '{member.ReturnType}'");
-                Assert(Path.GetFullPath(member.InterfaceFilePath) == Path.GetFullPath(combinedFile),
-                    "Expected InterfaceFilePath to point to contextFilePath.");
             }
             finally
             {
@@ -3952,14 +3943,12 @@ namespace DemoModule
             var generator = new PatchGenerator();
             var methodMember = new InterfaceMemberInfo
             {
-                InterfaceName = "IWorker",
                 MemberName = "Run",
                 ReturnType = "int",
                 ParameterList = "string task"
             };
             var propMember = new InterfaceMemberInfo
             {
-                InterfaceName = "IWorker",
                 MemberName = "Name",
                 ReturnType = "string",
                 IsProperty = true,
