@@ -6,7 +6,7 @@
         mc:Ignorable="d"
         xml:lang="en"
         Language="en-US"
-        Title="Collation Modifier Utility" Height="650" Width="900"
+        Title="Collation Modifier Utility" Height="700" Width="900"
         WindowStartupLocation="CenterScreen">
 
     <Grid>
@@ -93,48 +93,50 @@
                                       AutomationProperties.Name="Select Database"
                                       Margin="0,0,0,24" IsEnabled="{Binding IsNotBusy}" />
 
-                            <!-- Metadata Panel -->
-                            <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
-                                    BorderBrush="#E2E8F0" BorderThickness="1">
-                                <Border.Effect>
-                                    <DropShadowEffect Color="#CBD5E1" BlurRadius="10" ShadowDepth="2" Opacity="0.3" />
-                                </Border.Effect>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
+                        <!-- Metadata Panel -->
+                        <Border Background="White" CornerRadius="8" Padding="20" Margin="0,0,0,32"
+                                BorderBrush="#E2E8F0" BorderThickness="1">
+                            <Border.Effect>
+                                <DropShadowEffect Color="#CBD5E1" BlurRadius="10" ShadowDepth="2" Opacity="0.3" />
+                            </Border.Effect>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
 
-                                    <!-- Labels -->
-                                    <TextBlock x:Name="CurrentCollationLabel" Grid.Row="0" Grid.Column="0" Text="Current Collation:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                    <TextBlock x:Name="CompatibilityLevelLabel" Grid.Row="1" Grid.Column="0" Text="Compatibility Level:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                    <TextBlock x:Name="OwnerLabel" Grid.Row="2" Grid.Column="0" Text="Owner:" FontWeight="SemiBold" Margin="0,0,16,12" />
-                                    <TextBlock x:Name="SizeLabel" Grid.Row="3" Grid.Column="0" Text="Size:" FontWeight="SemiBold" />
+                                <!-- Labels -->
+                                <TextBlock x:Name="DatabaseDefaultCollationLabel" Grid.Row="0" Grid.Column="0" Text="Database Default Collation:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="UserCharacterColumnsLabel" Grid.Row="1" Grid.Column="0" Text="User Character Columns:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="CompatibilityLevelLabel" Grid.Row="2" Grid.Column="0" Text="Compatibility Level:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="OwnerLabel" Grid.Row="3" Grid.Column="0" Text="Owner:" FontWeight="SemiBold" Margin="0,0,16,12" />
+                                <TextBlock x:Name="SizeLabel" Grid.Row="4" Grid.Column="0" Text="Size:" FontWeight="SemiBold" />
 
-                                    <!-- Values -->
-                                    <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                               AutomationProperties.LabeledBy="{Binding ElementName=CurrentCollationLabel}"
-                                               AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Current Collation: {0}', FallbackValue='Current Collation: -', TargetNullValue='Current Collation: -'}" />
-                                    <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                               AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
-                                               AutomationProperties.Name="{Binding SelectedDatabase.CompatibilityLevel, StringFormat='Compatibility Level: {0}', FallbackValue='Compatibility Level: -', TargetNullValue='Compatibility Level: -'}" />
-                                    <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
-                                               AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
-                                               AutomationProperties.Name="{Binding SelectedDatabase.Owner, StringFormat='Owner: {0}', FallbackValue='Owner: -', TargetNullValue='Owner: -'}" />
-                                    <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
-                                               AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
-                                               AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
-                                </Grid>
-                            </Border>
-
-                            <!-- Action Area -->
-                            <Label Content="Target Configuration" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level2" Margin="0,0,0,8" />
+                                <!-- Values -->
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="{Binding SelectedDatabase.Collation, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=DatabaseDefaultCollationLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Collation, StringFormat='Database Default Collation: {0}', FallbackValue='Database Default Collation: -', TargetNullValue='Database Default Collation: -'}" />
+                                <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedDatabase.UserCharacterColumns, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=UserCharacterColumnsLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.UserCharacterColumns, StringFormat='User Character Columns: {0}', FallbackValue='User Character Columns: -', TargetNullValue='User Character Columns: -'}" />
+                                <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedDatabase.CompatibilityLevel, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=CompatibilityLevelLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.CompatibilityLevel, StringFormat='Compatibility Level: {0}', FallbackValue='Compatibility Level: -', TargetNullValue='Compatibility Level: -'}" />
+                                <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding SelectedDatabase.Owner, FallbackValue='-'}" Foreground="#475569" Margin="0,0,0,12"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=OwnerLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Owner, StringFormat='Owner: {0}', FallbackValue='Owner: -', TargetNullValue='Owner: -'}" />
+                                <TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding SelectedDatabase.Size, FallbackValue='-'}" Foreground="#475569"
+                                           AutomationProperties.LabeledBy="{Binding ElementName=SizeLabel}"
+                                           AutomationProperties.Name="{Binding SelectedDatabase.Size, StringFormat='Size: {0}', FallbackValue='Size: -', TargetNullValue='Size: -'}" />
+                            </Grid>
+                        </Border>
 
                             <StackPanel Margin="0,0,0,24">
                                 <StackPanel Margin="0,0,0,16">
@@ -198,7 +200,7 @@
                                     Margin="0,0,12,0"
                                     AutomationProperties.Name="Process Collation Change"
                                     AutomationProperties.DescribedBy="{Binding ElementName=lblWarning}"
-                                    AutomationProperties.HelpText="Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections" />
+                                    AutomationProperties.HelpText="Changes only the database default collation while leaving existing user columns unchanged, and sets the database to SINGLE_USER mode briefly which may drop active connections" />
                             <Button x:Name="btnCancel" Content="Cancel" Command="{Binding CancelCommand}" Style="{StaticResource SecondaryButton}"
                                     MinHeight="36"
                                     Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}"
@@ -206,181 +208,12 @@
                         </StackPanel>
 
                         <TextBlock x:Name="lblWarning"
-                                   Text="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
-                                   AutomationProperties.Name="Warning: Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
-                                   AutomationProperties.HelpText="Database single user mode operation warning message."
+                                   Text="Warning: This operation changes only the database default collation; existing columns in user tables keep their original collations and remain unchanged. Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.Name="Warning: This operation changes only the database default collation; existing columns in user tables keep their original collations and remain unchanged. Modifying collation will set the database to SINGLE_USER mode briefly and may drop active connections."
+                                   AutomationProperties.HelpText="Database default collation scope and single user mode warning message."
                                    AutomationProperties.LiveSetting="Assertive"
-                                   Foreground="{StaticResource StatusErrorBrush}" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
-
-                        <!-- Inline Pre-flight Readiness Card -->
-                        <Border x:Name="PreflightReadinessCard"
-                                Background="{StaticResource CardBackgroundBrush}"
-                                BorderBrush="{StaticResource InputRestingBorderBrush}"
-                                BorderThickness="1"
-                                CornerRadius="8"
-                                Padding="20"
-                                Margin="0,16,0,0"
-                                Visibility="{Binding HasPreflightReport, Converter={StaticResource BooleanToVisibilityConverter}}"
-                                AutomationProperties.Name="Pre-flight Readiness"
-                                AutomationProperties.HeadingLevel="Level2"
-                                AutomationProperties.LiveSetting="Polite">
-                            <StackPanel>
-                                <DockPanel LastChildFill="True">
-                                    <Border x:Name="PreflightStatusPill"
-                                            DockPanel.Dock="Right"
-                                            CornerRadius="4"
-                                            Padding="10,4"
-                                            VerticalAlignment="Center">
-                                        <Border.Style>
-                                            <Style TargetType="Border">
-                                                <Setter Property="Background" Value="{StaticResource StatusSuccessBrush}" />
-                                                <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding CurrentPreflightReport.HasBlockingConditions}" Value="True">
-                                                        <Setter Property="Background" Value="{StaticResource StatusErrorBrush}" />
-                                                    </DataTrigger>
-                                                </Style.Triggers>
-                                            </Style>
-                                        </Border.Style>
-                                        <TextBlock x:Name="PreflightStatusBadge"
-                                                   Foreground="#FFFFFF"
-                                                   FontWeight="Bold"
-                                                   FontSize="12"
-                                                   AutomationProperties.LiveSetting="Polite">
-                                            <TextBlock.Style>
-                                                <Style TargetType="TextBlock">
-                                                    <Setter Property="Text" Value="PASSED" />
-                                                    <Setter Property="AutomationProperties.Name" Value="Pre-flight status: PASSED" />
-                                                    <Style.Triggers>
-                                                        <DataTrigger Binding="{Binding CurrentPreflightReport.IsValid}" Value="True">
-                                                            <Setter Property="Text" Value="PASSED" />
-                                                            <Setter Property="AutomationProperties.Name" Value="Pre-flight status: PASSED" />
-                                                        </DataTrigger>
-                                                        <DataTrigger Binding="{Binding CurrentPreflightReport.HasBlockingConditions}" Value="True">
-                                                            <Setter Property="Text" Value="BLOCKED" />
-                                                            <Setter Property="AutomationProperties.Name" Value="Pre-flight status: BLOCKED" />
-                                                        </DataTrigger>
-                                                    </Style.Triggers>
-                                                </Style>
-                                            </TextBlock.Style>
-                                        </TextBlock>
-                                    </Border>
-
-                                    <Label x:Name="PreflightCardTitle"
-                                           Content="Pre-flight Readiness"
-                                           Style="{StaticResource CardHeader}"
-                                           AutomationProperties.HeadingLevel="Level2"
-                                           Foreground="{StaticResource CardPrimaryTextBrush}"
-                                           Margin="0"
-                                           Padding="0"
-                                           VerticalAlignment="Center" />
-                                </DockPanel>
-
-                                <TextBlock x:Name="PreflightSummaryText"
-                                           Text="{Binding CurrentPreflightReport.SummaryMessage}"
-                                           Foreground="{StaticResource CardSecondaryTextBrush}"
-                                           TextWrapping="Wrap"
-                                           Margin="0,8,0,0"
-                                           AutomationProperties.LiveSetting="Polite" />
-
-                                <!-- Passed Checks List -->
-                                <StackPanel x:Name="PreflightPassedSection"
-                                            Margin="0,12,0,0"
-                                            Visibility="{Binding CurrentPreflightReport.IsValid, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <ItemsControl x:Name="PassedChecksList" ItemsSource="{Binding CurrentPreflightReport.PassedChecks}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <TextBlock Text="{Binding Path=., StringFormat='• {0}'}"
-                                                           Foreground="{StaticResource StatusSuccessBrush}"
-                                                           TextWrapping="Wrap"
-                                                           Margin="4,2,0,2" />
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                </StackPanel>
-
-                                <!-- Categorized Blockers -->
-                                <StackPanel x:Name="PreflightBlockersSection"
-                                            Margin="0,12,0,0"
-                                            Visibility="{Binding CurrentPreflightReport.HasBlockingConditions, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                    <StackPanel x:Name="ActiveSessionsGroup"
-                                                Margin="0,0,0,12"
-                                                Visibility="{Binding CurrentPreflightReport.HasActiveSessions, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <TextBlock Text="{Binding CurrentPreflightReport.ActiveSessions.Count, StringFormat='Active User Sessions ({0})'}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource StatusErrorBrush}"
-                                                   Margin="0,0,0,4" />
-                                        <ItemsControl x:Name="ActiveSessionsList" ItemsSource="{Binding CurrentPreflightReport.ActiveSessions}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding DisplaySummary, StringFormat='• {0}'}"
-                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
-                                                               TextWrapping="Wrap"
-                                                               Margin="8,2,0,2" />
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-
-                                    <StackPanel x:Name="SchemaDependenciesGroup"
-                                                Margin="0,0,0,12"
-                                                Visibility="{Binding CurrentPreflightReport.HasSchemaDependencies, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <TextBlock Text="{Binding CurrentPreflightReport.SchemaDependencies.Count, StringFormat='Schema Dependencies ({0})'}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource StatusErrorBrush}"
-                                                   Margin="0,0,0,4" />
-                                        <ItemsControl x:Name="SchemaDependenciesList" ItemsSource="{Binding CurrentPreflightReport.SchemaDependencies}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding DisplaySummary, StringFormat='• {0}'}"
-                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
-                                                               TextWrapping="Wrap"
-                                                               Margin="8,2,0,2" />
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-
-                                    <StackPanel x:Name="MissingPermissionsGroup"
-                                                Margin="0,0,0,12"
-                                                Visibility="{Binding CurrentPreflightReport.HasMissingPermissions, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <TextBlock Text="{Binding CurrentPreflightReport.MissingPermissions.Count, StringFormat='Missing Permissions ({0})'}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource StatusErrorBrush}"
-                                                   Margin="0,0,0,4" />
-                                        <ItemsControl x:Name="MissingPermissionsList" ItemsSource="{Binding CurrentPreflightReport.MissingPermissions}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding Path=., StringFormat='• {0}'}"
-                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
-                                                               TextWrapping="Wrap"
-                                                               Margin="8,2,0,2" />
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-
-                                    <StackPanel x:Name="ValidationErrorsGroup"
-                                                Visibility="{Binding CurrentPreflightReport.HasValidationErrors, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <TextBlock Text="{Binding CurrentPreflightReport.ValidationErrors.Count, StringFormat='Validation Errors ({0})'}"
-                                                   FontWeight="SemiBold"
-                                                   Foreground="{StaticResource StatusErrorBrush}"
-                                                   Margin="0,0,0,4" />
-                                        <ItemsControl x:Name="ValidationErrorsList" ItemsSource="{Binding CurrentPreflightReport.ValidationErrors}">
-                                            <ItemsControl.ItemTemplate>
-                                                <DataTemplate>
-                                                    <TextBlock Text="{Binding Path=., StringFormat='• {0}'}"
-                                                               Foreground="{StaticResource CardSecondaryTextBrush}"
-                                                               TextWrapping="Wrap"
-                                                               Margin="8,2,0,2" />
-                                                </DataTemplate>
-                                            </ItemsControl.ItemTemplate>
-                                        </ItemsControl>
-                                    </StackPanel>
-                                </StackPanel>
-                            </StackPanel>
-                        </Border>
-                        </StackPanel>
-                    </ScrollViewer>
+                                   Foreground="#B91C1C" FontSize="12" Margin="0,12,0,0" TextWrapping="Wrap" />
+                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>

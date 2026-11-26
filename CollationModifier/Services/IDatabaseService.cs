@@ -14,6 +14,7 @@ namespace CollationModifier.Services
         Task<List<string>> GetSupportedCollationsAsync(CancellationToken cancellationToken = default);
         Task<string?> GetDefaultBackupDirectoryAsync(CancellationToken cancellationToken = default);
         Task<ServerInitializationData> GetServerInitializationDataAsync(CancellationToken cancellationToken = default);
+        Task<(int UserCharacterColumnCount, int RetainedColumnCount)> GetColumnCollationScopeAsync(string databaseName, string targetCollation = "", CancellationToken cancellationToken = default);
         Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default);
         Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
         Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default);

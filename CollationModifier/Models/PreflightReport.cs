@@ -47,6 +47,9 @@ namespace CollationModifier.Models
         };
 
         public string DatabaseName { get; set; } = string.Empty;
+        public string TargetCollation { get; set; } = string.Empty;
+        public int UserCharacterColumnCount { get; set; }
+        public int RetainedColumnCount { get; set; }
         public List<ActiveSessionInfo> ActiveSessions { get; set; } = new();
         public List<SchemaDependencyInfo> SchemaDependencies { get; set; } = new();
         public List<string> MissingPermissions { get; set; } = new();
@@ -73,6 +76,14 @@ namespace CollationModifier.Models
             var sb = new StringBuilder();
             sb.AppendLine($"Pre-flight Validation Report for Database '{DatabaseName}':");
             sb.AppendLine($"Status: {(IsValid ? "PASSED" : "FAILED (Blocking items found)")}");
+
+            string targetCollationDetail = string.IsNullOrWhiteSpace(TargetCollation)
+                ? string.Empty
+                : $" (Differing from '{TargetCollation}')";
+            sb.AppendLine("\n[Column Collation Scope (Informational)]");
+            sb.AppendLine($"  - User Table Character Columns: {UserCharacterColumnCount}");
+            sb.AppendLine($"  - User Columns Retaining Prior Collations{targetCollationDetail}: {RetainedColumnCount}");
+            sb.AppendLine("  - Scope Note: ALTER DATABASE COLLATE changes only the database default collation and leaves existing user columns unchanged.");
 
             if (HasActiveSessions)
             {
