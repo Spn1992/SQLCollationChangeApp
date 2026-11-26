@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -133,6 +134,22 @@ namespace MSBuildDiagnosticPatcher.Tests
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
             RunTest("Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix", Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix);
+            RunTest("InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments", Test_InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments);
+            RunTest("InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType", Test_InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType);
+            RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets);
+            RunTest("PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot", Test_PatchGenerator_ProjectRelativePaths_ResolvesViaProjectPathAndSearchRoot);
+            RunTest("PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath", Test_PatchGenerator_MultiProjectLogs_ResolvesDistinctFilesWithSameRelativePath);
+            RunTest("PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing", Test_PatchGenerator_RootRelativeFallback_WhenProjectPathEmptyOrCandidateMissing);
+            RunTest("Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags", Test_Launcher_OutsideRootAndFlagOverrides_PreservesRepoRootHelpAndExplicitFlags);
+            RunTest("ReportGenerator_PrintConsoleSummary", Test_ReportGenerator_PrintConsoleSummary);
+            RunTest("InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams", Test_InvokePatcherMain_CapturesOutputAndRestoresConsoleStreams);
+            RunTest("InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown", Test_InvokePatcherMain_RestoresConsoleStreams_WhenExceptionThrown);
+            RunTest("InterfaceDefinitionResolver_ExtractRequiredMembers_SkipsDefaultsAndExtractsRequired", Test_InterfaceDefinitionResolver_ExtractRequiredMembers_SkipsDefaultsAndExtractsRequired);
+            RunTest("PatchGenerator_DownstreamCs0535Discovery_GeneratesPatchesForUncompiledMockClasses", Test_PatchGenerator_DownstreamCs0535Discovery_GeneratesPatchesForUncompiledMockClasses);
+            RunTest("PatchGenerator_RealRepoLayout_IDatabaseServiceChange_GeneratesDatabaseServiceAndMainViewModelTestsPatches", Test_PatchGenerator_RealRepoLayout_IDatabaseServiceChange_GeneratesDatabaseServiceAndMainViewModelTestsPatches);
+            RunTest("Program_Main_ReportOnly_ReturnsZero_WhenErrorsAndTestFailuresExist_AndDoesNotModifyFiles", Test_Program_Main_ReportOnly_ReturnsZero_WhenErrorsAndTestFailuresExist_AndDoesNotModifyFiles);
+            RunTest("LauncherScripts_PreferPrebuiltDllBeforeDotnetRunFallback", Test_LauncherScripts_PreferPrebuiltDllBeforeDotnetRunFallback);
+            RunTest("Workflow_PostMergeBuildVerification_SingleJobContinueOnErrorGateAndFallbackSummary", Test_Workflow_PostMergeBuildVerification_SingleJobContinueOnErrorGateAndFallbackSummary);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -3290,6 +3307,90 @@ public class Greeter : IGreeter
             Assert(report.UnresolvedErrorCount == 0, $"Expected UnresolvedErrorCount 0, got {report.UnresolvedErrorCount}");
         }
 
+        static void Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations()
+        {
+            var report = new DiagnosticReport
+            {
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" }
+                }
+            };
+
+            Assert(report.ErrorCount == 1, $"Expected initial ErrorCount 1, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected initial WarningCount 1, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1002" });
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after adding Info, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1 after adding Info, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0219" });
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0103" });
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2 after adding Error, got {report.ErrorCount}");
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after adding Warning, got {report.WarningCount}");
+
+            report.Diagnostics[2].Severity = DiagnosticSeverity.Warning;
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after mutating Error to Warning, got {report.ErrorCount}");
+            Assert(report.WarningCount == 3, $"Expected WarningCount 3 after mutating Error to Warning, got {report.WarningCount}");
+
+            report.Diagnostics.RemoveAt(1);
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after RemoveAt, got {report.WarningCount}");
+
+            report.Diagnostics.Clear();
+            Assert(report.ErrorCount == 0, $"Expected ErrorCount 0 after Clear, got {report.ErrorCount}");
+            Assert(report.WarningCount == 0, $"Expected WarningCount 0 after Clear, got {report.WarningCount}");
+        }
+
+        static void Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations()
+        {
+            var diagnostics = new List<CompilerDiagnostic>(128);
+            for (int i = 0; i < 50; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" });
+            }
+            for (int i = 0; i < 40; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" });
+            }
+            for (int i = 0; i < 30; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" });
+            }
+
+            var report = new DiagnosticReport { Diagnostics = diagnostics };
+
+            // Warm up JIT tiers before measuring current-thread heap allocations
+            int warmupTotal = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                warmupTotal += report.ErrorCount + report.WarningCount;
+            }
+
+            long beforeError = GC.GetAllocatedBytesForCurrentThread();
+            int errorSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                errorSum += report.ErrorCount;
+            }
+            long errorAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeError;
+
+            long beforeWarning = GC.GetAllocatedBytesForCurrentThread();
+            int warningSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                warningSum += report.WarningCount;
+            }
+            long warningAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeWarning;
+
+            GC.KeepAlive(warmupTotal);
+            Assert(errorSum == 50 * 50, $"Expected errorSum 2500, got {errorSum}");
+            Assert(warningSum == 50 * 40, $"Expected warningSum 2000, got {warningSum}");
+            Assert(errorAllocated == 0, $"Expected 0 bytes allocated reading ErrorCount, got {errorAllocated}");
+            Assert(warningAllocated == 0, $"Expected 0 bytes allocated reading WarningCount, got {warningAllocated}");
+        }
+
         private static int InvokePatcherMain(string[] args, out string stdout, out string stderr)
         {
             TextWriter originalOut = Console.Out;
@@ -3662,19 +3763,14 @@ Time Elapsed 00:00:01.42
             string workflowPath = FindWorkflowPath();
             string content = File.ReadAllText(workflowPath);
 
-            // Requirement 1: Redirect solution restore, build, and test output to /tmp/build-and-test.log in order
-            string restoreCmd = "dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log";
-            string buildCmd = "dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
-            string testCmd = "dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
-
-            Assert(content.Contains(restoreCmd), "Workflow must redirect solution restore output to /tmp/build-and-test.log");
-            Assert(content.Contains(buildCmd), "Workflow must append solution build output to /tmp/build-and-test.log");
-            Assert(content.Contains(testCmd), "Workflow must append solution test output to /tmp/build-and-test.log");
-
-            int restoreIndex = content.IndexOf(restoreCmd, StringComparison.Ordinal);
-            int buildIndex = content.IndexOf(buildCmd, StringComparison.Ordinal);
-            int testIndex = content.IndexOf(testCmd, StringComparison.Ordinal);
-            Assert(restoreIndex != -1 && buildIndex != -1 && testIndex != -1 && restoreIndex < buildIndex && buildIndex < testIndex, "Workflow must run solution restore, build, and test steps in order");
+            // Requirement 1: Redirect build and test output to /tmp/build-and-test.log
+            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must redirect patcher build output to /tmp/build-and-test.log");
+            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append CollationModifier build output to /tmp/build-and-test.log");
+            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj");
+            int collationModifierBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj");
+            Assert(patcherBuildIndex != -1 && collationModifierBuildIndex != -1 && patcherBuildIndex < collationModifierBuildIndex, "Workflow must build patcher before CollationModifier");
+            Assert(content.Contains("tee /tmp/build-and-test.log"), "Workflow must redirect build output to /tmp/build-and-test.log using tee");
+            Assert(content.Contains("tee -a /tmp/build-and-test.log"), "Workflow must append test output to /tmp/build-and-test.log using tee -a");
 
             // Launcher requirement: Disable shared Roslyn compilation
             string launcherPath = FindLauncherScriptPath();
@@ -3700,6 +3796,7 @@ Time Elapsed 00:00:01.42
             Assert(content.Contains("build-diagnostics/"), "Workflow artifact path must include build-diagnostics/");
             Assert(content.Contains("/tmp/build-and-test.log"), "Workflow artifact path must include /tmp/build-and-test.log");
         }
+
 
         static void Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix()
         {
@@ -4306,6 +4403,386 @@ namespace RollbackLib
             {
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
             }
+        }
+
+        static void Test_InterfaceDefinitionResolver_ExtractRequiredMembers_SkipsDefaultsAndExtractsRequired()
+        {
+            string source = @"
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace Sample.Services
+{
+    public interface ISampleDatabaseService
+    {
+        void SetConnectionString(string server, string defaultDb = """");
+        Task<List<string>> GetDatabasesAsync(CancellationToken cancellationToken = default);
+        Task<string> BackupAsync(string db, string dir, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
+        Task<string> BackupAsync(string db, string dir, CancellationToken cancellationToken) => BackupAsync(db, dir, null, cancellationToken);
+        void DefaultBlockMethod() { Console.WriteLine(""default""); }
+        static string StaticHelper() => ""helper"";
+        string ActiveServer { get; set; }
+        bool IsConnected { get; }
+        int DefaultProp => 42;
+        string ComputedProp { get => ""computed""; }
+    }
+}
+";
+            var resolver = new InterfaceDefinitionResolver();
+            var required = resolver.ExtractRequiredMembersFromInterfaceSource(source, "ISampleDatabaseService");
+
+            Assert(required.Count == 5, $"Expected 5 required members (3 methods + 2 properties), got {required.Count}");
+            Assert(required.Any(m => !m.IsProperty && m.MemberName == "SetConnectionString"), "Expected SetConnectionString");
+            Assert(required.Any(m => !m.IsProperty && m.MemberName == "GetDatabasesAsync"), "Expected GetDatabasesAsync");
+            Assert(required.Count(m => m.MemberName == "BackupAsync") == 1, "Expected only the non-default 4-parameter BackupAsync overload");
+            Assert(required.Any(m => m.IsProperty && m.MemberName == "ActiveServer" && m.HasGetter && m.HasSetter), "Expected ActiveServer { get; set; }");
+            Assert(required.Any(m => m.IsProperty && m.MemberName == "IsConnected" && m.HasGetter && !m.HasSetter), "Expected IsConnected { get; }");
+            Assert(!required.Any(m => m.MemberName == "DefaultBlockMethod"), "Default block method must be skipped");
+            Assert(!required.Any(m => m.MemberName == "StaticHelper"), "Static method must be skipped");
+            Assert(!required.Any(m => m.MemberName == "DefaultProp"), "Expression-bodied default property must be skipped");
+            Assert(!required.Any(m => m.MemberName == "ComputedProp"), "Default accessor property must be skipped");
+        }
+
+        static void Test_PatchGenerator_DownstreamCs0535Discovery_GeneratesPatchesForUncompiledMockClasses()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"downstream_cs0535_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string appDir = Path.Combine(tempDir, "App", "Services");
+                string testsDir = Path.Combine(tempDir, "App.Tests");
+                Directory.CreateDirectory(appDir);
+                Directory.CreateDirectory(testsDir);
+
+                string ifacePath = Path.Combine(appDir, "IDataGateway.cs");
+                File.WriteAllText(ifacePath, @"
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace App.Services
+{
+    public interface IDataGateway
+    {
+        Task<bool> PingAsync(CancellationToken cancellationToken = default);
+        Task<bool> PingAsync() => PingAsync(default);
+        Task<string> VerifyChecksumAsync(string databaseName, CancellationToken cancellationToken = default);
+    }
+}
+");
+
+                string implPath = Path.Combine(appDir, "DataGateway.cs");
+                string implOriginal = @"
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace App.Services
+{
+    public class DataGateway : IDataGateway
+    {
+        public virtual Task<bool> PingAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+}
+";
+                File.WriteAllText(implPath, implOriginal);
+
+                string testPath = Path.Combine(testsDir, "MainViewModelTests.cs");
+                string testOriginal = @"
+using System.Threading;
+using System.Threading.Tasks;
+using App.Services;
+
+namespace App.Tests
+{
+    public class MockDataGateway : IDataGateway
+    {
+        public virtual Task<bool> PingAsync(CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+
+    public class FailingMockDataGateway : MockDataGateway
+    {
+        public override Task<bool> PingAsync(CancellationToken cancellationToken = default) => Task.FromResult(false);
+    }
+
+    public class TestsRunner
+    {
+        public string SampleSnippet = @""
+public class FakeInStringLiteral : IDataGateway
+{
+}
+"";
+    }
+}
+";
+                File.WriteAllText(testPath, testOriginal);
+
+                // Only DataGateway.cs emitted CS0535 because App.Tests skipped compilation
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = implPath,
+                        LineNumber = 7,
+                        ColumnNumber = 32,
+                        Message = "'DataGateway' does not implement interface member 'IDataGateway.VerifyChecksumAsync(string, CancellationToken)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+
+                Assert(patches.Count == 2, $"Expected 2 patches (DataGateway + MockDataGateway), got {patches.Count}");
+
+                var prodPatch = patches.FirstOrDefault(p => p.PatchFileName == "DataGateway.patch");
+                var mockPatch = patches.FirstOrDefault(p => p.PatchFileName == "MainViewModelTests.patch");
+
+                Assert(prodPatch != null, "Expected DataGateway.patch to be generated");
+                Assert(mockPatch != null, "Expected MainViewModelTests.patch to be generated");
+                Assert(prodPatch!.TargetTypeName == "DataGateway", $"Expected TargetTypeName DataGateway, got {prodPatch.TargetTypeName}");
+                Assert(prodPatch.ResolvedErrorCount == 1, $"Expected ResolvedErrorCount 1 on logged class, got {prodPatch.ResolvedErrorCount}");
+                Assert(mockPatch!.TargetTypeName == "MockDataGateway", $"Expected TargetTypeName MockDataGateway, got {mockPatch.TargetTypeName}");
+                Assert(mockPatch.ResolvedErrorCount == 0, $"Expected ResolvedErrorCount 0 on uncompiled downstream class, got {mockPatch.ResolvedErrorCount}");
+                Assert(mockPatch.UnifiedDiff.Contains("VerifyChecksumAsync(string databaseName, CancellationToken cancellationToken = default)"),
+                    "Expected VerifyChecksumAsync stub in MainViewModelTests.patch");
+                Assert(!mockPatch.UnifiedDiff.Contains("PingAsync()"),
+                    "Default interface method PingAsync() must not be emitted in MainViewModelTests.patch");
+
+                // Read-only verification: source files must remain untouched prior to --apply
+                Assert(File.ReadAllText(implPath) == implOriginal, "DataGateway.cs must remain unmodified without --apply");
+                Assert(File.ReadAllText(testPath) == testOriginal, "MainViewModelTests.cs must remain unmodified without --apply");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_PatchGenerator_RealRepoLayout_IDatabaseServiceChange_GeneratesDatabaseServiceAndMainViewModelTestsPatches()
+        {
+            string repoRoot = Path.GetFullPath(Path.Combine(FindWorkflowPath(), "..", "..", ".."));
+            string tempDir = Path.Combine(Path.GetTempPath(), $"real_repo_cs0535_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string cmServicesDir = Path.Combine(tempDir, "CollationModifier", "Services");
+                string cmTestsDir = Path.Combine(tempDir, "CollationModifier.Tests");
+                Directory.CreateDirectory(cmServicesDir);
+                Directory.CreateDirectory(cmTestsDir);
+
+                string srcIface = File.ReadAllText(Path.Combine(repoRoot, "CollationModifier", "Services", "IDatabaseService.cs"));
+                string srcDbService = File.ReadAllText(Path.Combine(repoRoot, "CollationModifier", "Services", "DatabaseService.cs"));
+                string srcVmTests = File.ReadAllText(Path.Combine(repoRoot, "CollationModifier.Tests", "MainViewModelTests.cs"));
+
+                // Inject a new unimplemented interface method into IDatabaseService.cs
+                int lastBrace = srcIface.LastIndexOf('}');
+                int ifaceClosingBrace = srcIface.LastIndexOf('}', lastBrace - 1);
+                string updatedIface = srcIface.Insert(
+                    ifaceClosingBrace,
+                    "        Task<bool> AuditCollationHealthAsync(string databaseName, CancellationToken cancellationToken = default);\n    ");
+
+                string tempIfacePath = Path.Combine(cmServicesDir, "IDatabaseService.cs");
+                string tempDbServicePath = Path.Combine(cmServicesDir, "DatabaseService.cs");
+                string tempVmTestsPath = Path.Combine(cmTestsDir, "MainViewModelTests.cs");
+
+                File.WriteAllText(tempIfacePath, updatedIface);
+                File.WriteAllText(tempDbServicePath, srcDbService);
+                File.WriteAllText(tempVmTestsPath, srcVmTests);
+
+                string logPath = Path.Combine(tempDir, "build-and-test.log");
+                File.WriteAllText(
+                    logPath,
+                    $"{tempDbServicePath}(13,36): error CS0535: 'DatabaseService' does not implement interface member 'IDatabaseService.AuditCollationHealthAsync(string, CancellationToken)' [{Path.Combine(tempDir, "CollationModifier", "CollationModifier.csproj")}]\n");
+
+                string outDir = Path.Combine(tempDir, "build-diagnostics");
+                int exitCode = MSBuildDiagnosticPatcher.Program.Main(new[]
+                {
+                    logPath,
+                    "-p", tempDir,
+                    "-o", outDir,
+                    "--report-only"
+                });
+
+                Assert(exitCode == 0, $"Expected exit code 0 with --report-only, got {exitCode}");
+
+                string dbPatchPath = Path.Combine(outDir, "DatabaseService.patch");
+                string testsPatchPath = Path.Combine(outDir, "MainViewModelTests.patch");
+                Assert(File.Exists(dbPatchPath), "Expected DatabaseService.patch to exist");
+                Assert(File.Exists(testsPatchPath), "Expected MainViewModelTests.patch to exist");
+
+                string dbPatch = File.ReadAllText(dbPatchPath);
+                string testsPatch = File.ReadAllText(testsPatchPath);
+                Assert(dbPatch.Contains("AuditCollationHealthAsync"), "DatabaseService.patch must contain AuditCollationHealthAsync");
+                Assert(testsPatch.Contains("AuditCollationHealthAsync"), "MainViewModelTests.patch must contain AuditCollationHealthAsync");
+                Assert(!testsPatch.Contains("SetConnectionString"), "MainViewModelTests.patch must not duplicate already-implemented methods");
+                Assert(!testsPatch.Contains("BackupDatabaseAsync"), "MainViewModelTests.patch must not duplicate default or implemented BackupDatabaseAsync");
+
+                // Tracked files remain untouched
+                Assert(File.ReadAllText(tempDbServicePath) == srcDbService, "DatabaseService.cs must remain untouched");
+                Assert(File.ReadAllText(tempVmTestsPath) == srcVmTests, "MainViewModelTests.cs must remain untouched");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Program_Main_ReportOnly_ReturnsZero_WhenErrorsAndTestFailuresExist_AndDoesNotModifyFiles()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"report_only_test_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IGreeter.cs");
+                File.WriteAllText(ifaceFile, "public interface IGreeter { string Greet(string name); }\n");
+
+                string classFile = Path.Combine(tempDir, "Greeter.cs");
+                string originalClass = "public class Greeter : IGreeter\n{\n}\n";
+                File.WriteAllText(classFile, originalClass);
+
+                string logFile = Path.Combine(tempDir, "build.log");
+                File.WriteAllText(logFile, $@"{classFile}(1,14): error CS0535: 'Greeter' does not implement interface member 'IGreeter.Greet(string)'
+  [FAIL] GreeterTests.TestGreet - Assertion Failed: Expected greeting
+");
+
+                string outDir = Path.Combine(tempDir, "out");
+                int reportOnlyExit = MSBuildDiagnosticPatcher.Program.Main(new[]
+                {
+                    logFile, "-p", tempDir, "-o", outDir, "--report-only", "-a", "-y"
+                });
+
+                Assert(reportOnlyExit == 0, $"Expected --report-only to return exit code 0, got {reportOnlyExit}");
+                Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.md")), "Expected diagnostic-report.md to be written");
+                Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.json")), "Expected diagnostic-report.json to be written");
+                Assert(File.Exists(Path.Combine(outDir, "Greeter.patch")), "Expected Greeter.patch to be written");
+                Assert(File.ReadAllText(classFile) == originalClass, "--report-only must not modify source files even if -a is passed");
+
+                // Without --report-only, exit code must remain 1
+                string outDir2 = Path.Combine(tempDir, "out2");
+                int defaultExit = MSBuildDiagnosticPatcher.Program.Main(new[]
+                {
+                    logFile, "-p", tempDir, "-o", outDir2
+                });
+                Assert(defaultExit == 1, $"Expected exit code 1 without --report-only, got {defaultExit}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_LauncherScripts_PreferPrebuiltDllBeforeDotnetRunFallback()
+        {
+            string shPath = FindLauncherScriptPath();
+            string shContent = File.ReadAllText(shPath);
+            int shDllIdx = shContent.IndexOf("MSBuildDiagnosticPatcher/bin/Debug/net8.0/MSBuildDiagnosticPatcher.dll", StringComparison.Ordinal);
+            int shRunIdx = shContent.IndexOf("dotnet run --project", StringComparison.Ordinal);
+            Assert(shDllIdx != -1 && shRunIdx != -1 && shDllIdx < shRunIdx,
+                "bin/msbuild-patcher must check for prebuilt MSBuildDiagnosticPatcher.dll before falling back to dotnet run");
+            Assert(shContent.Contains("-p:UseSharedCompilation=false"),
+                "bin/msbuild-patcher fallback must pass -p:UseSharedCompilation=false");
+
+            string cmdPath = FindLauncherCmdPath();
+            string cmdContent = File.ReadAllText(cmdPath);
+            int cmdDllIdx = cmdContent.IndexOf(@"MSBuildDiagnosticPatcher\bin\Debug\net8.0\MSBuildDiagnosticPatcher.dll", StringComparison.OrdinalIgnoreCase);
+            int cmdRunIdx = cmdContent.IndexOf("dotnet run --project", StringComparison.OrdinalIgnoreCase);
+            Assert(cmdDllIdx != -1 && cmdRunIdx != -1 && cmdDllIdx < cmdRunIdx,
+                "bin/msbuild-patcher.cmd must check for prebuilt MSBuildDiagnosticPatcher.dll before falling back to dotnet run");
+            Assert(cmdContent.Contains("-p:UseSharedCompilation=false"),
+                "bin/msbuild-patcher.cmd fallback must pass -p:UseSharedCompilation=false");
+
+            if (!OperatingSystem.IsWindows())
+            {
+                string tempDir = Path.Combine(Path.GetTempPath(), $"launcher_exec_{Guid.NewGuid():N}");
+                Directory.CreateDirectory(tempDir);
+                try
+                {
+                    string logFile = Path.Combine(tempDir, "sample.log");
+                    File.WriteAllText(logFile, "MSBUILD : error MSB1003: Sample error\n");
+                    string outDir = Path.Combine(tempDir, "diag");
+
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "/usr/bin/env",
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        UseShellExecute = false
+                    };
+                    psi.ArgumentList.Add("bash");
+                    psi.ArgumentList.Add(shPath);
+                    psi.ArgumentList.Add(logFile);
+                    psi.ArgumentList.Add("--report-only");
+                    psi.ArgumentList.Add("-o");
+                    psi.ArgumentList.Add(outDir);
+
+                    using var proc = Process.Start(psi)!;
+                    proc.WaitForExit();
+                    Assert(proc.ExitCode == 0, $"Expected bin/msbuild-patcher --report-only to exit 0, got {proc.ExitCode}");
+                    Assert(File.Exists(Path.Combine(outDir, "diagnostic-report.md")), "Expected launcher to generate diagnostic-report.md");
+                }
+                finally
+                {
+                    if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+                }
+            }
+        }
+
+        static void Test_Workflow_PostMergeBuildVerification_SingleJobContinueOnErrorGateAndFallbackSummary()
+        {
+            string workflowPath = FindWorkflowPath();
+            string content = File.ReadAllText(workflowPath);
+
+            // Requirement 1: Restore and build MSBuildDiagnosticPatcher before any other project
+            int restorePatcherIdx = content.IndexOf("dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj", StringComparison.Ordinal);
+            int buildPatcherIdx = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj", StringComparison.Ordinal);
+            int restoreCmIdx = content.IndexOf("dotnet restore CollationModifier/CollationModifier.csproj", StringComparison.Ordinal);
+            int restoreCmTestsIdx = content.IndexOf("dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj", StringComparison.Ordinal);
+            int restorePatcherTestsIdx = content.IndexOf("dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj", StringComparison.Ordinal);
+            int buildCmIdx = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj", StringComparison.Ordinal);
+
+            Assert(restorePatcherIdx != -1 && buildPatcherIdx != -1 && restorePatcherIdx < buildPatcherIdx,
+                "Workflow must restore MSBuildDiagnosticPatcher before building it");
+            Assert(buildPatcherIdx < restoreCmIdx && buildPatcherIdx < restoreCmTestsIdx && buildPatcherIdx < restorePatcherTestsIdx && buildPatcherIdx < buildCmIdx,
+                "Workflow must restore and build MSBuildDiagnosticPatcher before restoring or building any other project");
+
+            // Requirement 2: Explicit builds for all four projects with -p:UseSharedCompilation=false and continue-on-error: true
+            Assert(content.Contains("dotnet build CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must explicitly build CollationModifier.Tests with -p:UseSharedCompilation=false");
+            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must explicitly build MSBuildDiagnosticPatcher.Tests with -p:UseSharedCompilation=false");
+
+            int continueOnErrorCount = content.Split(new[] { "continue-on-error: true" }, StringSplitOptions.None).Length - 1;
+            Assert(continueOnErrorCount >= 10,
+                $"Expected continue-on-error: true on all 10 restore/build/test steps, found {continueOnErrorCount}");
+
+            // Requirement 3: Run console test suites with --no-build when build succeeds
+            Assert(content.Contains("dotnet run --no-build --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must run CollationModifier.Tests with --no-build");
+            Assert(content.Contains("dotnet run --no-build --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must run MSBuildDiagnosticPatcher.Tests with --no-build");
+
+            // Requirement 4: Verification gate step exits 1 before if: failure() steps
+            int gateIdx = content.IndexOf("exit 1", StringComparison.Ordinal);
+            int firstFailureStepIdx = content.IndexOf("if: failure()", StringComparison.Ordinal);
+            Assert(gateIdx != -1 && firstFailureStepIdx != -1 && gateIdx < firstFailureStepIdx,
+                "Verification gate exiting 1 must appear before if: failure() steps");
+
+            // Requirement 6: --report-only passed to bin/msbuild-patcher
+            Assert(content.Contains("bin/msbuild-patcher /tmp/build-and-test.log --report-only"),
+                "Diagnostic step must pass --report-only to bin/msbuild-patcher /tmp/build-and-test.log");
+
+            // Requirement 8: Fallback else branch populating $GITHUB_STEP_SUMMARY from /tmp/build-and-test.log when diagnostic-report.md is missing
+            int summaryStepIdx = content.IndexOf("Append diagnostic report to step summary", StringComparison.Ordinal);
+            int uploadStepIdx = content.IndexOf("Upload diagnostic reports and logs", StringComparison.Ordinal);
+            Assert(summaryStepIdx != -1 && uploadStepIdx > summaryStepIdx, "Expected summary and upload steps");
+            string summaryStepBlock = content.Substring(summaryStepIdx, uploadStepIdx - summaryStepIdx);
+            Assert(summaryStepBlock.Contains("else"), "Step summary step must include an else fallback branch");
+            Assert(summaryStepBlock.Contains("/tmp/build-and-test.log"), "Fallback summary branch must read error lines from /tmp/build-and-test.log");
         }
     }
 }

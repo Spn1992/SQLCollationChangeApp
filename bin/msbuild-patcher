@@ -3,9 +3,25 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEBUG_DLL="$REPO_ROOT/MSBuildDiagnosticPatcher/bin/Debug/net8.0/MSBuildDiagnosticPatcher.dll"
+RELEASE_DLL="$REPO_ROOT/MSBuildDiagnosticPatcher/bin/Release/net8.0/MSBuildDiagnosticPatcher.dll"
 
-if [ "$#" -eq 0 ]; then
-  dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false --
+if [ -f "$DEBUG_DLL" ]; then
+  if [ "$#" -eq 0 ]; then
+    exec dotnet "$DEBUG_DLL"
+  else
+    exec dotnet "$DEBUG_DLL" --project-root "$REPO_ROOT" "$@"
+  fi
+elif [ -f "$RELEASE_DLL" ]; then
+  if [ "$#" -eq 0 ]; then
+    exec dotnet "$RELEASE_DLL"
+  else
+    exec dotnet "$RELEASE_DLL" --project-root "$REPO_ROOT" "$@"
+  fi
 else
-  dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false -- --project-root "$REPO_ROOT" "$@"
+  if [ "$#" -eq 0 ]; then
+    exec dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false --
+  else
+    exec dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false -- --project-root "$REPO_ROOT" "$@"
+  fi
 fi

@@ -32,36 +32,103 @@ jobs:
             8.0.x
             10.0.x
 
-      - name: Restore solution dependencies
-        run: dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log
-
-      - name: Build solution
-        run: dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
       - name: Restore MSBuildDiagnosticPatcher dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Restore MSBuildDiagnosticPatcher.Tests dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
+        id: restore_patcher
+        continue-on-error: true
+        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj 2>&1 | tee /tmp/build-and-test.log
 
       - name: Build MSBuildDiagnosticPatcher
+        id: build_patcher
+        if: steps.restore_patcher.outcome == 'success'
+        continue-on-error: true
         run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
+      - name: Restore CollationModifier dependencies
+        id: restore_collation_modifier
+        continue-on-error: true
+        run: dotnet restore CollationModifier/CollationModifier.csproj 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Restore CollationModifier.Tests dependencies
+        id: restore_collation_modifier_tests
+        continue-on-error: true
+        run: dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Restore MSBuildDiagnosticPatcher.Tests dependencies
+        id: restore_patcher_tests
+        continue-on-error: true
+        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
+
       - name: Build CollationModifier
+        id: build_collation_modifier
+        if: steps.restore_collation_modifier.outcome == 'success'
+        continue-on-error: true
         run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Verify CollationModifier net8.0-windows build
+        id: build_collation_modifier_windows
+        if: steps.restore_collation_modifier.outcome == 'success'
+        continue-on-error: true
         run: dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
+      - name: Build CollationModifier.Tests
+        id: build_collation_modifier_tests
+        if: steps.restore_collation_modifier_tests.outcome == 'success' && steps.build_collation_modifier.outcome == 'success'
+        continue-on-error: true
+        run: dotnet build CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Build MSBuildDiagnosticPatcher.Tests
+        id: build_patcher_tests
+        if: steps.restore_patcher_tests.outcome == 'success' && steps.build_patcher.outcome == 'success'
+        continue-on-error: true
+        run: dotnet build MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
       - name: Run unit tests
-        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+        id: test_collation_modifier
+        if: steps.build_collation_modifier_tests.outcome == 'success'
+        continue-on-error: true
+        run: dotnet run --no-build --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Run MSBuildDiagnosticPatcher unit tests
-        run: dotnet run --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+        id: test_patcher
+        if: steps.build_patcher_tests.outcome == 'success'
+        continue-on-error: true
+        run: dotnet run --no-build --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+
+      - name: Verify build and test outcomes
+        run: |
+          failed=0
+          for step_status in \
+            "Restore MSBuildDiagnosticPatcher dependencies:${{ steps.restore_patcher.outcome }}" \
+            "Build MSBuildDiagnosticPatcher:${{ steps.build_patcher.outcome }}" \
+            "Restore CollationModifier dependencies:${{ steps.restore_collation_modifier.outcome }}" \
+            "Restore CollationModifier.Tests dependencies:${{ steps.restore_collation_modifier_tests.outcome }}" \
+            "Restore MSBuildDiagnosticPatcher.Tests dependencies:${{ steps.restore_patcher_tests.outcome }}" \
+            "Build CollationModifier:${{ steps.build_collation_modifier.outcome }}" \
+            "Verify CollationModifier net8.0-windows build:${{ steps.build_collation_modifier_windows.outcome }}" \
+            "Build CollationModifier.Tests:${{ steps.build_collation_modifier_tests.outcome }}" \
+            "Build MSBuildDiagnosticPatcher.Tests:${{ steps.build_patcher_tests.outcome }}" \
+            "Run unit tests:${{ steps.test_collation_modifier.outcome }}" \
+            "Run MSBuildDiagnosticPatcher unit tests:${{ steps.test_patcher.outcome }}"; do
+            step_name="${step_status%:*}"
+            outcome="${step_status##*:}"
+            echo "${step_name}: ${outcome}"
+            if [ "$outcome" != "success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more restore, build, or test steps failed."
+            exit 1
+          fi
 
       - name: Generate diagnostics and candidate patches
         if: failure()
-        run: bin/msbuild-patcher /tmp/build-and-test.log
+        run: |
+          if [ "${{ steps.build_patcher.outcome }}" = "success" ]; then
+            bin/msbuild-patcher /tmp/build-and-test.log --report-only
+          else
+            echo "Skipping diagnostic patcher execution because MSBuildDiagnosticPatcher did not build."
+          fi
 
       - name: Append diagnostic report to step summary
         if: failure()
@@ -78,6 +145,28 @@ jobs:
             else
               head -c "$max_size" "build-diagnostics/diagnostic-report.md" >> "$GITHUB_STEP_SUMMARY"
             fi
+          else
+            {
+              echo "# Build & Test Failure Summary (Fallback)"
+              echo ""
+              echo "Diagnostic report \`build-diagnostics/diagnostic-report.md\` was not generated."
+              echo ""
+              if [ -f "/tmp/build-and-test.log" ]; then
+                echo "## Error Lines from \`/tmp/build-and-test.log\`"
+                echo ""
+                echo '```text'
+                if grep -iqE '(:[[:space:]]*(fatal[[:space:]]+)?error([[:space:]]|:)|\[FAIL\]|^FAIL:|^Failed[[:space:]]+)' /tmp/build-and-test.log; then
+                  grep -iE '(:[[:space:]]*(fatal[[:space:]]+)?error([[:space:]]|:)|\[FAIL\]|^FAIL:|^Failed[[:space:]]+)' /tmp/build-and-test.log | head -c 524288
+                  echo ""
+                else
+                  tail -n 100 /tmp/build-and-test.log | head -c 524288
+                  echo ""
+                fi
+                echo '```'
+              else
+                echo "Log file \`/tmp/build-and-test.log\` was not found."
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload diagnostic reports and logs

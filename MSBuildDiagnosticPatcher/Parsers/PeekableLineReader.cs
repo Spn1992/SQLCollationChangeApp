@@ -10,9 +10,9 @@ namespace MSBuildDiagnosticPatcher.Parsers
         private readonly TextReader _reader;
         private readonly MSBuildLogParser? _msbuildParser;
         private readonly List<CompilerDiagnostic>? _diagnostics;
-        private bool _hasPeeked;
-        private string _peekRaw;
-        private string _peekClean;
+        private readonly HashSet<(string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath)>? _seenDiagnosticKeys;
+        private List<(string Raw, string Clean)>? _lookahead;
+        private int _lookaheadStart;
 
         public PeekableLineReader(
             TextReader reader,
@@ -22,20 +22,23 @@ namespace MSBuildDiagnosticPatcher.Parsers
             _reader = reader;
             _msbuildParser = msbuildParser;
             _diagnostics = diagnostics;
-            _hasPeeked = false;
-            _peekRaw = string.Empty;
-            _peekClean = string.Empty;
+            _seenDiagnosticKeys = msbuildParser != null && diagnostics != null
+                ? new HashSet<(string, int, int, DiagnosticSeverity, string, string, string)>()
+                : null;
+            _lookahead = null;
+            _lookaheadStart = 0;
         }
 
         public bool TryRead(out string rawLine, out string cleanLine)
         {
-            if (_hasPeeked)
+            if (_lookahead != null && _lookaheadStart < _lookahead.Count)
             {
-                rawLine = _peekRaw;
-                cleanLine = _peekClean;
-                _hasPeeked = false;
-                _peekRaw = string.Empty;
-                _peekClean = string.Empty;
+                (rawLine, cleanLine) = _lookahead[_lookaheadStart++];
+                if (_lookaheadStart >= _lookahead.Count)
+                {
+                    _lookahead.Clear();
+                    _lookaheadStart = 0;
+                }
                 return true;
             }
 
@@ -44,28 +47,50 @@ namespace MSBuildDiagnosticPatcher.Parsers
 
         public bool TryPeek(out string rawLine, out string cleanLine)
         {
-            if (!_hasPeeked)
+            return TryPeekAt(0, out rawLine, out cleanLine);
+        }
+
+        public bool TryPeekAt(int offset, out string rawLine, out string cleanLine)
+        {
+            if (offset < 0)
             {
-                if (!ReadNextFromUnderlying(out _peekRaw, out _peekClean))
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
+
+            _lookahead ??= new List<(string Raw, string Clean)>();
+            while (_lookahead.Count - _lookaheadStart <= offset)
+            {
+                if (!ReadNextFromUnderlying(out string nextRaw, out string nextClean))
                 {
                     rawLine = string.Empty;
                     cleanLine = string.Empty;
                     return false;
                 }
 
-                _hasPeeked = true;
+                _lookahead.Add((nextRaw, nextClean));
             }
 
-            rawLine = _peekRaw;
-            cleanLine = _peekClean;
+            (rawLine, cleanLine) = _lookahead[_lookaheadStart + offset];
             return true;
         }
 
-        public void ConsumePeeked()
+        public void ConsumePeeked(int count = 1)
         {
-            _hasPeeked = false;
-            _peekRaw = string.Empty;
-            _peekClean = string.Empty;
+            if (_lookahead == null || count <= 0)
+            {
+                return;
+            }
+
+            int available = _lookahead.Count - _lookaheadStart;
+            if (count >= available)
+            {
+                _lookahead.Clear();
+                _lookaheadStart = 0;
+            }
+            else
+            {
+                _lookaheadStart += count;
+            }
         }
 
         private bool ReadNextFromUnderlying(out string rawLine, out string cleanLine)
@@ -84,7 +109,7 @@ namespace MSBuildDiagnosticPatcher.Parsers
             if (_msbuildParser != null && _diagnostics != null && cleanLine.Length > 0)
             {
                 var diag = _msbuildParser.ParseCleanedLine(rawLine, cleanLine);
-                if (diag != null)
+                if (diag != null && (_seenDiagnosticKeys == null || _seenDiagnosticKeys.Add(MSBuildLogParser.CreateDiagnosticKey(diag))))
                 {
                     _diagnostics.Add(diag);
                 }

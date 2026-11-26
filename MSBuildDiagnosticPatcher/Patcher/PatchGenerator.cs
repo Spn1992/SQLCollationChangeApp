@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -59,12 +58,21 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var candidates = new List<PatchCandidate>();
             bool hasExplicitProjectRoot = !string.IsNullOrWhiteSpace(projectRoot);
             string root = hasExplicitProjectRoot ? Path.GetFullPath(projectRoot!) : Directory.GetCurrentDirectory();
-            var pathComparer = OperatingSystem.IsWindows()
-                ? StringComparer.OrdinalIgnoreCase
-                : StringComparer.Ordinal;
+
+            var patchedClasses = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var usedPatchFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var affectedInterfaces = new Dictionary<string, (string SampleContextFile, string SearchRoot, List<InterfaceMemberInfo> DiagnosticMembers)>(
+                StringComparer.Ordinal);
+            var downstreamScanRoots = new HashSet<string>(
+                OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+            if (hasExplicitProjectRoot)
+            {
+                downstreamScanRoots.Add(root);
+            }
 
             // Parse and group CS0535 diagnostics by (targetFilePath, ClassName)
-            var parsedEntries = new List<(string TargetFilePath, string ClassName, string InterfaceName, string MemberName, string ExpectedParamTypes, DiagnosticSeverity Severity)>();
+            var parsedEntries = new List<(string TargetFilePath, string FileKey, string ClassName, string InterfaceName, string MemberName, string ExpectedParamTypes, DiagnosticSeverity Severity, string ProjectPath)>();
 
             foreach (var diag in diagnostics)
             {
@@ -79,35 +87,42 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                string targetFilePath = ResolveAbsoluteFilePath(diag.FilePath, root);
+                string targetFilePath = ResolveAbsoluteFilePath(diag.FilePath, root, diag.ProjectPath);
+                string fullTarget = Path.GetFullPath(targetFilePath);
+                string fileKey = OperatingSystem.IsWindows() ? fullTarget.ToUpperInvariant() : fullTarget;
+
                 parsedEntries.Add((
                     targetFilePath,
+                    fileKey,
                     parsed.Value.ClassName,
                     parsed.Value.InterfaceName,
                     parsed.Value.MemberName,
                     parsed.Value.ExpectedParamTypes,
-                    diag.Severity));
+                    diag.Severity,
+                    diag.ProjectPath));
             }
 
             var groupedByFileAndType = parsedEntries
-                .GroupBy(e => (FileKey: e.TargetFilePath.ToUpperInvariant(), e.ClassName))
+                .GroupBy(e => (e.FileKey, e.ClassName))
                 .ToList();
 
             var typeCountPerFile = groupedByFileAndType
                 .GroupBy(g => g.Key.FileKey)
                 .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
 
-            var usedPatchFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
             foreach (var group in groupedByFileAndType)
             {
-                string targetFilePath = group.First().TargetFilePath;
+                var first = group.First();
+                string targetFilePath = first.TargetFilePath;
                 string targetClassName = group.Key.ClassName;
 
                 if (!File.Exists(targetFilePath))
                 {
                     continue;
                 }
+
+                string normalizedTargetPath = Path.GetFullPath(targetFilePath);
+                patchedClasses.Add($"{normalizedTargetPath}|{targetClassName}");
 
                 var (contentWithoutBom, _, hasUtf8Bom) = ReadFileWithEncoding(targetFilePath);
                 string newline = DetectNewline(contentWithoutBom);
@@ -138,8 +153,13 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     string interfaceSearchRoot = hasExplicitProjectRoot
                         ? root
                         : FindRepoRoot(targetFilePath)
-                            ?? ResolveProjectDirectory(diag.ProjectPath, root)
+                            ?? ResolveProjectDirectory(entry.ProjectPath, root)
                             ?? root;
+
+                    if (!hasExplicitProjectRoot && !string.IsNullOrWhiteSpace(interfaceSearchRoot))
+                    {
+                        downstreamScanRoots.Add(interfaceSearchRoot);
+                    }
 
                     var member = _resolver.ResolveInterfaceMember(
                         entry.InterfaceName,
@@ -156,6 +176,13 @@ namespace MSBuildDiagnosticPatcher.Patcher
                         {
                             resolvedDiagnosticCount++;
                         }
+
+                        if (!affectedInterfaces.TryGetValue(entry.InterfaceName, out var ifaceEntry))
+                        {
+                            ifaceEntry = (targetFilePath, interfaceSearchRoot, new List<InterfaceMemberInfo>());
+                            affectedInterfaces[entry.InterfaceName] = ifaceEntry;
+                        }
+                        ifaceEntry.DiagnosticMembers.Add(member);
                     }
                 }
 
@@ -164,15 +191,28 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                var stubsBuilder = new StringBuilder();
-                var overloadCache = new Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>(StringComparer.Ordinal);
+                bool omitVirtual = ShouldOmitVirtual(contentWithoutBom, targetClassName);
+                var memberEntries = new List<PatchMemberEntry>(memberInfos.Count);
                 foreach (var member in memberInfos)
                 {
-                    string stub = GenerateMemberStub(member, originalContent, targetClassName);
-                    stubsBuilder.AppendLine(stub);
+                    string rawStub = GenerateMemberStub(member, contentWithoutBom, targetClassName).Trim('\r', '\n');
+                    string normalizedStub = NormalizeNewlines(rawStub, newline);
+                    string signature = BuildMemberSignature(member, omitVirtual);
+
+                    memberEntries.Add(new PatchMemberEntry
+                    {
+                        MemberName = member.MemberName,
+                        ReturnType = member.ReturnType,
+                        ParameterList = member.ParameterList,
+                        ParameterTypes = ExtractNormalizedParameterTypes(member.ParameterList),
+                        IsProperty = member.IsProperty,
+                        MemberSignature = signature,
+                        GeneratedCode = normalizedStub
+                    });
                 }
 
-                string stubsCode = stubsBuilder.ToString().TrimEnd();
+                string stubsCode = string.Join(newline + newline, memberEntries.Select(m => m.GeneratedCode));
+                string diffSourceContent = hasUtf8Bom ? "\uFEFF" + contentWithoutBom : contentWithoutBom;
                 string interfaceSummary = string.Join(", ", distinctInterfaces);
 
                 bool hasMultipleTypesInFile = typeCountPerFile.TryGetValue(group.Key.FileKey, out int count) && count > 1;
@@ -185,6 +225,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     targetClassName,
                     interfaceSummary,
                     root,
+                    memberEntries,
                     patchFileName);
 
                 if (patchCandidate != null)
@@ -194,7 +235,559 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
+            // Discover uncompiled downstream classes implementing affected interfaces (e.g. MockDatabaseService in tests)
+            if (affectedInterfaces.Count > 0)
+            {
+                foreach (string scanRoot in downstreamScanRoots)
+                {
+                    if (Directory.Exists(scanRoot))
+                    {
+                        DiscoverDownstreamCs0535Patches(
+                            scanRoot,
+                            affectedInterfaces,
+                            patchedClasses,
+                            usedPatchFileNames,
+                            candidates);
+                    }
+                }
+            }
+
             return candidates;
+        }
+
+        private void DiscoverDownstreamCs0535Patches(
+            string scanRoot,
+            Dictionary<string, (string SampleContextFile, string SearchRoot, List<InterfaceMemberInfo> DiagnosticMembers)> affectedInterfaces,
+            HashSet<string> patchedClasses,
+            HashSet<string> usedPatchFileNames,
+            List<PatchCandidate> candidates)
+        {
+            var interfaceMembersMap = new Dictionary<string, List<InterfaceMemberInfo>>(StringComparer.Ordinal);
+            foreach (var kvp in affectedInterfaces)
+            {
+                string interfaceName = kvp.Key;
+                var combined = new List<InterfaceMemberInfo>();
+                var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+
+                var requiredFromSource = _resolver.ResolveRequiredInterfaceMembers(
+                    interfaceName,
+                    kvp.Value.SampleContextFile,
+                    kvp.Value.SearchRoot);
+
+                foreach (var m in requiredFromSource)
+                {
+                    if (seenKeys.Add(CSharpSourceSanitizer.BuildMemberIdentityKey(m)))
+                    {
+                        combined.Add(m);
+                    }
+                }
+
+                foreach (var m in kvp.Value.DiagnosticMembers)
+                {
+                    if (seenKeys.Add(CSharpSourceSanitizer.BuildMemberIdentityKey(m)))
+                    {
+                        combined.Add(m);
+                    }
+                }
+
+                if (combined.Count > 0)
+                {
+                    interfaceMembersMap[interfaceName] = combined;
+                }
+            }
+
+            if (interfaceMembersMap.Count == 0)
+            {
+                return;
+            }
+
+            foreach (string csFile in EnumerateSourceFiles(scanRoot))
+            {
+                string normalizedPath = Path.GetFullPath(csFile);
+                string contentWithoutBom;
+                bool hasUtf8Bom;
+                try
+                {
+                    (contentWithoutBom, _, hasUtf8Bom) = ReadFileWithEncoding(csFile);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                bool mentionsAnyInterface = false;
+                foreach (string ifaceName in interfaceMembersMap.Keys)
+                {
+                    if (contentWithoutBom.Contains(ifaceName, StringComparison.Ordinal))
+                    {
+                        mentionsAnyInterface = true;
+                        break;
+                    }
+                }
+
+                if (!mentionsAnyInterface)
+                {
+                    continue;
+                }
+
+                string sanitized = CSharpSourceSanitizer.SanitizePreserveLength(contentWithoutBom);
+                var discoveredClasses = FindClassesImplementingInterfaces(contentWithoutBom, sanitized, interfaceMembersMap.Keys);
+
+                foreach (var cls in discoveredClasses)
+                {
+                    string classKey = $"{normalizedPath}|{cls.ClassName}";
+                    if (!patchedClasses.Add(classKey))
+                    {
+                        continue;
+                    }
+
+                    var (implementedMethods, implementedProperties) = ExtractImplementedClassMembers(
+                        cls.OriginalBody,
+                        cls.SanitizedBody);
+
+                    var missingMembers = new List<InterfaceMemberInfo>();
+                    var seenMissing = new HashSet<string>(StringComparer.Ordinal);
+                    string primaryInterface = cls.ImplementedInterfaces[0];
+
+                    foreach (string ifaceName in cls.ImplementedInterfaces)
+                    {
+                        if (!interfaceMembersMap.TryGetValue(ifaceName, out var reqMembers))
+                        {
+                            continue;
+                        }
+
+                        foreach (var req in reqMembers)
+                        {
+                            if (IsMemberImplemented(req, implementedMethods, implementedProperties))
+                            {
+                                continue;
+                            }
+
+                            string key = CSharpSourceSanitizer.BuildMemberIdentityKey(req);
+                            if (seenMissing.Add(key))
+                            {
+                                primaryInterface = ifaceName;
+                                missingMembers.Add(req);
+                            }
+                        }
+                    }
+
+                    if (missingMembers.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    string newline = DetectNewline(contentWithoutBom);
+                    bool omitVirtual = ShouldOmitVirtual(contentWithoutBom, cls.ClassName);
+                    var memberEntries = new List<PatchMemberEntry>(missingMembers.Count);
+
+                    foreach (var member in missingMembers)
+                    {
+                        string rawStub = GenerateMemberStub(member, contentWithoutBom, cls.ClassName).Trim('\r', '\n');
+                        string normalizedStub = NormalizeNewlines(rawStub, newline);
+                        string signature = BuildMemberSignature(member, omitVirtual);
+
+                        memberEntries.Add(new PatchMemberEntry
+                        {
+                            MemberName = member.MemberName,
+                            ReturnType = member.ReturnType,
+                            ParameterList = member.ParameterList,
+                            ParameterTypes = ExtractNormalizedParameterTypes(member.ParameterList),
+                            IsProperty = member.IsProperty,
+                            MemberSignature = signature,
+                            GeneratedCode = normalizedStub
+                        });
+                    }
+
+                    string stubsCode = string.Join(newline + newline, memberEntries.Select(m => m.GeneratedCode));
+                    string diffSourceContent = hasUtf8Bom ? "\uFEFF" + contentWithoutBom : contentWithoutBom;
+                    string patchFileName = BuildUniquePatchFileName(csFile, cls.ClassName, hasMultipleTypesInFile: false, usedPatchFileNames);
+
+                    var patchCandidate = CreatePatchForFile(
+                        csFile,
+                        diffSourceContent,
+                        stubsCode,
+                        cls.ClassName,
+                        primaryInterface,
+                        scanRoot,
+                        memberEntries,
+                        patchFileName);
+
+                    if (patchCandidate != null)
+                    {
+                        // Uncompiled downstream classes did not emit errors in the parsed log
+                        patchCandidate.ResolvedErrorCount = 0;
+                        candidates.Add(patchCandidate);
+                    }
+                }
+            }
+        }
+
+        private static IEnumerable<string> EnumerateSourceFiles(string root)
+        {
+            var excludedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ".git",
+                "bin",
+                "obj",
+                ".vs",
+                ".idea",
+                "node_modules",
+                "build-diagnostics"
+            };
+
+            var stack = new Stack<string>();
+            stack.Push(root);
+
+            while (stack.Count > 0)
+            {
+                string currentDir = stack.Pop();
+                string[] files;
+                try
+                {
+                    files = Directory.GetFiles(currentDir, "*.cs", SearchOption.TopDirectoryOnly);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                Array.Sort(files, StringComparer.OrdinalIgnoreCase);
+                foreach (string file in files)
+                {
+                    yield return file;
+                }
+
+                string[] subDirs;
+                try
+                {
+                    subDirs = Directory.GetDirectories(currentDir, "*", SearchOption.TopDirectoryOnly);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                Array.Sort(subDirs, StringComparer.OrdinalIgnoreCase);
+                for (int i = subDirs.Length - 1; i >= 0; i--)
+                {
+                    string dirName = Path.GetFileName(subDirs[i]);
+                    if (!excludedDirs.Contains(dirName))
+                    {
+                        stack.Push(subDirs[i]);
+                    }
+                }
+            }
+        }
+
+        private static List<(string ClassName, List<string> ImplementedInterfaces, string OriginalBody, string SanitizedBody)> FindClassesImplementingInterfaces(
+            string original,
+            string sanitized,
+            IEnumerable<string> targetInterfaces)
+        {
+            var targetSet = new HashSet<string>(targetInterfaces, StringComparer.Ordinal);
+            var results = new List<(string, List<string>, string, string)>();
+
+            var classMatches = Regex.Matches(sanitized, @"\bclass\s+(?<name>@?[A-Za-z_][A-Za-z0-9_]*)");
+            foreach (Match match in classMatches)
+            {
+                // Ignore generic constraints such as 'where T : class'
+                int prev = match.Index - 1;
+                while (prev >= 0 && char.IsWhiteSpace(sanitized[prev])) prev--;
+                if (prev >= 0 && sanitized[prev] == ':')
+                {
+                    continue;
+                }
+
+                string className = match.Groups["name"].Value.TrimStart('@');
+                int cursor = match.Index + match.Length;
+
+                // Skip optional generic type parameters <...>
+                while (cursor < sanitized.Length && char.IsWhiteSpace(sanitized[cursor])) cursor++;
+                if (cursor < sanitized.Length && sanitized[cursor] == '<')
+                {
+                    int angleDepth = 1;
+                    cursor++;
+                    while (cursor < sanitized.Length && angleDepth > 0)
+                    {
+                        if (sanitized[cursor] == '<') angleDepth++;
+                        else if (sanitized[cursor] == '>') angleDepth--;
+                        cursor++;
+                    }
+                }
+
+                // Skip optional C# 12 primary constructor parameter list (...)
+                while (cursor < sanitized.Length && char.IsWhiteSpace(sanitized[cursor])) cursor++;
+                if (cursor < sanitized.Length && sanitized[cursor] == '(')
+                {
+                    int closeParen = CSharpSourceSanitizer.FindMatchingParen(sanitized, cursor);
+                    if (closeParen < 0) continue;
+                    cursor = closeParen + 1;
+                }
+
+                while (cursor < sanitized.Length && char.IsWhiteSpace(sanitized[cursor])) cursor++;
+                if (cursor >= sanitized.Length || sanitized[cursor] != ':')
+                {
+                    continue;
+                }
+
+                int colonIdx = cursor;
+                // Locate opening '{' of class body (outside <...>)
+                int openBrace = -1;
+                int depthAngle = 0;
+                for (int i = colonIdx + 1; i < sanitized.Length; i++)
+                {
+                    if (sanitized[i] == '<') depthAngle++;
+                    else if (sanitized[i] == '>' && depthAngle > 0) depthAngle--;
+                    else if (sanitized[i] == '{' && depthAngle == 0)
+                    {
+                        openBrace = i;
+                        break;
+                    }
+                    else if (sanitized[i] == ';' && depthAngle == 0)
+                    {
+                        break;
+                    }
+                }
+
+                if (openBrace < 0)
+                {
+                    continue;
+                }
+
+                string baseClause = sanitized.Substring(colonIdx + 1, openBrace - colonIdx - 1);
+                var whereMatch = Regex.Match(baseClause, @"\bwhere\b");
+                if (whereMatch.Success)
+                {
+                    baseClause = baseClause.Substring(0, whereMatch.Index);
+                }
+
+                var matchedInterfaces = new List<string>();
+                foreach (string rawBaseType in SplitBaseTypes(baseClause))
+                {
+                    string cleanBase = Regex.Replace(rawBaseType.Trim(), @"\s+", "");
+                    cleanBase = cleanBase.Replace("global::", "");
+                    int lt = cleanBase.IndexOf('<');
+                    string outerPart = lt >= 0 ? cleanBase.Substring(0, lt) : cleanBase;
+                    string genericSuffix = lt >= 0 ? cleanBase.Substring(lt) : string.Empty;
+                    int lastDot = outerPart.LastIndexOf('.');
+                    if (lastDot >= 0)
+                    {
+                        outerPart = outerPart.Substring(lastDot + 1);
+                    }
+                    string unqualifiedBase = outerPart + genericSuffix;
+
+                    if (targetSet.Contains(unqualifiedBase) && !matchedInterfaces.Contains(unqualifiedBase))
+                    {
+                        matchedInterfaces.Add(unqualifiedBase);
+                    }
+                }
+
+                if (matchedInterfaces.Count == 0)
+                {
+                    continue;
+                }
+
+                int closeBrace = CSharpSourceSanitizer.FindMatchingBrace(sanitized, openBrace);
+                if (closeBrace < 0)
+                {
+                    continue;
+                }
+
+                string origBody = original.Substring(openBrace + 1, closeBrace - openBrace - 1);
+                string sanBody = sanitized.Substring(openBrace + 1, closeBrace - openBrace - 1);
+                results.Add((className, matchedInterfaces, origBody, sanBody));
+            }
+
+            return results;
+        }
+
+        private static List<string> SplitBaseTypes(string baseClause)
+        {
+            var list = new List<string>();
+            int angleDepth = 0;
+            int start = 0;
+            for (int i = 0; i < baseClause.Length; i++)
+            {
+                if (baseClause[i] == '<') angleDepth++;
+                else if (baseClause[i] == '>' && angleDepth > 0) angleDepth--;
+                else if (baseClause[i] == ',' && angleDepth == 0)
+                {
+                    list.Add(baseClause.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+            if (start < baseClause.Length)
+            {
+                list.Add(baseClause.Substring(start));
+            }
+            return list;
+        }
+
+        private static (List<(string Name, List<string> ParamTypes)> Methods, HashSet<string> Properties) ExtractImplementedClassMembers(
+            string origBody,
+            string sanBody)
+        {
+            var methods = new List<(string Name, List<string> ParamTypes)>();
+            var properties = new HashSet<string>(StringComparer.Ordinal);
+
+            var spans = CSharpSourceSanitizer.SplitTopLevelMemberSpans(sanBody, 0, sanBody.Length);
+            foreach (var (spanStart, spanEnd) in spans)
+            {
+                int declStart = CSharpSourceSanitizer.StripLeadingAttributes(sanBody, spanStart, spanEnd + 1);
+                if (declStart > spanEnd) continue;
+
+                string sanDecl = sanBody.Substring(declStart, spanEnd - declStart + 1);
+                string origDecl = origBody.Substring(declStart, spanEnd - declStart + 1);
+
+                int delimiterIdx = -1;
+                string delimiterKind = string.Empty;
+                int bracketDepth = 0;
+
+                for (int i = 0; i < sanDecl.Length; i++)
+                {
+                    char c = sanDecl[i];
+                    if (c == '[') bracketDepth++;
+                    else if (c == ']' && bracketDepth > 0) bracketDepth--;
+                    else if (bracketDepth == 0)
+                    {
+                        if (c == '(')
+                        {
+                            delimiterIdx = i;
+                            delimiterKind = "(";
+                            break;
+                        }
+                        if (c == '{')
+                        {
+                            delimiterIdx = i;
+                            delimiterKind = "{";
+                            break;
+                        }
+                        if (c == '=' && i + 1 < sanDecl.Length && sanDecl[i + 1] == '>')
+                        {
+                            delimiterIdx = i;
+                            delimiterKind = "=>";
+                            break;
+                        }
+                        if (c == '=')
+                        {
+                            delimiterIdx = i;
+                            delimiterKind = "=";
+                            break;
+                        }
+                    }
+                }
+
+                if (delimiterIdx < 0 || delimiterKind == "=")
+                {
+                    continue;
+                }
+
+                string headerSan = sanDecl.Substring(0, delimiterIdx).Trim();
+                string headerOrig = origDecl.Substring(0, delimiterIdx).Trim();
+
+                if (delimiterKind == "(")
+                {
+                    int closeParen = CSharpSourceSanitizer.FindMatchingParen(sanDecl, delimiterIdx);
+                    if (closeParen < 0) continue;
+
+                    string? mName = ExtractDeclarationMemberName(headerOrig);
+                    if (string.IsNullOrWhiteSpace(mName)) continue;
+
+                    string paramList = origDecl.Substring(delimiterIdx + 1, closeParen - delimiterIdx - 1);
+                    var paramTypes = CSharpSourceSanitizer.ExtractNormalizedParameterTypes(paramList, hasParameterNames: true);
+                    methods.Add((mName, paramTypes));
+                }
+                else if (delimiterKind == "{" || delimiterKind == "=>")
+                {
+                    if (Regex.IsMatch(headerSan, @"\b(?:class|struct|interface|enum|record|event)\b") ||
+                        Regex.IsMatch(headerSan, @"\bthis\s*\["))
+                    {
+                        continue;
+                    }
+
+                    string? pName = ExtractDeclarationMemberName(headerOrig);
+                    if (!string.IsNullOrWhiteSpace(pName))
+                    {
+                        properties.Add(pName);
+                    }
+                }
+            }
+
+            return (methods, properties);
+        }
+
+        private static string? ExtractDeclarationMemberName(string headerOrig)
+        {
+            string cleaned = headerOrig.Trim();
+
+            if (cleaned.EndsWith(">", StringComparison.Ordinal))
+            {
+                int depth = 0;
+                for (int i = cleaned.Length - 1; i >= 0; i--)
+                {
+                    if (cleaned[i] == '>') depth++;
+                    else if (cleaned[i] == '<')
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            cleaned = cleaned.Substring(0, i).TrimEnd();
+                            break;
+                        }
+                    }
+                }
+            }
+
+            var match = Regex.Match(cleaned, @"(?:[A-Za-z_][A-Za-z0-9_<>]*\.)?(?<name>@?[A-Za-z_][A-Za-z0-9_]*)\s*$");
+            if (!match.Success)
+            {
+                return null;
+            }
+
+            return match.Groups["name"].Value.TrimStart('@');
+        }
+
+        private static bool IsMemberImplemented(
+            InterfaceMemberInfo required,
+            List<(string Name, List<string> ParamTypes)> implementedMethods,
+            HashSet<string> implementedProperties)
+        {
+            if (required.IsProperty)
+            {
+                return implementedProperties.Contains(required.MemberName);
+            }
+
+            var reqTypes = CSharpSourceSanitizer.ExtractNormalizedParameterTypes(required.ParameterList, hasParameterNames: true);
+            foreach (var (name, implTypes) in implementedMethods)
+            {
+                if (!name.Equals(required.MemberName, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (reqTypes.Count != implTypes.Count)
+                {
+                    continue;
+                }
+
+                bool allMatch = true;
+                for (int i = 0; i < reqTypes.Count; i++)
+                {
+                    if (!reqTypes[i].Equals(implTypes[i], StringComparison.Ordinal))
+                    {
+                        allMatch = false;
+                        break;
+                    }
+                }
+
+                if (allMatch)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static string BuildUniquePatchFileName(
@@ -260,15 +853,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return sb.ToString().Trim('.', '_');
         }
 
-        public string GenerateMemberStub(InterfaceMemberInfo member, string classSource, string? targetClassName = null)
+        private static bool ShouldOmitVirtual(string classSource, string? targetClassName)
         {
-            return GenerateMemberStub(member, classSource, overloadCache: null);
+            if (CSharpLexer.TryFindTypeScope(classSource, targetClassName, out var scope))
+            {
+                return scope.IsSealed || scope.IsStruct;
+            }
+
+            return false;
         }
 
-        private string GenerateMemberStub(
-            InterfaceMemberInfo member,
-            string classSource,
-            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache)
+        public string GenerateMemberStub(InterfaceMemberInfo member, string classSource, string? targetClassName = null)
         {
             var sb = new StringBuilder();
 
@@ -330,6 +925,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return sb.ToString();
         }
 
+        private static string BuildMemberSignature(InterfaceMemberInfo member, bool omitVirtual = false)
+        {
+            string modifierPrefix = omitVirtual ? "public" : "public virtual";
+            if (member.IsProperty)
+            {
+                return $"{modifierPrefix} {member.ReturnType} {member.MemberName}";
+            }
+            return $"{modifierPrefix} {member.ReturnType} {member.MemberName}({member.ParameterList})";
+        }
+
         private static string? FindDelegationCall(InterfaceMemberInfo member, string strippedClassSource)
         {
             var pattern = new Regex(
@@ -338,13 +943,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var matches = pattern.Matches(strippedClassSource);
             var myParamNames = ExtractParameterNames(member.ParameterList);
 
-            if (overloads.Count == 0)
+            foreach (Match match in matches)
             {
-                return null;
-            }
+                string existingParamList = match.Groups["params"].Value.Trim();
+                var existingParams = ParseParameters(existingParamList);
 
-            var myParamNames = ExtractParameterNames(member.ParameterList);
-
+                // If existing method has strictly more parameters than the missing member
                 if (existingParams.Count > myParamNames.Count)
                 {
                     var callArgs = new List<string>();
@@ -354,6 +958,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     {
                         var (pType, pName, hasDefault, defaultValue) = existingParams[i];
 
+                        // Match by name or type with missing member's parameters
                         var matchMyParam = myParamNames.FirstOrDefault(p =>
                             p.Equals(pName, StringComparison.OrdinalIgnoreCase) ||
                             (p.EndsWith("token", StringComparison.OrdinalIgnoreCase) && pName.EndsWith("token", StringComparison.OrdinalIgnoreCase)) ||
@@ -366,6 +971,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                         }
                         else if (hasDefault)
                         {
+                            // If parameter has a default, pass default value or fallback expression
                             callArgs.Add(!string.IsNullOrWhiteSpace(defaultValue) ? defaultValue : "default");
                         }
                         else if (pType.EndsWith("?", StringComparison.Ordinal))
@@ -394,22 +1000,11 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var result = new List<string>();
             if (string.IsNullOrWhiteSpace(paramList)) return result;
 
-            var parts = CSharpLexer.SplitTopLevelCommas(paramList);
+            var parts = SplitTopLevelParameters(paramList);
             foreach (var part in parts)
             {
-                string clean = StripTopLevelDefaultValue(part, out _, out _);
-                string typePart = InterfaceDefinitionResolver.ExtractParameterType(clean);
-                if (!string.IsNullOrEmpty(typePart) && clean.Length > typePart.Length)
-                {
-                    int idx = clean.LastIndexOf(' ');
-                    if (idx >= 0 && idx + 1 < clean.Length)
-                    {
-                        result.Add(clean.Substring(idx + 1).Trim());
-                        continue;
-                    }
-                }
-
-                var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                string clean = StripTopLevelDefaultValue(part).Trim();
+                var tokens = clean.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length >= 2)
                 {
                     result.Add(tokens[tokens.Length - 1]);
@@ -423,20 +1018,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var result = new List<(string, string, bool, string)>();
             if (string.IsNullOrWhiteSpace(paramList)) return result;
 
-            var parts = CSharpLexer.SplitTopLevelCommas(paramList);
+            var parts = SplitTopLevelParameters(paramList);
             foreach (var part in parts)
             {
-                string clean = StripTopLevelDefaultValue(part, out bool hasDefault, out string defVal);
-                string extractedType = InterfaceDefinitionResolver.ExtractParameterType(clean);
-                if (!string.IsNullOrEmpty(extractedType) && clean.Length > extractedType.Length)
+                string clean = part.Trim();
+                int eqIdx = FindTopLevelEquals(clean);
+                bool hasDefault = eqIdx >= 0;
+                string defVal = string.Empty;
+                if (hasDefault)
                 {
-                    int lastSpace = clean.LastIndexOf(' ');
-                    if (lastSpace > 0 && lastSpace + 1 < clean.Length)
-                    {
-                        string name = clean.Substring(lastSpace + 1).Trim();
-                        result.Add((extractedType, name, hasDefault, defVal));
-                        continue;
-                    }
+                    defVal = clean.Substring(eqIdx + 1).Trim();
+                    clean = clean.Substring(0, eqIdx).Trim();
                 }
 
                 var tokens = clean.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
@@ -450,36 +1042,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return result;
         }
 
-        private static string StripTopLevelDefaultValue(string paramText, out bool hasDefault, out string defaultValue)
-        {
-            hasDefault = false;
-            defaultValue = string.Empty;
-
-            string masked = CSharpLexer.MaskCommentsAndLiterals(paramText);
-            int angle = 0;
-            int bracket = 0;
-            int paren = 0;
-
-            for (int i = 0; i < masked.Length; i++)
-            {
-                char c = masked[i];
-                if (c == '<') angle++;
-                else if (c == '>' && angle > 0) angle--;
-                else if (c == '[') bracket++;
-                else if (c == ']' && bracket > 0) bracket--;
-                else if (c == '(') paren++;
-                else if (c == ')' && paren > 0) paren--;
-                else if (c == '=' && angle == 0 && bracket == 0 && paren == 0)
-                {
-                    hasDefault = true;
-                    defaultValue = paramText.Substring(i + 1).Trim();
-                    return paramText.Substring(0, i).Trim();
-                }
-            }
-
-            return paramText.Trim();
-        }
-
         public PatchCandidate? CreatePatchForFile(
             string targetFilePath,
             string originalContent,
@@ -487,9 +1049,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string className,
             string interfaceName,
             string projectRoot,
+            IReadOnlyList<PatchMemberEntry>? members = null,
             string? patchFileNameOverride = null)
         {
-            int insertPos = FindClassInsertionPoint(originalContent, className);
+            string effectiveOriginal = originalContent;
+            if (!effectiveOriginal.StartsWith('\uFEFF') && HasUtf8BomOnDisk(targetFilePath))
+            {
+                effectiveOriginal = "\uFEFF" + effectiveOriginal;
+            }
+
+            // Find insertion point before class closing brace
+            int insertPos = FindClassInsertionPoint(effectiveOriginal, className);
             if (insertPos < 0)
             {
                 return null;
@@ -564,38 +1134,80 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return -1;
             }
 
-            var scanned = CSharpLexer.Scan(source);
+            string scanInput = source[0] == '\uFEFF' ? " " + source.Substring(1) : source;
+            var scanned = CSharpLexer.Scan(scanInput);
             string masked = scanned.CommentsAndLiteralsMasked;
 
             if (string.IsNullOrWhiteSpace(className))
             {
-                return masked.LastIndexOf('}');
+                int fallbackBrace = masked.LastIndexOf('}');
+                if (fallbackBrace < 0)
+                {
+                    return source.LastIndexOf('}');
+                }
+                return ResolveClosingBraceInsertionIndex(source, -1, fallbackBrace);
             }
 
             if (CSharpLexer.TryFindTypeScopeFromMasked(masked, className, out var scope))
             {
-                int openBrace = scope.OpenBraceIndex;
-                int closeBrace = scope.CloseBraceIndex;
+                return ResolveClosingBraceInsertionIndex(source, scope.OpenBraceIndex, scope.CloseBraceIndex);
+            }
 
-                int lineStart = source.LastIndexOf('\n', closeBrace);
-                if (lineStart > openBrace && IsWhitespaceOnly(source, lineStart + 1, closeBrace))
+            return -1;
+        }
+
+        internal static int FindMatchingClosingBrace(string maskedSource, int openBrace)
+        {
+            int depth = 1;
+            for (int i = openBrace + 1; i < maskedSource.Length; i++)
+            {
+                if (maskedSource[i] == '{')
                 {
-                    return lineStart;
+                    depth++;
                 }
-
-                return closeBrace;
+                else if (maskedSource[i] == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        return i;
+                    }
+                }
             }
             return -1;
         }
 
-            return -1;
+        private static int ResolveClosingBraceInsertionIndex(string source, int openBrace, int closingBrace)
+        {
+            // Scan backwards to find the line break (\r\n, \n, or \r) preceding closingBrace
+            int lineBreakPos = -1;
+            for (int i = closingBrace - 1; i >= 0; i--)
+            {
+                if (source[i] == '\n' || source[i] == '\r')
+                {
+                    lineBreakPos = i;
+                    break;
+                }
+            }
+
+            if (lineBreakPos >= 0)
+            {
+                // Advance past the line break (\n of \r\n, bare \n, or bare \r)
+                int lineStart = lineBreakPos + 1;
+                if (lineStart > openBrace && IsHorizontalWhitespaceOnly(source, lineStart, closingBrace))
+                {
+                    return lineStart;
+                }
+            }
+
+            return closingBrace;
         }
 
-        private static bool IsWhitespaceOnly(string text, int start, int endExclusive)
+        private static bool IsHorizontalWhitespaceOnly(string text, int start, int endExclusive)
         {
             for (int i = start; i < endExclusive; i++)
             {
-                if (!char.IsWhiteSpace(text[i]))
+                if (text[i] != ' ' && text[i] != '\t')
                 {
                     return false;
                 }
@@ -613,8 +1225,17 @@ namespace MSBuildDiagnosticPatcher.Patcher
             var newLines = SplitLinesWithTerminators(newText);
 
             int startCommon = 0;
-            while (startCommon < oldLines.Length && startCommon < newLines.Length &&
-                   oldLines[startCommon] == newLines[startCommon])
+            while (startCommon < oldLines.Count && startCommon < newLines.Count &&
+                   oldLines[startCommon].Equals(newLines[startCommon]))
+            {
+                startCommon++;
+            }
+
+            var sb = new StringBuilder();
+            sb.Append("--- ").Append(oldHeader).Append('\n');
+            sb.Append("+++ ").Append(newHeader).Append('\n');
+
+            if (startCommon == oldLines.Count && startCommon == newLines.Count)
             {
                 return sb.ToString();
             }
@@ -624,12 +1245,14 @@ namespace MSBuildDiagnosticPatcher.Patcher
             while (endCommonOld >= startCommon && endCommonNew >= startCommon &&
                    oldLines[endCommonOld].Equals(newLines[endCommonNew]))
             {
-                commonPrefixChars--;
+                endCommonOld--;
+                endCommonNew--;
             }
 
+            // Context lines (up to 3 lines before and after)
             int contextBefore = Math.Max(0, startCommon - 3);
-            int contextAfterOld = Math.Min(oldLines.Length, endCommonOld + 4);
-            int contextAfterNew = Math.Min(newLines.Length, endCommonNew + 4);
+            int contextAfterOld = Math.Min(oldLines.Count, endCommonOld + 4);
+            int contextAfterNew = Math.Min(newLines.Count, endCommonNew + 4);
 
             int hunkOldCount = contextAfterOld - contextBefore;
             int hunkNewCount = contextAfterNew - contextBefore;
@@ -638,17 +1261,20 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
             sb.Append($"@@ -{hunkOldStart},{hunkOldCount} +{hunkNewStart},{hunkNewCount} @@\n");
 
+            // Context lines before
             for (int i = contextBefore; i < startCommon; i++)
             {
                 AppendDiffLine(sb, ' ', oldLines[i]);
             }
 
-            if (oldRemHasMore)
+            // Removed lines
+            for (int i = startCommon; i <= endCommonOld; i++)
             {
                 AppendDiffLine(sb, '-', oldLines[i]);
             }
 
-            if (newRemHasMore)
+            // Added lines
+            for (int i = startCommon; i <= endCommonNew; i++)
             {
                 AppendDiffLine(sb, '+', newLines[i]);
             }
@@ -798,12 +1424,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
         }
 
-            for (int i = startCommon; i <= endCommonOld; i++)
+        internal static string DetectNewline(string text)
+        {
+            if (string.IsNullOrEmpty(text))
             {
                 return "\n";
             }
 
-            for (int i = startCommon; i <= endCommonNew; i++)
+            int crlfCount = 0;
+            int lfOnlyCount = 0;
+            for (int i = 0; i < text.Length; i++)
             {
                 if (text[i] == '\r')
                 {
@@ -819,8 +1449,12 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            int afterLinesCount = Math.Min(oldLines.Length - (endCommonOld + 1), 3);
-            for (int i = 0; i < afterLinesCount; i++)
+            return crlfCount > 0 && crlfCount >= lfOnlyCount ? "\r\n" : "\n";
+        }
+
+        internal static string NormalizeNewlines(string text, string newline)
+        {
+            if (string.IsNullOrEmpty(text))
             {
                 return string.Empty;
             }
@@ -867,7 +1501,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             int i = 0;
             while (i < n)
             {
-                // If we are inside an interpolated string literal (and not currently inside an { expression } hole)
                 if (interpolationStack.Count > 0 && interpolationStack.Peek().BraceDepth == 0)
                 {
                     bool isVerbatim = interpolationStack.Peek().IsVerbatim;
@@ -920,10 +1553,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                // Normal code mode (or inside an interpolation hole { ... })
                 char c = source[i];
 
-                // Track braces for active interpolation hole
                 if (interpolationStack.Count > 0 && interpolationStack.Peek().BraceDepth > 0)
                 {
                     if (c == '{')
@@ -1297,13 +1928,11 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return null;
             }
 
-            // Exclude type declarations and events
             if (Regex.IsMatch(clean, @"\b(?:class|struct|interface|record|enum|event|delegate|namespace)\b"))
             {
                 return null;
             }
 
-            // Strip trailing generic constraints: "where T : ..."
             clean = StripTrailingGenericConstraints(clean).Trim();
 
             if (clean.EndsWith(")"))
@@ -1315,7 +1944,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
 
                 string beforeParen = clean.Substring(0, openParen).Trim();
-                // Field/delegate assignment check: '=' before '(' means field initializer, not method
                 if (beforeParen.Contains('='))
                 {
                     return null;
@@ -1323,7 +1951,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
                 string rawParams = clean.Substring(openParen + 1, clean.Length - openParen - 2).Trim();
 
-                // Check for generic type parameter list on method name, e.g., Foo<T1, T2>
                 string genericAritySuffix = string.Empty;
                 if (beforeParen.EndsWith(">"))
                 {
@@ -1343,7 +1970,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     return null;
                 }
 
-                // Strip explicit interface prefix if present (e.g., IDatabaseService.BackupDatabaseAsync)
                 string simpleMemberName = ExtractUnqualifiedMemberName(rawMemberName) + genericAritySuffix;
                 var normalizedParamTypes = ExtractNormalizedParameterTypes(rawParams);
 
@@ -1351,10 +1977,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
             else
             {
-                // Property header (no parentheses, no '=' field assignment)
                 if (clean.Contains('=') || clean.Contains('['))
                 {
-                    // Allow array return types like byte[] Prop, reject indexers this[...]
                     if (Regex.IsMatch(clean, @"\bthis\s*\["))
                     {
                         return null;
@@ -1384,12 +2008,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return (string.Empty, string.Empty);
             }
 
-            // Read trailing qualified identifier (e.g. "Greet" or "IDatabaseService.Greet")
             int end = trimmed.Length;
             int pos = end - 1;
             while (pos >= 0 && (char.IsLetterOrDigit(trimmed[pos]) || trimmed[pos] == '_' || trimmed[pos] == '.' || trimmed[pos] == '<' || trimmed[pos] == '>' || trimmed[pos] == ',' || trimmed[pos] == ' '))
             {
-                // Only continue across '.' if part of explicit interface name; stop at whitespace before identifier
                 if (trimmed[pos] == ' ' || trimmed[pos] == '>' || trimmed[pos] == '<' || trimmed[pos] == ',')
                 {
                     break;
@@ -1397,7 +2019,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 pos--;
             }
 
-            // If explicit interface name had generic args (e.g. IRepo<int>.Get), step over IRepo<int>.
             while (pos >= 0 && trimmed[pos] == '>' && pos + 1 < trimmed.Length && trimmed[pos + 1] == '.')
             {
                 int openAngle = FindMatchingOpenAngle(trimmed, pos);
@@ -1418,7 +2039,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string memberName = trimmed.Substring(nameStart).Trim();
             string prefix = trimmed.Substring(0, nameStart).Trim();
 
-            // Strip leading modifiers from prefix to verify a real return type exists (excludes constructors)
             string returnType = StripLeadingModifiers(prefix);
             if (string.IsNullOrWhiteSpace(returnType))
             {
@@ -1497,7 +2117,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         private static string StripTrailingGenericConstraints(string header)
         {
-            // Match " where Identifier :" after ')'
             int closeParen = header.LastIndexOf(')');
             if (closeParen < 0 || closeParen + 1 >= header.Length)
             {
@@ -1581,7 +2200,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     continue;
                 }
 
-                // Handle parameter modifiers
                 bool isByRef = false;
                 while (true)
                 {
@@ -1639,8 +2257,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return string.Empty;
             }
 
-            // If parameter ends with an identifier preceded by a valid type (e.g. "string name", "List<int> items", "IProgress<int>? p"),
-            // strip the trailing parameter name; otherwise (e.g. "string", "List<int>", "string?"), the entire token is the type.
             int end = s.Length - 1;
             if (char.IsLetterOrDigit(s[end]) || s[end] == '_')
             {
@@ -1651,7 +2267,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
 
                 string beforeId = s.Substring(0, idStart + 1).Trim();
-                if (!string.IsNullOrEmpty(beforeId) && ! beforeId.EndsWith(".", StringComparison.Ordinal) && !beforeId.EndsWith("::", StringComparison.Ordinal))
+                if (!string.IsNullOrEmpty(beforeId) && !beforeId.EndsWith(".", StringComparison.Ordinal) && !beforeId.EndsWith("::", StringComparison.Ordinal))
                 {
                     return beforeId;
                 }
@@ -1673,7 +2289,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 t = t.Substring(8).TrimStart();
             }
 
-            // Handle array rank suffixes like [], [,]
             if (t.EndsWith("?", StringComparison.Ordinal))
             {
                 string withoutQ = t.Substring(0, t.Length - 1).TrimEnd();
@@ -1692,7 +2307,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 }
             }
 
-            // Handle tuple types (T1 Name1, T2 Name2) -> (NormT1,NormT2)
             if (t.StartsWith("(", StringComparison.Ordinal) && t.EndsWith(")", StringComparison.Ordinal) &&
                 FindMatchingOpenParen(t, t.Length - 1) == 0)
             {
@@ -1702,7 +2316,6 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return "(" + string.Join(",", elems) + ")";
             }
 
-            // Handle generic types Outer<Arg1, Arg2>
             if (t.EndsWith(">", StringComparison.Ordinal))
             {
                 int openAngle = FindMatchingOpenAngle(t, t.Length - 1);
@@ -1875,158 +2488,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return trimmedEnd.Substring(lineStart);
         }
 
-        private static string ResolveAbsoluteFilePath(string path, string root)
-        {
-            int idx = span.Slice(0, end).LastIndexOfAny('\r', '\n');
-            if (idx < 0)
-            {
-                slice = new LineSlice(0, end);
-                ReadOnlySpan<char> line = span.Slice(0, end);
-                end = 0;
-                hasMore = false;
-                return line;
-            }
-            else
-            {
-                int lineStart = idx + 1;
-                int len = end - lineStart;
-                slice = new LineSlice(lineStart, len);
-                ReadOnlySpan<char> line = span.Slice(lineStart, len);
-                if (span[idx] == '\n' && idx > 0 && span[idx - 1] == '\r')
-                {
-                    end = idx - 1;
-                }
-                else
-                {
-                    end = idx;
-                }
-
-                return line;
-            }
-        }
-
-        private static int FindWindowStart(ReadOnlySpan<char> content, int pos, int maxBreaks)
-        {
-            int end = pos;
-            for (int b = 0; b < maxBreaks; b++)
-            {
-                if (end <= 0)
-                {
-                    return 0;
-                }
-
-                int idx = content.Slice(0, end).LastIndexOfAny('\r', '\n');
-                if (idx < 0)
-                {
-                    return 0;
-                }
-
-                if (b == maxBreaks - 1)
-                {
-                    return idx + 1;
-                }
-
-                if (content[idx] == '\n' && idx > 0 && content[idx - 1] == '\r')
-                {
-                    end = idx - 1;
-                }
-                else
-                {
-                    end = idx;
-                }
-            }
-
-            return 0;
-        }
-
-        private static int FindWindowEnd(ReadOnlySpan<char> content, int startPos, int maxBreaks)
-        {
-            int pos = startPos;
-            for (int b = 0; b < maxBreaks; b++)
-            {
-                if (pos >= content.Length)
-                {
-                    return content.Length;
-                }
-
-                int idx = content.Slice(pos).IndexOfAny('\r', '\n');
-                if (idx < 0)
-                {
-                    return content.Length;
-                }
-
-                int breakStart = pos + idx;
-                if (b == maxBreaks - 1)
-                {
-                    return breakStart;
-                }
-
-                pos = breakStart + 1;
-                if (content[breakStart] == '\r' && pos < content.Length && content[pos] == '\n')
-                {
-                    pos++;
-                }
-            }
-
-            return content.Length;
-        }
-
-        private static int CountLineBreaks(ReadOnlySpan<char> span)
-        {
-            int count = 0;
-            int pos = 0;
-            while (pos < span.Length)
-            {
-                int idx = span.Slice(pos).IndexOfAny('\r', '\n');
-                if (idx < 0)
-                {
-                    break;
-                }
-
-                pos += idx + 1;
-                if (span[pos - 1] == '\r' && pos < span.Length && span[pos] == '\n')
-                {
-                    pos++;
-                }
-
-                count++;
-            }
-
-            return count;
-        }
-
-        private static int CommonSuffixLength(ReadOnlySpan<char> a, ReadOnlySpan<char> b)
-        {
-            int max = Math.Min(a.Length, b.Length);
-            int matched = 0;
-
-            while (matched + 256 <= max &&
-                   a.Slice(a.Length - matched - 256, 256).SequenceEqual(b.Slice(b.Length - matched - 256, 256)))
-            {
-                matched += 256;
-            }
-
-            while (matched + 16 <= max &&
-                   a.Slice(a.Length - matched - 16, 16).SequenceEqual(b.Slice(b.Length - matched - 16, 16)))
-            {
-                matched += 16;
-            }
-
-            while (matched < max && a[a.Length - 1 - matched] == b[b.Length - 1 - matched])
-            {
-                matched++;
-            }
-
-            return matched;
-        }
-
         private static string ResolveAbsoluteFilePath(string path, string root, string? projectPath = null)
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return string.Empty;
-            }
-
             if (Path.IsPathRooted(path))
             {
                 return path;
