@@ -444,6 +444,8 @@ namespace CollationModifier.Services
 
         public virtual async Task<PreflightReport> PreflightCheckAsync(string databaseName, string backupDirectory = "", string targetCollation = "", CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var report = new PreflightReport
             {
                 DatabaseName = databaseName
@@ -693,18 +695,19 @@ namespace CollationModifier.Services
                     }
                 }
             }
-            catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
-            {
-                _logger.LogInfo($"Preflight check cancelled for {databaseName}");
-                throw new OperationCanceledException($"Preflight check cancelled for {databaseName}", ex, cancellationToken);
-            }
             catch (OperationCanceledException)
             {
-                _logger.LogInfo($"Preflight check cancelled for {databaseName}");
+                _logger.LogInfo($"Preflight check for {databaseName} was cancelled.");
                 throw;
             }
             catch (Exception ex)
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    _logger.LogInfo($"Preflight check for {databaseName} was cancelled.");
+                    throw new OperationCanceledException(cancellationToken);
+                }
+
                 _logger.LogError($"Preflight check failed for {databaseName}", ex);
                 report.ValidationErrors.Add($"Database connection or pre-flight query error: {ex.Message}");
             }

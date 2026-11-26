@@ -36,7 +36,7 @@ namespace CollationModifier.ViewModels
             SelectedAuthenticationType = AuthenticationTypes[0];
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
-            RefreshDatabasesCommand = new RelayCommand(async _ => await RefreshDatabasesAsync(), _ => IsConnected && !IsBusy);
+            RunPreflightCheckCommand = new RelayCommand(async _ => await RunPreflightCheckAsync(), _ => CanRunPreflightCheck());
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy && !IsCancelling);
             OpenLogCommand = new RelayCommand(_ => OpenLogFile());
@@ -245,6 +245,7 @@ namespace CollationModifier.ViewModels
                 bool previous = _isConnected;
                 if (SetProperty(ref _isConnected, value))
                 {
+                    ClearPreflightReport();
                     OnPropertyChanged(nameof(ConnectButtonText));
                     OnPropertyChanged(nameof(CanEditConnectionParameters));
                     OnPropertyChanged(nameof(CanEditSqlCredentials));
@@ -282,7 +283,7 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _selectedDatabase, value))
                 {
-                    ClearErrorDiagnosticsIfPresent();
+                    ClearPreflightReport();
                     OnPropertyChanged(nameof(HasSelectedDatabase));
                     OnPropertyChanged(nameof(MetadataEmptyStateText));
                     InvalidateRequerySuggested();
@@ -317,7 +318,7 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _targetCollation, value))
                 {
-                    ClearErrorDiagnosticsIfPresent();
+                    ClearPreflightReport();
                     InvalidateRequerySuggested();
                 }
             }
@@ -332,9 +333,34 @@ namespace CollationModifier.ViewModels
             {
                 if (SetProperty(ref _backupDirectory, value))
                 {
-                    ClearErrorDiagnosticsIfPresent();
+                    ClearPreflightReport();
                 }
             }
+        }
+
+        private PreflightReport? _currentPreflightReport;
+        public PreflightReport? CurrentPreflightReport
+        {
+            get => _currentPreflightReport;
+            set
+            {
+                if (SetProperty(ref _currentPreflightReport, value))
+                {
+                    OnPropertyChanged(nameof(HasPreflightReport));
+                    OnPropertyChanged(nameof(PreflightStatusText));
+                }
+            }
+        }
+
+        public bool HasPreflightReport => CurrentPreflightReport != null;
+
+        public string PreflightStatusText => CurrentPreflightReport == null
+            ? string.Empty
+            : CurrentPreflightReport.StatusBadgeText;
+
+        private void ClearPreflightReport()
+        {
+            CurrentPreflightReport = null;
         }
 
         #endregion
@@ -360,7 +386,7 @@ namespace CollationModifier.ViewModels
         #region Commands
 
         public ICommand ConnectCommand { get; }
-        public ICommand RefreshDatabasesCommand { get; }
+        public ICommand RunPreflightCheckCommand { get; }
         public ICommand ProcessCommand { get; }
         public ICommand CancelCommand { get; }
         public ICommand OpenLogCommand { get; }
@@ -653,6 +679,11 @@ namespace CollationModifier.ViewModels
 #endif
         }
 
+        private bool CanRunPreflightCheck()
+        {
+            return IsConnected && !IsBusy && SelectedDatabase != null;
+        }
+
         private bool CanProcessCollationChange()
         {
             if (!IsConnected || IsBusy || SelectedDatabase == null || string.IsNullOrWhiteSpace(TargetCollation))
@@ -669,20 +700,66 @@ namespace CollationModifier.ViewModels
             return true;
         }
 
-        public async Task ProcessCollationChangeAsync()
+        public async Task RunPreflightCheckAsync()
         {
             if (SelectedDatabase == null) return;
 
-            bool confirmed = ConfirmCollationChangeHandler != null
-                ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
-                : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
+            IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
 
-            if (!confirmed)
+            string dbName = SelectedDatabase.Name;
+            _logger.LogInfo($"Running standalone pre-flight check for database: {dbName}");
+            StatusMessage = $"Running pre-flight checks for '{dbName}'...";
+            ProgressPercent = 0;
+            IsIndeterminateProgress = true;
+
+            try
             {
-                _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
-                StatusMessage = "Collation change operation cancelled.";
-                return;
+                token.ThrowIfCancellationRequested();
+                ClearPreflightReport();
+
+                var report = await _databaseService.PreflightCheckAsync(dbName, BackupDirectory, TargetCollation, token);
+                token.ThrowIfCancellationRequested();
+
+                CurrentPreflightReport = report;
+                if (report.HasBlockingConditions)
+                {
+                    var summary = ErrorFormattingHelper.GetDetailedErrorText(new PreflightValidationException(report));
+                    _logger.LogWarning($"Pre-flight check found blocking conditions for {dbName}:\n{summary}");
+                    SetStatus($"Pre-flight check blocked for '{dbName}': Blocking conditions found.", summary, summary);
+                }
+                else
+                {
+                    _logger.LogInfo($"Pre-flight check passed for {dbName}.");
+                    SetStatus($"Pre-flight check passed for '{dbName}'. Ready for collation change.");
+                }
             }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Pre-flight check was cancelled by user.");
+                SetStatus("Operation cancelled by user.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Pre-flight check failed for {dbName}.", ex);
+                string summary = ErrorFormattingHelper.GetSafeErrorMessage(ex);
+                string detailed = ErrorFormattingHelper.GetDetailedErrorText(ex);
+                SetStatus($"Pre-flight check error: {summary}", $"Pre-flight check error: {summary}", detailed);
+            }
+            finally
+            {
+                _cts?.Dispose();
+                _cts = null;
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
+                IsBusy = false;
+            }
+        }
+
+        public async Task ProcessCollationChangeAsync()
+        {
+            if (SelectedDatabase == null) return;
 
             IsCancelling = false;
             IsBusy = true;
@@ -691,7 +768,7 @@ namespace CollationModifier.ViewModels
 
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
-            bool alterPhaseStarted = false;
+            bool enteredDestructivePhase = false;
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
@@ -701,8 +778,11 @@ namespace CollationModifier.ViewModels
             {
                 token.ThrowIfCancellationRequested();
 
-                // 1. Pre-flight (validates collation against server catalog & user permissions)
+                // 1. Pre-flight (validates collation against server catalog & user permissions before SINGLE_USER confirmation)
+                StatusMessage = "Running pre-flight checks...";
+                ClearPreflightReport();
                 var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
+                CurrentPreflightReport = preflightReport;
                 if (preflightReport.HasBlockingConditions)
                 {
                     var summary = preflightReport.GetDiagnosticSummary();
@@ -712,11 +792,23 @@ namespace CollationModifier.ViewModels
 
                 token.ThrowIfCancellationRequested();
 
-                // 2. Automated Backup
-                if (!IsCancelling && !token.IsCancellationRequested)
+                // 2. Confirm SINGLE_USER transition only after pre-flight checks pass
+                bool confirmed = ConfirmCollationChangeHandler != null
+                    ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
+                    : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
+
+                if (!confirmed)
                 {
-                    StatusMessage = "Starting automated backup...";
+                    _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
+                    StatusMessage = "Collation change operation cancelled.";
+                    return;
                 }
+
+                token.ThrowIfCancellationRequested();
+                enteredDestructivePhase = true;
+
+                // 3. Automated Backup
+                StatusMessage = "Starting automated backup...";
                 var backupProgress = new Progress<int>(percent =>
                 {
                     if (IsCancelling || token.IsCancellationRequested)
@@ -757,7 +849,8 @@ namespace CollationModifier.ViewModels
                     }
                     SetStatus("Operation cancelled by user.");
                 }
-                else
+
+                if (enteredDestructivePhase && SelectedDatabase != null)
                 {
                     Exception? restoreEx = null;
                     Exception? resetEx = null;
