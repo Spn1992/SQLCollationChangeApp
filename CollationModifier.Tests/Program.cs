@@ -18,127 +18,110 @@ namespace CollationModifier.Tests
 
             try
             {
-                await GlobalExceptionHandlerTests.RunAllTestsAsync();
+                failed += await GlobalExceptionHandlerTests.RunAllTestsAsync();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: GlobalExceptionHandlerTests - {ex}");
+                Console.WriteLine($"FAIL: {nameof(GlobalExceptionHandlerTests)}.{nameof(GlobalExceptionHandlerTests.RunAllTestsAsync)} - {ex}");
                 failed++;
             }
 
             try
             {
-                await MainViewModelTestsRunner.RunAllTestsAsync();
-                Console.WriteLine("PASS: MainViewModelTestsRunner");
+                int mainVmFailed = await MainViewModelTestsRunner.RunAllTestsAsync();
+                if (mainVmFailed == 0)
+                {
+                    Console.WriteLine("PASS: MainViewModelTestsRunner");
+                }
+                failed += mainVmFailed;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: MainViewModelTestsRunner - {ex}");
+                Console.WriteLine($"FAIL: {nameof(MainViewModelTestsRunner)}.{nameof(MainViewModelTestsRunner.RunAllTestsAsync)} - {ex}");
                 failed++;
             }
 
             Console.WriteLine("\n=== Running LoggerService Async Queue Unit Tests ===");
+            failed += await RunProgramAsyncTest(nameof(TestHighFrequencyConcurrentLoggingWithoutDataLoss), TestHighFrequencyConcurrentLoggingWithoutDataLoss);
+            failed += await RunProgramAsyncTest(nameof(TestFlushOnDispose), TestFlushOnDispose);
+            failed += await RunProgramAsyncTest(nameof(TestFileAccessExceptionHandling), TestFileAccessExceptionHandling);
+            failed += await RunProgramAsyncTest(nameof(TestEmptyChannelDisposalWithoutError), TestEmptyChannelDisposalWithoutError);
+            failed += await RunProgramAsyncTest(nameof(TestDrainAndFlushQueueAsyncDuringStandardOperation), TestDrainAndFlushQueueAsyncDuringStandardOperation);
+            failed += await RunProgramAsyncTest(nameof(TestDrainAndFlushQueueAsyncShutdownDraining), TestDrainAndFlushQueueAsyncShutdownDraining);
+            failed += RunProgramSyncTest(nameof(TestLogFilePathProperty), TestLogFilePathProperty);
+
             try
             {
-                await TestHighFrequencyConcurrentLoggingWithoutDataLoss();
-                Console.WriteLine("PASS: TestHighFrequencyConcurrentLoggingWithoutDataLoss");
+                await TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry();
+                Console.WriteLine("PASS: TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: TestHighFrequencyConcurrentLoggingWithoutDataLoss - {ex}");
+                Console.WriteLine($"FAIL: TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry - {ex}");
                 failed++;
             }
 
             try
             {
-                await TestFlushOnDispose();
-                Console.WriteLine("PASS: TestFlushOnDispose");
+                await TestStalledWorkerFlushThenDisposeWaitsOnce();
+                Console.WriteLine("PASS: TestStalledWorkerFlushThenDisposeWaitsOnce");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: TestFlushOnDispose - {ex}");
+                Console.WriteLine($"FAIL: TestStalledWorkerFlushThenDisposeWaitsOnce - {ex}");
                 failed++;
             }
 
             try
             {
-                await TestFileAccessExceptionHandling();
-                Console.WriteLine("PASS: TestFileAccessExceptionHandling");
+                TestFlushShortCircuitsWhenWorkerAlreadyComplete();
+                Console.WriteLine("PASS: TestFlushShortCircuitsWhenWorkerAlreadyComplete");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: TestFileAccessExceptionHandling - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestEmptyChannelDisposalWithoutError();
-                Console.WriteLine("PASS: TestEmptyChannelDisposalWithoutError");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestEmptyChannelDisposalWithoutError - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestDrainAndFlushQueueAsyncDuringStandardOperation();
-                Console.WriteLine("PASS: TestDrainAndFlushQueueAsyncDuringStandardOperation");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestDrainAndFlushQueueAsyncDuringStandardOperation - {ex}");
-                failed++;
-            }
-
-            try
-            {
-                await TestDrainAndFlushQueueAsyncShutdownDraining();
-                Console.WriteLine("PASS: TestDrainAndFlushQueueAsyncShutdownDraining");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestDrainAndFlushQueueAsyncShutdownDraining - {ex}");
-                failed++;
-            }
-
-
-            try
-            {
-                TestLogFilePathProperty();
-                Console.WriteLine("PASS: TestLogFilePathProperty");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestLogFilePathProperty - {ex}");
+                Console.WriteLine($"FAIL: TestFlushShortCircuitsWhenWorkerAlreadyComplete - {ex}");
                 failed++;
             }
 
             Console.WriteLine("\n=== Running DatabaseService MapDatabaseInfo Unit Tests ===");
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_FieldExtraction), TestMapDatabaseInfo_FieldExtraction);
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_NullFieldFallbacks), TestMapDatabaseInfo_NullFieldFallbacks);
+            failed += RunProgramSyncTest(nameof(TestMapDatabaseInfo_NullArgumentValidation), TestMapDatabaseInfo_NullArgumentValidation);
+
+            Console.WriteLine("\n=== Running Test Runner Isolation & SynchronizationContext Hardening Tests ===");
+            failed += await RunProgramAsyncTest(nameof(TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests), TestGlobalExceptionHandlerSuite_IsolatesFirstFailure_AndRunsRemainingSixTests);
+            failed += await RunProgramAsyncTest(nameof(TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions), TestSynchronousSynchronizationContext_CatchesPostedAndAsyncVoidExceptions);
+            failed += await RunProgramAsyncTest(nameof(TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace), TestMainViewModelTestsRunner_FormatsSingleFailureWithClassMethodAndStackTrace);
+
+            if (failed == 0)
+            {
+                Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
+                return 0;
+            }
+            else
+            {
+                Console.WriteLine($"\nTEST SUITE FAILED with {failed} failures.");
+                return 1;
+            }
+        }
+
+        private static async Task<int> RunProgramAsyncTest(string methodName, Func<Task> testAction)
+        {
             try
             {
-                TestMapDatabaseInfo_FieldExtraction();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_FieldExtraction");
+                await testAction();
+                Console.WriteLine($"PASS: {methodName}");
+                return 0;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_FieldExtraction - {ex}");
-                failed++;
+                Console.WriteLine($"FAIL: {nameof(Program)}.{methodName} - {ex}");
+                return 1;
             }
+        }
 
-            try
-            {
-                TestMapDatabaseInfo_NullFieldFallbacks();
-                Console.WriteLine("PASS: TestMapDatabaseInfo_NullFieldFallbacks");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FAIL: TestMapDatabaseInfo_NullFieldFallbacks - {ex}");
-                failed++;
-            }
-
+        private static int RunProgramSyncTest(string methodName, Action testAction)
+        {
             try
             {
                 TestMapDatabaseInfo_NullArgumentValidation();
@@ -166,9 +149,9 @@ namespace CollationModifier.Tests
                 Console.WriteLine("\nALL TESTS PASSED SUCCESSFULLY!");
                 return 0;
             }
-            else
+            catch (Exception ex)
             {
-                Console.WriteLine($"\nTEST SUITE FAILED with {failed} failures.");
+                Console.WriteLine($"FAIL: {nameof(Program)}.{methodName} - {ex}");
                 return 1;
             }
         }
@@ -403,6 +386,108 @@ namespace CollationModifier.Tests
             }
         }
 
+
+        static async Task TestConstructorDoesNotCreateDirectoryUntilFirstLogEntry()
+        {
+            string baseDir = Path.Combine(Path.GetTempPath(), $"logger_lazy_dir_{Guid.NewGuid():N}");
+            string nestedDir = Path.Combine(baseDir, "nested");
+            string testLogPath = Path.Combine(nestedDir, "lazy_log.txt");
+
+            try
+            {
+                Assert(!Directory.Exists(baseDir), "Base test directory should not exist before constructing LoggerService.");
+
+                using (var logger = new LoggerService(testLogPath))
+                {
+                    await Task.Delay(100);
+                    Assert(!Directory.Exists(baseDir), "Constructing LoggerService must not create the log directory before logging.");
+                    Assert(!Directory.Exists(nestedDir), "Constructing LoggerService must not create nested log directory before logging.");
+                    Assert(!File.Exists(testLogPath), "Constructing LoggerService must not create the log file before logging.");
+
+                    logger.LogInfo("First log entry triggers lazy directory creation");
+                }
+
+                Assert(Directory.Exists(nestedDir), "Background worker should create the log directory when writing the first log entry.");
+                Assert(File.Exists(testLogPath), "Log file should exist after writing and disposing.");
+                string content = File.ReadAllText(testLogPath);
+                Assert(content.Contains("First log entry triggers lazy directory creation"), "Log file should contain the written log entry.");
+            }
+            finally
+            {
+                if (Directory.Exists(baseDir))
+                {
+                    Directory.Delete(baseDir, recursive: true);
+                }
+            }
+        }
+
+        static async Task TestStalledWorkerFlushThenDisposeWaitsOnce()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_stalled_{Guid.NewGuid():N}.txt");
+            var workerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseWorker = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            try
+            {
+                var logger = new LoggerService(testLogPath, async reader =>
+                {
+                    workerStarted.TrySetResult(true);
+                    await reader.WaitToReadAsync().ConfigureAwait(false);
+                    await releaseWorker.Task.ConfigureAwait(false);
+                });
+
+                await workerStarted.Task;
+                logger.LogInfo("Stalled queue entry");
+
+                var timeout = TimeSpan.FromMilliseconds(200);
+                var sw = Stopwatch.StartNew();
+
+                logger.Flush(timeout);
+                logger.Dispose();
+                logger.Flush(timeout);
+
+                sw.Stop();
+                Console.WriteLine($"  [Timing] Flush(200ms) + Dispose() + Flush(200ms) on stalled worker elapsed: {sw.ElapsedMilliseconds} ms");
+
+                Assert(sw.ElapsedMilliseconds >= 150, $"Expected initial Flush to wait near {timeout.TotalMilliseconds}ms, but elapsed was {sw.ElapsedMilliseconds}ms.");
+                Assert(sw.ElapsedMilliseconds < 380, $"Expected Flush then Dispose to wait for one timeout instead of two (or 5s), but elapsed was {sw.ElapsedMilliseconds}ms.");
+                Assert(logger.IsDisposed, "Logger should be marked disposed after Dispose().");
+            }
+            finally
+            {
+                releaseWorker.TrySetResult(true);
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
+
+        static void TestFlushShortCircuitsWhenWorkerAlreadyComplete()
+        {
+            string testLogPath = Path.Combine(Path.GetTempPath(), $"logger_shortcircuit_{Guid.NewGuid():N}.txt");
+
+            try
+            {
+                using var logger = new LoggerService(testLogPath);
+                logger.LogInfo("Entry before initial flush");
+                logger.Flush();
+
+                var sw = Stopwatch.StartNew();
+                logger.Flush(TimeSpan.FromSeconds(5));
+                logger.Dispose();
+                sw.Stop();
+
+                Assert(sw.Elapsed.TotalMilliseconds < 25, $"Subsequent Flush/Dispose after completion should short-circuit immediately, took {sw.Elapsed.TotalMilliseconds:F2}ms.");
+            }
+            finally
+            {
+                if (File.Exists(testLogPath))
+                {
+                    File.Delete(testLogPath);
+                }
+            }
+        }
 
         static void Assert(bool condition, string message)
         {
