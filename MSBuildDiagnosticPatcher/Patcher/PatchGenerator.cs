@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -341,17 +342,48 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 return null;
             }
 
-            string newContent = originalContent.Insert(insertPos, "\n" + stubsCode + "\n");
-
             // Format relative path for diff headers (prefer git root if found)
             string baseDir = FindRepoRoot(targetFilePath) ?? projectRoot;
             string relPath = GetRelativePath(baseDir, targetFilePath).Replace('\\', '/');
+            string oldHeader = $"a/{relPath}";
+            string newHeader = $"b/{relPath}";
 
-            string unifiedDiff = GenerateUnifiedDiff(
-                originalContent,
-                newContent,
-                $"a/{relPath}",
-                $"b/{relPath}");
+            ReadOnlySpan<char> originalSpan = originalContent.AsSpan();
+            ReadOnlySpan<char> stubsSpan = stubsCode.AsSpan();
+
+            // Keep any preceding '\r' inside the local window so CRLF / CR breaks stay intact
+            int searchBackPos = insertPos > 0 && originalSpan[insertPos - 1] == '\r'
+                ? insertPos - 1
+                : insertPos;
+
+            int windowStart = FindWindowStart(originalSpan, searchBackPos, 4);
+            int windowEnd = FindWindowEnd(originalSpan, searchBackPos, 5);
+            int baseLineIndex = windowStart > 0 ? CountLineBreaks(originalSpan.Slice(0, windowStart)) : 0;
+
+            if (!BuildWindowUnifiedDiff(
+                    originalSpan,
+                    stubsSpan,
+                    insertPos,
+                    windowStart,
+                    windowEnd,
+                    oldHeader,
+                    newHeader,
+                    baseLineIndex,
+                    requireThreeSuffixMatches: windowEnd < originalSpan.Length,
+                    out string unifiedDiff))
+            {
+                BuildWindowUnifiedDiff(
+                    originalSpan,
+                    stubsSpan,
+                    insertPos,
+                    windowStart,
+                    originalSpan.Length,
+                    oldHeader,
+                    newHeader,
+                    baseLineIndex,
+                    requireThreeSuffixMatches: false,
+                    out unifiedDiff);
+            }
 
             string safeFileName = Path.GetFileNameWithoutExtension(targetFilePath);
             string patchFileName = $"{safeFileName}.patch";
@@ -417,67 +449,473 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string oldHeader,
             string newHeader)
         {
-            var oldLines = oldText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
-            var newLines = newText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            TryGenerateUnifiedDiff(
+                oldText.AsSpan(),
+                newText.AsSpan(),
+                oldHeader,
+                newHeader,
+                baseLineIndex: 0,
+                requireThreeSuffixMatches: false,
+                out string unifiedDiff);
+            return unifiedDiff;
+        }
 
-            // Simple Myers diff or prefix/suffix common line detection for clean unified patch
-            int startCommon = 0;
-            while (startCommon < oldLines.Length && startCommon < newLines.Length &&
-                   oldLines[startCommon] == newLines[startCommon])
+        private readonly struct LineSlice
+        {
+            public readonly int Start;
+            public readonly int Length;
+
+            public LineSlice(int start, int length)
             {
-                startCommon++;
+                Start = start;
+                Length = length;
+            }
+        }
+
+        private static bool BuildWindowUnifiedDiff(
+            ReadOnlySpan<char> originalSpan,
+            ReadOnlySpan<char> stubsSpan,
+            int insertPos,
+            int windowStart,
+            int windowEnd,
+            string oldHeader,
+            string newHeader,
+            int baseLineIndex,
+            bool requireThreeSuffixMatches,
+            out string unifiedDiff)
+        {
+            ReadOnlySpan<char> oldWindow = originalSpan.Slice(windowStart, windowEnd - windowStart);
+            int localInsertPos = insertPos - windowStart;
+            int newWindowLength = oldWindow.Length + stubsSpan.Length + 2;
+
+            char[] rented = ArrayPool<char>.Shared.Rent(newWindowLength);
+            try
+            {
+                Span<char> newWindow = rented.AsSpan(0, newWindowLength);
+                oldWindow.Slice(0, localInsertPos).CopyTo(newWindow);
+                newWindow[localInsertPos] = '\n';
+                stubsSpan.CopyTo(newWindow.Slice(localInsertPos + 1));
+                newWindow[localInsertPos + 1 + stubsSpan.Length] = '\n';
+                oldWindow.Slice(localInsertPos).CopyTo(newWindow.Slice(localInsertPos + 2 + stubsSpan.Length));
+
+                return TryGenerateUnifiedDiff(
+                    oldWindow,
+                    newWindow,
+                    oldHeader,
+                    newHeader,
+                    baseLineIndex,
+                    requireThreeSuffixMatches,
+                    out unifiedDiff);
+            }
+            finally
+            {
+                ArrayPool<char>.Shared.Return(rented);
+            }
+        }
+
+        private static bool TryGenerateUnifiedDiff(
+            ReadOnlySpan<char> oldSpan,
+            ReadOnlySpan<char> newSpan,
+            string oldHeader,
+            string newHeader,
+            int baseLineIndex,
+            bool requireThreeSuffixMatches,
+            out string unifiedDiff)
+        {
+            int commonPrefixChars = oldSpan.CommonPrefixLength(newSpan);
+            if (commonPrefixChars > 0 && oldSpan[commonPrefixChars - 1] == '\r')
+            {
+                commonPrefixChars--;
             }
 
-            int endCommonOld = oldLines.Length - 1;
-            int endCommonNew = newLines.Length - 1;
-            while (endCommonOld >= startCommon && endCommonNew >= startCommon &&
-                   oldLines[endCommonOld] == newLines[endCommonNew])
+            int prefixScanStart = FindWindowStart(oldSpan, commonPrefixChars, 4);
+            int startCommon = prefixScanStart > 0
+                ? CountLineBreaks(oldSpan.Slice(0, prefixScanStart))
+                : 0;
+
+            Span<LineSlice> beforeBuf = stackalloc LineSlice[3];
+            int beforeCollected = 0;
+
+            int oldPos = prefixScanStart;
+            bool oldHasMore = true;
+            int newPos = prefixScanStart;
+            bool newHasMore = true;
+
+            int oldDiffStart = oldPos;
+            int newDiffStart = newPos;
+            bool foundDifference = false;
+
+            while (oldHasMore && newHasMore)
             {
-                endCommonOld--;
-                endCommonNew--;
+                int lineStartOld = oldPos;
+                int lineStartNew = newPos;
+                ReadOnlySpan<char> oldLine = ReadNextLine(oldSpan, ref oldPos, ref oldHasMore, out LineSlice oldSlice);
+                ReadOnlySpan<char> newLine = ReadNextLine(newSpan, ref newPos, ref newHasMore, out _);
+
+                if (oldLine.SequenceEqual(newLine))
+                {
+                    if (beforeCollected < 3)
+                    {
+                        beforeBuf[beforeCollected++] = oldSlice;
+                    }
+                    else
+                    {
+                        beforeBuf[0] = beforeBuf[1];
+                        beforeBuf[1] = beforeBuf[2];
+                        beforeBuf[2] = oldSlice;
+                    }
+
+                    startCommon++;
+                }
+                else
+                {
+                    oldDiffStart = lineStartOld;
+                    newDiffStart = lineStartNew;
+                    foundDifference = true;
+                    break;
+                }
             }
 
-            // Context lines (3 lines before and after)
-            int contextBefore = Math.Max(0, startCommon - 3);
-            int contextAfterOld = Math.Min(oldLines.Length, endCommonOld + 4);
-            int contextAfterNew = Math.Min(newLines.Length, endCommonNew + 4);
+            ReadOnlySpan<char> oldRem = default;
+            int oldEnd = 0;
+            bool oldRemHasMore = false;
 
-            int hunkOldStart = contextBefore + 1;
-            int hunkOldCount = contextAfterOld - contextBefore;
-            int hunkNewStart = contextBefore + 1;
-            int hunkNewCount = contextAfterNew - contextBefore;
+            ReadOnlySpan<char> newRem = default;
+            int newEnd = 0;
+            bool newRemHasMore = false;
 
-            var sb = new StringBuilder();
-            sb.AppendLine($"--- {oldHeader}");
-            sb.AppendLine($"+++ {newHeader}");
-            sb.AppendLine($"@@ -{hunkOldStart},{hunkOldCount} +{hunkNewStart},{hunkNewCount} @@");
+            Span<LineSlice> afterBuf = stackalloc LineSlice[3];
+            int afterCollected = 0;
+            int matchedSuffixCount = 0;
 
-            // Context lines before
-            for (int i = contextBefore; i < startCommon; i++)
+            if (foundDifference)
             {
-                sb.AppendLine($" {oldLines[i]}");
+                oldRem = oldSpan.Slice(oldDiffStart);
+                newRem = newSpan.Slice(newDiffStart);
+                oldRemHasMore = true;
+                newRemHasMore = true;
+
+                int commonSuffixChars = CommonSuffixLength(oldRem, newRem);
+                if (commonSuffixChars > 0 && oldRem[oldRem.Length - commonSuffixChars] == '\n')
+                {
+                    commonSuffixChars--;
+                }
+
+                ReadOnlySpan<char> commonSuffix = oldRem.Slice(oldRem.Length - commonSuffixChars);
+                int suffixCutInCommon = FindWindowEnd(commonSuffix, 0, 4);
+                if (suffixCutInCommon < commonSuffix.Length)
+                {
+                    oldEnd = (oldRem.Length - commonSuffixChars) + suffixCutInCommon;
+                    newEnd = (newRem.Length - commonSuffixChars) + suffixCutInCommon;
+                    matchedSuffixCount = 1;
+                }
+                else
+                {
+                    oldEnd = oldRem.Length;
+                    newEnd = newRem.Length;
+                    matchedSuffixCount = 0;
+                }
+
+                while (oldRemHasMore && newRemHasMore)
+                {
+                    int nextOldEnd = oldEnd;
+                    bool nextOldHasMore = oldRemHasMore;
+                    int nextNewEnd = newEnd;
+                    bool nextNewHasMore = newRemHasMore;
+
+                    ReadOnlySpan<char> oldLine = ReadPrevLine(oldRem, ref nextOldEnd, ref nextOldHasMore, out LineSlice oldSlice);
+                    ReadOnlySpan<char> newLine = ReadPrevLine(newRem, ref nextNewEnd, ref nextNewHasMore, out _);
+
+                    if (oldLine.SequenceEqual(newLine))
+                    {
+                        oldEnd = nextOldEnd;
+                        oldRemHasMore = nextOldHasMore;
+                        newEnd = nextNewEnd;
+                        newRemHasMore = nextNewHasMore;
+
+                        if (afterCollected < 3)
+                        {
+                            for (int i = afterCollected; i > 0; i--)
+                            {
+                                afterBuf[i] = afterBuf[i - 1];
+                            }
+                            afterBuf[0] = oldSlice;
+                            afterCollected++;
+                        }
+                        else
+                        {
+                            afterBuf[2] = afterBuf[1];
+                            afterBuf[1] = afterBuf[0];
+                            afterBuf[0] = oldSlice;
+                        }
+
+                        matchedSuffixCount++;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+            else if (oldHasMore)
+            {
+                oldRem = oldSpan.Slice(oldPos);
+                oldEnd = oldRem.Length;
+                oldRemHasMore = true;
+            }
+            else if (newHasMore)
+            {
+                newRem = newSpan.Slice(newPos);
+                newEnd = newRem.Length;
+                newRemHasMore = true;
             }
 
-            // Removed lines
-            for (int i = startCommon; i <= endCommonOld; i++)
+            if (requireThreeSuffixMatches && matchedSuffixCount < 3)
             {
-                sb.AppendLine($"-{oldLines[i]}");
+                unifiedDiff = string.Empty;
+                return false;
             }
 
-            // Added lines
-            for (int i = startCommon; i <= endCommonNew; i++)
+            ReadOnlySpan<char> removedSpan = oldRemHasMore ? oldRem.Slice(0, oldEnd) : default;
+            ReadOnlySpan<char> addedSpan = newRemHasMore ? newRem.Slice(0, newEnd) : default;
+
+            int removedCount = oldRemHasMore ? 1 + CountLineBreaks(removedSpan) : 0;
+            int addedCount = newRemHasMore ? 1 + CountLineBreaks(addedSpan) : 0;
+
+            int contextBefore = startCommon - beforeCollected;
+            int hunkOldStart = baseLineIndex + contextBefore + 1;
+            int hunkOldCount = beforeCollected + removedCount + afterCollected;
+            int hunkNewStart = hunkOldStart;
+            int hunkNewCount = beforeCollected + addedCount + afterCollected;
+
+            int estimatedCapacity = oldHeader.Length + newHeader.Length + 64
+                + removedSpan.Length + addedSpan.Length
+                + (beforeCollected + removedCount + addedCount + afterCollected) * 3
+                + 128;
+
+            var sb = new StringBuilder(estimatedCapacity);
+            sb.Append("--- ").AppendLine(oldHeader);
+            sb.Append("+++ ").AppendLine(newHeader);
+            sb.Append("@@ -").Append(hunkOldStart).Append(',').Append(hunkOldCount)
+              .Append(" +").Append(hunkNewStart).Append(',').Append(hunkNewCount)
+              .AppendLine(" @@");
+
+            for (int i = 0; i < beforeCollected; i++)
             {
-                sb.AppendLine($"+{newLines[i]}");
+                LineSlice slice = beforeBuf[i];
+                sb.Append(' ').Append(oldSpan.Slice(slice.Start, slice.Length)).AppendLine();
             }
 
-            // Context lines after
-            int afterLinesCount = Math.Min(oldLines.Length - (endCommonOld + 1), 3);
-            for (int i = 0; i < afterLinesCount; i++)
+            if (oldRemHasMore)
             {
-                sb.AppendLine($" {oldLines[endCommonOld + 1 + i]}");
+                int remPos = 0;
+                bool remHasMore = true;
+                while (remHasMore)
+                {
+                    ReadOnlySpan<char> line = ReadNextLine(removedSpan, ref remPos, ref remHasMore, out _);
+                    sb.Append('-').Append(line).AppendLine();
+                }
             }
 
-            return sb.ToString();
+            if (newRemHasMore)
+            {
+                int addPos = 0;
+                bool addHasMore = true;
+                while (addHasMore)
+                {
+                    ReadOnlySpan<char> line = ReadNextLine(addedSpan, ref addPos, ref addHasMore, out _);
+                    sb.Append('+').Append(line).AppendLine();
+                }
+            }
+
+            for (int i = 0; i < afterCollected; i++)
+            {
+                LineSlice slice = afterBuf[i];
+                sb.Append(' ').Append(oldRem.Slice(slice.Start, slice.Length)).AppendLine();
+            }
+
+            unifiedDiff = sb.ToString();
+            return true;
+        }
+
+        private static ReadOnlySpan<char> ReadNextLine(
+            ReadOnlySpan<char> span,
+            ref int pos,
+            ref bool hasMore,
+            out LineSlice slice)
+        {
+            int idx = span.Slice(pos).IndexOfAny('\r', '\n');
+            if (idx < 0)
+            {
+                int len = span.Length - pos;
+                slice = new LineSlice(pos, len);
+                ReadOnlySpan<char> line = span.Slice(pos, len);
+                pos = span.Length;
+                hasMore = false;
+                return line;
+            }
+            else
+            {
+                slice = new LineSlice(pos, idx);
+                ReadOnlySpan<char> line = span.Slice(pos, idx);
+                int breakPos = pos + idx;
+                pos = breakPos + 1;
+                if (span[breakPos] == '\r' && pos < span.Length && span[pos] == '\n')
+                {
+                    pos++;
+                }
+
+                return line;
+            }
+        }
+
+        private static ReadOnlySpan<char> ReadPrevLine(
+            ReadOnlySpan<char> span,
+            ref int end,
+            ref bool hasMore,
+            out LineSlice slice)
+        {
+            int idx = span.Slice(0, end).LastIndexOfAny('\r', '\n');
+            if (idx < 0)
+            {
+                slice = new LineSlice(0, end);
+                ReadOnlySpan<char> line = span.Slice(0, end);
+                end = 0;
+                hasMore = false;
+                return line;
+            }
+            else
+            {
+                int lineStart = idx + 1;
+                int len = end - lineStart;
+                slice = new LineSlice(lineStart, len);
+                ReadOnlySpan<char> line = span.Slice(lineStart, len);
+                if (span[idx] == '\n' && idx > 0 && span[idx - 1] == '\r')
+                {
+                    end = idx - 1;
+                }
+                else
+                {
+                    end = idx;
+                }
+
+                return line;
+            }
+        }
+
+        private static int FindWindowStart(ReadOnlySpan<char> content, int pos, int maxBreaks)
+        {
+            int end = pos;
+            for (int b = 0; b < maxBreaks; b++)
+            {
+                if (end <= 0)
+                {
+                    return 0;
+                }
+
+                int idx = content.Slice(0, end).LastIndexOfAny('\r', '\n');
+                if (idx < 0)
+                {
+                    return 0;
+                }
+
+                if (b == maxBreaks - 1)
+                {
+                    return idx + 1;
+                }
+
+                if (content[idx] == '\n' && idx > 0 && content[idx - 1] == '\r')
+                {
+                    end = idx - 1;
+                }
+                else
+                {
+                    end = idx;
+                }
+            }
+
+            return 0;
+        }
+
+        private static int FindWindowEnd(ReadOnlySpan<char> content, int startPos, int maxBreaks)
+        {
+            int pos = startPos;
+            for (int b = 0; b < maxBreaks; b++)
+            {
+                if (pos >= content.Length)
+                {
+                    return content.Length;
+                }
+
+                int idx = content.Slice(pos).IndexOfAny('\r', '\n');
+                if (idx < 0)
+                {
+                    return content.Length;
+                }
+
+                int breakStart = pos + idx;
+                if (b == maxBreaks - 1)
+                {
+                    return breakStart;
+                }
+
+                pos = breakStart + 1;
+                if (content[breakStart] == '\r' && pos < content.Length && content[pos] == '\n')
+                {
+                    pos++;
+                }
+            }
+
+            return content.Length;
+        }
+
+        private static int CountLineBreaks(ReadOnlySpan<char> span)
+        {
+            int count = 0;
+            int pos = 0;
+            while (pos < span.Length)
+            {
+                int idx = span.Slice(pos).IndexOfAny('\r', '\n');
+                if (idx < 0)
+                {
+                    break;
+                }
+
+                pos += idx + 1;
+                if (span[pos - 1] == '\r' && pos < span.Length && span[pos] == '\n')
+                {
+                    pos++;
+                }
+
+                count++;
+            }
+
+            return count;
+        }
+
+        private static int CommonSuffixLength(ReadOnlySpan<char> a, ReadOnlySpan<char> b)
+        {
+            int max = Math.Min(a.Length, b.Length);
+            int matched = 0;
+
+            while (matched + 256 <= max &&
+                   a.Slice(a.Length - matched - 256, 256).SequenceEqual(b.Slice(b.Length - matched - 256, 256)))
+            {
+                matched += 256;
+            }
+
+            while (matched + 16 <= max &&
+                   a.Slice(a.Length - matched - 16, 16).SequenceEqual(b.Slice(b.Length - matched - 16, 16)))
+            {
+                matched += 16;
+            }
+
+            while (matched < max && a[a.Length - 1 - matched] == b[b.Length - 1 - matched])
+            {
+                matched++;
+            }
+
+            return matched;
         }
 
         private static string ResolveAbsoluteFilePath(string path, string root)

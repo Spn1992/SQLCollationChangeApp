@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
+using System.Text;
 using System.Threading.Tasks;
 using MSBuildDiagnosticPatcher.Models;
 using MSBuildDiagnosticPatcher.Parsers;
@@ -78,6 +78,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently", Test_PatchGenerator_FindDelegationCall_MatchesCandidateOverloadsConsistently);
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
+            RunTest("PatchGenerator_CreatePatchForFile_MatchesReferenceAcrossLineEndingsAndEdgeCases", Test_PatchGenerator_CreatePatchForFile_LineEndingsAndEdgeCases);
+            RunTest("PatchGenerator_LargeFileDiff_MatchesReferenceWithBoundedAllocations", Test_PatchGenerator_LargeFileDiff_ExactOutputAndBoundedAllocations);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
             RunTest("PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks", Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks);
             RunTest("PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache", Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache);
@@ -1451,6 +1453,271 @@ public class EmptyService : ISampleService
             Assert(diff.Contains("--- a/Test.cs"), "Expected --- header");
             Assert(diff.Contains("+++ b/Test.cs"), "Expected +++ header");
             Assert(diff.Contains("+line 2.5 added"), "Expected + line");
+            AssertExactDiffEquals(ReferenceGenerateUnifiedDiff(oldText, newText, "a/Test.cs", "b/Test.cs"), diff, "Basic LF insertion");
+
+            var cases = new (string Name, string Old, string New)[]
+            {
+                ("Empty vs Empty", "", ""),
+                ("Empty vs SingleLine", "", "hello"),
+                ("SingleLine vs Empty", "hello", ""),
+                ("Empty vs CRLF", "", "\r\n"),
+                ("LF vs Empty", "\n", ""),
+                ("Identical single line", "same", "same"),
+                ("Identical multi-line LF", "a\nb\nc\nd\ne\nf\n", "a\nb\nc\nd\ne\nf\n"),
+                ("Identical multi-line CRLF", "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n", "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n"),
+                ("Identical multi-line CR", "a\rb\rc\rd\re\rf", "a\rb\rc\rd\re\rf"),
+                ("CRLF insertion", "l1\r\nl2\r\nl3\r\nl4\r\nl5\r\n", "l1\r\nl2\r\ninserted\r\nl3\r\nl4\r\nl5\r\n"),
+                ("CR insertion", "l1\rl2\rl3\rl4\rl5\r", "l1\rl2\rinserted\rl3\rl4\rl5\r"),
+                ("Mixed CRLF vs LF common lines", "l1\r\nl2\r\nold\r\nl4\r\nl5\r\n", "l1\nl2\nnew\nl4\nl5\n"),
+                ("Prefix split at CR before LF", "abc\r\ndef\r\nghi", "abc\rxyz\r\nghi"),
+                ("Suffix split at LF after CR", "abc\r\nold\r\nxyz", "abc\r\nnew\nxyz"),
+                ("Adjacent CRCRCRLF breaks", "a\r\r\nb\n\rc\r\nd", "a\r\r\nb_mod\n\rc\r\nd"),
+                ("Change at line 1 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1_mod\n2\n3\n4\n5\n6\n7\n8\n9\n10"),
+                ("Change at line 2 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2_mod\n3\n4\n5\n6\n7\n8\n9\n10"),
+                ("Change at line 4 of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2\n3\n4_mod\n5\n6\n7\n8\n9\n10"),
+                ("Change at last line of 10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10_mod"),
+                ("Add trailing newline", "1\n2\n3\n4\n5", "1\n2\n3\n4\n5\n"),
+                ("Remove trailing newline", "1\n2\n3\n4\n5\n", "1\n2\n3\n4\n5"),
+                ("Strict prefix expansion", "a\nb\nc", "a\nb\nc\nd\ne"),
+                ("Strict prefix truncation", "a\nb\nc\nd\ne", "a\nb\nc"),
+                ("Duplicate lines around insertion", "a\nb\nb\nc\nd\ne", "a\nb\nb\nb\nc\nd\ne")
+            };
+
+            foreach (var tc in cases)
+            {
+                string expected = ReferenceGenerateUnifiedDiff(tc.Old, tc.New, "a/File.cs", "b/File.cs");
+                string actual = PatchGenerator.GenerateUnifiedDiff(tc.Old, tc.New, "a/File.cs", "b/File.cs");
+                AssertExactDiffEquals(expected, actual, tc.Name);
+            }
+        }
+
+        static void Test_PatchGenerator_CreatePatchForFile_LineEndingsAndEdgeCases()
+        {
+            var generator = new PatchGenerator();
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_diff_edge_{Guid.NewGuid():N}");
+            string targetFile = Path.Combine(tempRoot, "Src", "Sample.cs");
+
+            string stubLf = "        public virtual void Missing()\n        {\n            throw new NotImplementedException();\n        }";
+            string stubCrlf = stubLf.Replace("\n", "\r\n");
+
+            string multiLineTemplate = string.Join("\n", new[]
+            {
+                "using System;",
+                "namespace EdgeTests",
+                "{",
+                "    public class TargetClass : ITarget",
+                "    {",
+                "        public void Existing1() { }",
+                "        public void Existing2() { }",
+                "        public void Existing3() { }",
+                "        public void Existing4() { }",
+                "    }",
+                "",
+                "    public class NeighborClass",
+                "    {",
+                "        public void Neighbor1() { }",
+                "        public void Neighbor2() { }",
+                "        public void Neighbor3() { }",
+                "    }",
+                "}",
+                ""
+            });
+
+            var scenarios = new (string Name, string Content, string Stubs, string ClassName)[]
+            {
+                ("MultiLine LF", multiLineTemplate, stubLf, "TargetClass"),
+                ("MultiLine CRLF with LF stub", multiLineTemplate.Replace("\n", "\r\n"), stubLf, "TargetClass"),
+                ("MultiLine CRLF with CRLF stub", multiLineTemplate.Replace("\n", "\r\n"), stubCrlf, "TargetClass"),
+                ("MultiLine CR", multiLineTemplate.Replace("\n", "\r"), stubLf, "TargetClass"),
+                ("CR closing brace immediately after CR", "namespace N\r{\r    public class TargetClass : ITarget\r    {\r        void A() {}\r}\r}\r", stubLf, "TargetClass"),
+                ("Single-line class", "public class TargetClass : ITarget { }", stubLf, "TargetClass"),
+                ("Single-line class with trailing LF", "public class TargetClass : ITarget { }\n", stubLf, "TargetClass"),
+                ("Class near start of file (<4 breaks before)", "class TargetClass : ITarget\n{\n    void M() {}\n}\n// 1\n// 2\n// 3\n// 4\n// 5\n// 6\n", stubLf, "TargetClass"),
+                ("Class at very end of file (<5 breaks after)", "// 1\n// 2\n// 3\n// 4\n// 5\nclass TargetClass : ITarget\n{\n    void M() {}\n}", stubLf, "TargetClass"),
+                ("Stub matching lines in 5-line post-insert margin (fallback)", multiLineTemplate, "    }\n\n    public class NeighborClass\n    {\n        public void Injected() { }", "TargetClass")
+            };
+
+            foreach (var sc in scenarios)
+            {
+                var candidate = generator.CreatePatchForFile(
+                    targetFile,
+                    sc.Content,
+                    sc.Stubs,
+                    sc.ClassName,
+                    "ITarget",
+                    tempRoot);
+
+                Assert(candidate != null, $"Expected patch candidate for scenario '{sc.Name}'");
+
+                int insertPos = PatchGenerator.FindClassInsertionPoint(sc.Content, sc.ClassName);
+                string fullNewContent = sc.Content.Insert(insertPos, "\n" + sc.Stubs + "\n");
+                string expectedDiff = ReferenceGenerateUnifiedDiff(
+                    sc.Content,
+                    fullNewContent,
+                    "a/Src/Sample.cs",
+                    "b/Src/Sample.cs");
+
+                AssertExactDiffEquals(expectedDiff, candidate!.UnifiedDiff, sc.Name);
+            }
+        }
+
+        static void Test_PatchGenerator_LargeFileDiff_ExactOutputAndBoundedAllocations()
+        {
+            var generator = new PatchGenerator();
+            string tempRoot = Path.Combine(Path.GetTempPath(), $"patch_large_{Guid.NewGuid():N}");
+            string targetFile = Path.Combine(tempRoot, "LargeService.cs");
+            string stubs =
+                "        public virtual Task<int> ComputeAsync(CancellationToken cancellationToken = default)\n" +
+                "        {\n" +
+                "            throw new NotImplementedException();\n" +
+                "        }";
+
+            foreach (string nl in new[] { "\n", "\r\n", "\r" })
+            {
+                string nlLabel = nl == "\n" ? "LF" : (nl == "\r\n" ? "CRLF" : "CR");
+                var sb = new StringBuilder(20_000 * 56);
+                sb.Append("using System;").Append(nl);
+                sb.Append("namespace LargeTests").Append(nl);
+                sb.Append("{").Append(nl);
+                sb.Append("    public class LargeService : ILargeService").Append(nl);
+                sb.Append("    {").Append(nl);
+                for (int i = 0; i < 200; i++)
+                {
+                    sb.Append("        public int Prop").Append(i).Append(" { get; set; } = ").Append(i).Append(';').Append(nl);
+                }
+                sb.Append("    }").Append(nl);
+                sb.Append("    public class TrailingFixture").Append(nl);
+                sb.Append("    {").Append(nl);
+                for (int i = 0; i < 19_790; i++)
+                {
+                    sb.Append("        // Trailing fixture line ").Append(i).Append(" for 20k line file verification").Append(nl);
+                }
+                sb.Append("    }").Append(nl);
+                sb.Append("}").Append(nl);
+
+                string largeContent = sb.ToString();
+                int insertPos = PatchGenerator.FindClassInsertionPoint(largeContent, "LargeService");
+                string largeModified = largeContent.Insert(insertPos, "\n" + stubs + "\n");
+
+                string expectedDiff = ReferenceGenerateUnifiedDiff(
+                    largeContent,
+                    largeModified,
+                    "a/LargeService.cs",
+                    "b/LargeService.cs");
+
+                var candidate = generator.CreatePatchForFile(
+                    targetFile,
+                    largeContent,
+                    stubs,
+                    "LargeService",
+                    "ILargeService",
+                    tempRoot);
+
+                Assert(candidate != null, $"Expected candidate for 20k {nlLabel} file");
+                AssertExactDiffEquals(expectedDiff, candidate!.UnifiedDiff, $"CreatePatchForFile 20k {nlLabel}");
+
+                string directDiff = PatchGenerator.GenerateUnifiedDiff(
+                    largeContent,
+                    largeModified,
+                    "a/LargeService.cs",
+                    "b/LargeService.cs");
+                AssertExactDiffEquals(expectedDiff, directDiff, $"GenerateUnifiedDiff 20k {nlLabel}");
+
+                if (nl == "\n")
+                {
+                    // Warm up pooled buffers and JIT before checking thread allocations
+                    for (int w = 0; w < 5; w++)
+                    {
+                        generator.CreatePatchForFile(targetFile, largeContent, stubs, "LargeService", "ILargeService", tempRoot);
+                        PatchGenerator.GenerateUnifiedDiff(largeContent, largeModified, "a/LargeService.cs", "b/LargeService.cs");
+                    }
+
+                    long beforePatchAlloc = GC.GetAllocatedBytesForCurrentThread();
+                    var measuredCandidate = generator.CreatePatchForFile(targetFile, largeContent, stubs, "LargeService", "ILargeService", tempRoot);
+                    long patchAlloc = GC.GetAllocatedBytesForCurrentThread() - beforePatchAlloc;
+                    GC.KeepAlive(measuredCandidate);
+
+                    long beforeDiffAlloc = GC.GetAllocatedBytesForCurrentThread();
+                    string measuredDiff = PatchGenerator.GenerateUnifiedDiff(largeContent, largeModified, "a/LargeService.cs", "b/LargeService.cs");
+                    long diffAlloc = GC.GetAllocatedBytesForCurrentThread() - beforeDiffAlloc;
+                    GC.KeepAlive(measuredDiff);
+
+                    const long maxAllowedBytes = 64 * 1024;
+                    Assert(patchAlloc <= maxAllowedBytes,
+                        $"Expected CreatePatchForFile on 20k lines to avoid full-file allocations (<= {maxAllowedBytes} B), but allocated {patchAlloc} B");
+                    Assert(diffAlloc <= maxAllowedBytes,
+                        $"Expected GenerateUnifiedDiff on 20k lines to avoid full-file line arrays (<= {maxAllowedBytes} B), but allocated {diffAlloc} B");
+                }
+            }
+        }
+
+        private static string ReferenceGenerateUnifiedDiff(
+            string oldText,
+            string newText,
+            string oldHeader,
+            string newHeader)
+        {
+            var oldLines = oldText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            var newLines = newText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+
+            int startCommon = 0;
+            while (startCommon < oldLines.Length && startCommon < newLines.Length &&
+                   oldLines[startCommon] == newLines[startCommon])
+            {
+                startCommon++;
+            }
+
+            int endCommonOld = oldLines.Length - 1;
+            int endCommonNew = newLines.Length - 1;
+            while (endCommonOld >= startCommon && endCommonNew >= startCommon &&
+                   oldLines[endCommonOld] == newLines[endCommonNew])
+            {
+                endCommonOld--;
+                endCommonNew--;
+            }
+
+            int contextBefore = Math.Max(0, startCommon - 3);
+            int contextAfterOld = Math.Min(oldLines.Length, endCommonOld + 4);
+            int contextAfterNew = Math.Min(newLines.Length, endCommonNew + 4);
+
+            int hunkOldStart = contextBefore + 1;
+            int hunkOldCount = contextAfterOld - contextBefore;
+            int hunkNewStart = contextBefore + 1;
+            int hunkNewCount = contextAfterNew - contextBefore;
+
+            var sb = new StringBuilder();
+            sb.AppendLine($"--- {oldHeader}");
+            sb.AppendLine($"+++ {newHeader}");
+            sb.AppendLine($"@@ -{hunkOldStart},{hunkOldCount} +{hunkNewStart},{hunkNewCount} @@");
+
+            for (int i = contextBefore; i < startCommon; i++)
+            {
+                sb.AppendLine($" {oldLines[i]}");
+            }
+
+            for (int i = startCommon; i <= endCommonOld; i++)
+            {
+                sb.AppendLine($"-{oldLines[i]}");
+            }
+
+            for (int i = startCommon; i <= endCommonNew; i++)
+            {
+                sb.AppendLine($"+{newLines[i]}");
+            }
+
+            int afterLinesCount = Math.Min(oldLines.Length - (endCommonOld + 1), 3);
+            for (int i = 0; i < afterLinesCount; i++)
+            {
+                sb.AppendLine($" {oldLines[endCommonOld + 1 + i]}");
+            }
+
+            return sb.ToString();
+        }
+
+        private static void AssertExactDiffEquals(string expected, string actual, string scenario)
+        {
+            Assert(string.Equals(expected, actual, StringComparison.Ordinal),
+                $"Diff mismatch in scenario '{scenario}'.\nExpected ({expected.Length} chars):\n{expected}\nActual ({actual.Length} chars):\n{actual}");
         }
 
         static void Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs()
