@@ -28,7 +28,7 @@ namespace CollationModifier.ViewModels
         {
             add
             {
-#if NETFRAMEWORK
+#if NETFRAMEWORK || WINDOWS
                 try
                 {
                     CommandManager.RequerySuggested += value;
@@ -41,7 +41,7 @@ namespace CollationModifier.ViewModels
             }
             remove
             {
-#if NETFRAMEWORK
+#if NETFRAMEWORK || WINDOWS
                 try
                 {
                     CommandManager.RequerySuggested -= value;

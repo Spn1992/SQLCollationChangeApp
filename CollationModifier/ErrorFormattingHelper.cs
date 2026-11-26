@@ -1,3 +1,4 @@
+using CollationModifier.Exceptions;
 using System;
 using System.Text;
 
@@ -26,6 +27,18 @@ namespace CollationModifier
         public static string GetDetailedErrorText(Exception? ex)
         {
             if (ex == null) return "An unknown error occurred.";
+
+            if (ex is PreflightValidationException preflightEx)
+            {
+                if (preflightEx.Report != null)
+                {
+                    return preflightEx.Report.GetDiagnosticSummary().TrimEnd();
+                }
+
+                return !string.IsNullOrWhiteSpace(preflightEx.Message)
+                    ? preflightEx.Message.TrimEnd()
+                    : "Pre-flight validation failed.";
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine($"Error Type: {ex.GetType().FullName}");
@@ -146,6 +159,14 @@ namespace CollationModifier
             {
                 string lockWarning = isSingleUserLocked ? " WARNING: Database remains locked in SINGLE_USER mode." : "";
                 string status = $"Process failed before backup: {primarySummary}.{lockWarning}";
+                if (ex is PreflightValidationException)
+                {
+                    string preflightDetailed = string.IsNullOrEmpty(lockWarning)
+                        ? detailedPrimary
+                        : $"{detailedPrimary}\n\n{lockWarning.Trim()}";
+                    return (status, status, preflightDetailed.Trim());
+                }
+
                 string detailed = $"Process failed before backup: {primarySummary}\n\n=== Error Details ===\n{detailedPrimary}\n\n{lockWarning.Trim()}";
                 return (status, status, detailed.Trim());
             }

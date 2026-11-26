@@ -9,8 +9,17 @@ on:
 
 jobs:
   verify-build-and-test:
-    name: Verify Build and Tests
-    runs-on: ubuntu-latest
+    name: Verify Build and Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -117,6 +126,10 @@ jobs:
       - name: Append diagnostic report to step summary
         if: failure()
         run: |
+          if [ -f "/tmp/build-and-test.log" ]; then
+            mkdir -p build-diagnostics
+            cp "/tmp/build-and-test.log" "build-diagnostics/build-and-test.log"
+          fi
           if [ -f "build-diagnostics/diagnostic-report.md" ]; then
             max_size=1048576
             file_size=$(wc -c < "build-diagnostics/diagnostic-report.md")
@@ -153,7 +166,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-diagnostics-report
+          name: build-diagnostics-report-${{ matrix.os }}
           path: |
             build-diagnostics/
             /tmp/build-and-test.log

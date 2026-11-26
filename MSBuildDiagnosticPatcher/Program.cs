@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using MSBuildDiagnosticPatcher.Models;
@@ -12,7 +13,7 @@ namespace MSBuildDiagnosticPatcher
     {
         public static int Main(string[] args)
         {
-            if (args.Length == 0 || args[0] == "-h" || args[0] == "--help")
+            if (args.Length == 0)
             {
                 PrintHelp();
                 return 0;
@@ -20,7 +21,7 @@ namespace MSBuildDiagnosticPatcher
 
             string logFilePath = string.Empty;
             string outputDir = Path.Combine(Directory.GetCurrentDirectory(), "build-diagnostics");
-            string projectRoot = Directory.GetCurrentDirectory();
+            string? projectRoot = null;
             bool applyPatches = false;
             bool autoConfirm = false;
             bool reportOnly = false;
@@ -28,13 +29,24 @@ namespace MSBuildDiagnosticPatcher
             for (int i = 0; i < args.Length; i++)
             {
                 string arg = args[i];
-                if (arg == "-o" || arg == "--output-dir")
+                if (arg == "-h" || arg == "--help")
                 {
-                    if (i + 1 < args.Length) outputDir = args[++i];
+                    PrintHelp();
+                    return 0;
+                }
+                else if (arg == "-o" || arg == "--output-dir")
+                {
+                    if (i + 1 < args.Length && args[i + 1] != "-h" && args[i + 1] != "--help")
+                    {
+                        outputDir = args[++i];
+                    }
                 }
                 else if (arg == "-p" || arg == "--project-root")
                 {
-                    if (i + 1 < args.Length) projectRoot = args[++i];
+                    if (i + 1 < args.Length && args[i + 1] != "-h" && args[i + 1] != "--help")
+                    {
+                        projectRoot = args[++i];
+                    }
                 }
                 else if (arg == "-a" || arg == "--apply")
                 {
@@ -73,10 +85,12 @@ namespace MSBuildDiagnosticPatcher
             var msbuildParser = new MSBuildLogParser();
             var testParser = new TestExecutionLogParser();
 
-            string logContent = File.ReadAllText(logFilePath);
-
-            var diagnostics = msbuildParser.ParseText(logContent);
-            var testFailures = testParser.ParseText(logContent);
+            List<CompilerDiagnostic> diagnostics;
+            List<TestFailure> testFailures;
+            using (var reader = new StreamReader(logFilePath))
+            {
+                (diagnostics, testFailures) = LogStreamParser.Parse(reader, msbuildParser, testParser);
+            }
 
             stopwatch.Stop();
 
@@ -105,9 +119,72 @@ namespace MSBuildDiagnosticPatcher
             {
                 Console.WriteLine("\n[INFO] Applying candidate remediation patches...");
                 var applicator = new PatchApplicator();
+                var originalFileContents = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
                 foreach (var patch in patchCandidates)
                 {
+                    if (!string.IsNullOrWhiteSpace(patch.TargetFilePath) && File.Exists(patch.TargetFilePath))
+                    {
+                        string fullTargetPath = Path.GetFullPath(patch.TargetFilePath);
+                        if (!originalFileContents.ContainsKey(fullTargetPath))
+                        {
+                            originalFileContents[fullTargetPath] = File.ReadAllText(fullTargetPath);
+                        }
+                    }
+
                     applicator.ApplyPatch(patch, requireConfirmation: !autoConfirm);
+                }
+
+                var appliedByProject = new Dictionary<string, List<PatchCandidate>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var patch in patchCandidates)
+                {
+                    if (!patch.IsApplied)
+                    {
+                        continue;
+                    }
+
+                    string? enclosingCsproj = PatchApplicator.FindEnclosingProject(patch.TargetFilePath);
+                    if (string.IsNullOrEmpty(enclosingCsproj))
+                    {
+                        continue;
+                    }
+
+                    if (!appliedByProject.TryGetValue(enclosingCsproj, out var projectPatches))
+                    {
+                        projectPatches = new List<PatchCandidate>();
+                        appliedByProject[enclosingCsproj] = projectPatches;
+                    }
+                    projectPatches.Add(patch);
+                }
+
+                foreach (var kvp in appliedByProject)
+                {
+                    string csprojPath = kvp.Key;
+                    var projectPatches = kvp.Value;
+
+                    Console.WriteLine($"[INFO] Verifying compilation for '{csprojPath}'...");
+                    if (applicator.VerifyProjectBuild(csprojPath, out string buildOutput))
+                    {
+                        Console.WriteLine($"[SUCCESS] Build verification succeeded for '{csprojPath}'.");
+                        continue;
+                    }
+
+                    Console.WriteLine($"[ERROR] Build verification failed for '{csprojPath}'. Rolling back applied patches...");
+                    var restoredFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var patch in projectPatches)
+                    {
+                        patch.IsApplied = false;
+                        if (!string.IsNullOrWhiteSpace(patch.TargetFilePath))
+                        {
+                            string fullTargetPath = Path.GetFullPath(patch.TargetFilePath);
+                            if (restoredFiles.Add(fullTargetPath) &&
+                                originalFileContents.TryGetValue(fullTargetPath, out var originalText))
+                            {
+                                File.WriteAllText(fullTargetPath, originalText);
+                                Console.WriteLine($"[INFO] Rolled back '{fullTargetPath}' to original contents.");
+                            }
+                        }
+                    }
                 }
 
                 reporter.WriteReportFiles(report, outputDir);

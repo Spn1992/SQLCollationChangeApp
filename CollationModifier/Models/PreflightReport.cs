@@ -10,6 +10,11 @@ namespace CollationModifier.Models
         public string HostName { get; set; } = string.Empty;
         public string ProgramName { get; set; } = string.Empty;
         public string Status { get; set; } = string.Empty;
+
+        public string DisplaySummary =>
+            $"Session ID: {SessionId}, User: {LoginName}, Host: {HostName}, Program: {ProgramName}, Status: {Status}";
+
+        public override string ToString() => DisplaySummary;
     }
 
     public class SchemaDependencyInfo
@@ -18,11 +23,33 @@ namespace CollationModifier.Models
         public string ObjectType { get; set; } = string.Empty;
         public string SchemaName { get; set; } = string.Empty;
         public string Details { get; set; } = string.Empty;
+
+        public string DisplaySummary
+        {
+            get
+            {
+                var schemaObj = string.IsNullOrWhiteSpace(SchemaName) ? ObjectName : $"{SchemaName}.{ObjectName}";
+                return $"[{ObjectType}] {schemaObj}: {Details}";
+            }
+        }
+
+        public override string ToString() => DisplaySummary;
     }
 
     public class PreflightReport
     {
+        private static readonly IReadOnlyList<string> DefaultPassedChecks = new[]
+        {
+            "Required database permissions verified (ALTER, BACKUP DATABASE).",
+            "No active user sessions blocking SINGLE_USER mode.",
+            "No blocking schema dependencies detected.",
+            "Backup path and collation configuration validated."
+        };
+
         public string DatabaseName { get; set; } = string.Empty;
+        public string TargetCollation { get; set; } = string.Empty;
+        public int UserCharacterColumnCount { get; set; }
+        public int RetainedColumnCount { get; set; }
         public List<ActiveSessionInfo> ActiveSessions { get; set; } = new();
         public List<SchemaDependencyInfo> SchemaDependencies { get; set; } = new();
         public List<string> MissingPermissions { get; set; } = new();
@@ -36,11 +63,27 @@ namespace CollationModifier.Models
         public bool IsValid => !HasActiveSessions && !HasSchemaDependencies && !HasMissingPermissions && !HasValidationErrors;
         public bool HasBlockingConditions => !IsValid;
 
+        public string StatusBadgeText => IsValid ? "PASSED" : "BLOCKED";
+
+        public string SummaryMessage => IsValid
+            ? $"All pre-flight readiness checks passed for database '{DatabaseName}'."
+            : $"Blocking conditions detected for database '{DatabaseName}'. Resolve the items below before changing collation.";
+
+        public IReadOnlyList<string> PassedChecks => IsValid ? DefaultPassedChecks : System.Array.Empty<string>();
+
         public string GetDiagnosticSummary()
         {
             var sb = new StringBuilder();
             sb.AppendLine($"Pre-flight Validation Report for Database '{DatabaseName}':");
             sb.AppendLine($"Status: {(IsValid ? "PASSED" : "FAILED (Blocking items found)")}");
+
+            string targetCollationDetail = string.IsNullOrWhiteSpace(TargetCollation)
+                ? string.Empty
+                : $" (Differing from '{TargetCollation}')";
+            sb.AppendLine("\n[Column Collation Scope (Informational)]");
+            sb.AppendLine($"  - User Table Character Columns: {UserCharacterColumnCount}");
+            sb.AppendLine($"  - User Columns Retaining Prior Collations{targetCollationDetail}: {RetainedColumnCount}");
+            sb.AppendLine("  - Scope Note: ALTER DATABASE COLLATE changes only the database default collation and leaves existing user columns unchanged.");
 
             if (HasActiveSessions)
             {
