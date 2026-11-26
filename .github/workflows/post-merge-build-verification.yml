@@ -38,26 +38,11 @@ jobs:
       - name: Build solution
         run: dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
 
-      - name: Restore MSBuildDiagnosticPatcher dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Restore MSBuildDiagnosticPatcher.Tests dependencies
-        run: dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Build MSBuildDiagnosticPatcher
-        run: dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Build CollationModifier
-        run: dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
-      - name: Verify CollationModifier net8.0-windows build
-        run: dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
-
       - name: Run unit tests
-        run: dotnet run --project CollationModifier.Tests/CollationModifier.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+        run: dotnet CollationModifier.Tests/bin/Debug/net10.0/CollationModifier.Tests.dll 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Run MSBuildDiagnosticPatcher unit tests
-        run: dotnet run --project MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log
+        run: dotnet MSBuildDiagnosticPatcher.Tests/bin/Debug/net8.0/MSBuildDiagnosticPatcher.Tests.dll 2>&1 | tee -a /tmp/build-and-test.log
 
       - name: Generate diagnostics and candidate patches
         if: failure()

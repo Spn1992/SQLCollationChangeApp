@@ -36,6 +36,7 @@ namespace CollationModifier.ViewModels
             SelectedAuthenticationType = AuthenticationTypes[0];
 
             ConnectCommand = new RelayCommand(async _ => await ConnectAsync(), _ => !IsBusy);
+            RefreshDatabasesCommand = new RelayCommand(async _ => await RefreshDatabasesAsync(), _ => IsConnected && !IsBusy);
             RunPreflightCheckCommand = new RelayCommand(async _ => await RunPreflightCheckAsync(), _ => CanRunPreflightCheck());
             ProcessCommand = new RelayCommand(async _ => await ProcessCollationChangeAsync(), _ => CanProcessCollationChange());
             CancelCommand = new RelayCommand(_ => Cancel(), _ => IsBusy && !IsCancelling);
@@ -335,6 +336,7 @@ namespace CollationModifier.ViewModels
                 {
                     ClearPreflightReport();
                 }
+                _hasCustomBackupDirectory = !string.IsNullOrWhiteSpace(value);
             }
         }
 
@@ -386,6 +388,7 @@ namespace CollationModifier.ViewModels
         #region Commands
 
         public ICommand ConnectCommand { get; }
+        public ICommand RefreshDatabasesCommand { get; }
         public ICommand RunPreflightCheckCommand { get; }
         public ICommand ProcessCommand { get; }
         public ICommand CancelCommand { get; }
@@ -406,7 +409,6 @@ namespace CollationModifier.ViewModels
                 }
                 catch (ObjectDisposedException)
                 {
-                    // Ignored if already disposed concurrently
                     if (!IsBusy)
                     {
                         IsCancelling = false;
@@ -581,7 +583,6 @@ namespace CollationModifier.ViewModels
             }
         }
 
-
         public async Task RefreshDatabasesAsync()
         {
             if (!IsConnected || IsBusy)
@@ -589,6 +590,7 @@ namespace CollationModifier.ViewModels
                 return;
             }
 
+            IsCancelling = false;
             IsBusy = true;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
@@ -612,6 +614,7 @@ namespace CollationModifier.ViewModels
             {
                 _cts?.Dispose();
                 _cts = null;
+                IsCancelling = false;
                 IsBusy = false;
             }
         }
@@ -693,8 +696,9 @@ namespace CollationModifier.ViewModels
 
         internal bool DefaultConfirmCollationChange(string databaseName, string targetCollation, int retainedColumnCount)
         {
+            string message = BuildConfirmationMessage(databaseName, targetCollation, retainedColumnCount);
+            LastConfirmationMessage = message;
 #if NETFRAMEWORK || WINDOWS
-            string message = $"Are you sure you want to change the collation of database '{databaseName}' to '{targetCollation}'?\n\nWARNING: This process will close all active database connections and force the database into SINGLE_USER mode.";
             string title = "Confirm Collation Change";
 
             try
@@ -741,6 +745,72 @@ namespace CollationModifier.ViewModels
         {
             if (SelectedDatabase == null) return;
 
+            IsCancelling = false;
+            IsBusy = true;
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
+
+            string dbName = SelectedDatabase.Name;
+            _logger.LogInfo($"Running standalone pre-flight check for database: {dbName}");
+            StatusMessage = $"Running pre-flight checks for '{dbName}'...";
+            ProgressPercent = 0;
+            IsIndeterminateProgress = true;
+
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                ClearPreflightReport();
+
+                var report = await _databaseService.PreflightCheckAsync(dbName, BackupDirectory, TargetCollation, token);
+                token.ThrowIfCancellationRequested();
+
+                if (!report.HasValidationErrors && SelectedDatabase != null)
+                {
+                    SelectedDatabase.UserCharacterColumnCount = report.UserCharacterColumnCount;
+                    SelectedDatabase.RetainedColumnCount = report.RetainedColumnCount;
+                }
+
+                CurrentPreflightReport = report;
+                if (report.HasBlockingConditions)
+                {
+                    var summary = ErrorFormattingHelper.GetDetailedErrorText(new PreflightValidationException(report));
+                    _logger.LogWarning($"Pre-flight check found blocking conditions for {dbName}:\n{summary}");
+                    SetStatus($"Pre-flight check blocked for '{dbName}': Blocking conditions found.", summary, summary);
+                }
+                else
+                {
+                    _logger.LogInfo($"Pre-flight check passed for {dbName}.");
+                    SetStatus($"Pre-flight check passed for '{dbName}'. Ready for collation change.");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogInfo("Pre-flight check was cancelled by user.");
+                SetStatus("Operation cancelled by user.");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Pre-flight check failed for {dbName}.", ex);
+                string summary = ErrorFormattingHelper.GetSafeErrorMessage(ex);
+                string detailed = ErrorFormattingHelper.GetDetailedErrorText(ex);
+                SetStatus($"Pre-flight check error: {summary}", $"Pre-flight check error: {summary}", detailed);
+            }
+            finally
+            {
+                _cts?.Dispose();
+                _cts = null;
+                ProgressPercent = 0;
+                IsIndeterminateProgress = true;
+                IsCancelling = false;
+                IsBusy = false;
+            }
+        }
+
+        public async Task ProcessCollationChangeAsync()
+        {
+            if (SelectedDatabase == null) return;
+
+            IsCancelling = false;
             IsBusy = true;
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
@@ -748,6 +818,7 @@ namespace CollationModifier.ViewModels
             _logger.LogInfo($"Starting collation change process for database: {SelectedDatabase.Name} to {TargetCollation}");
             string? backupFile = null;
             bool enteredDestructivePhase = false;
+            bool alterPhaseStarted = false;
 
             ProgressPercent = 0;
             IsIndeterminateProgress = true;
@@ -761,6 +832,7 @@ namespace CollationModifier.ViewModels
                 StatusMessage = "Running pre-flight checks...";
                 ClearPreflightReport();
                 var preflightReport = await _databaseService.PreflightCheckAsync(SelectedDatabase.Name, BackupDirectory, TargetCollation, token);
+                CurrentPreflightReport = preflightReport;
                 if (!preflightReport.HasValidationErrors)
                 {
                     SelectedDatabase.UserCharacterColumnCount = preflightReport.UserCharacterColumnCount;
@@ -782,6 +854,7 @@ namespace CollationModifier.ViewModels
 
                 token.ThrowIfCancellationRequested();
 
+                // 2. Confirm SINGLE_USER transition and column scope only after pre-flight checks pass
                 string confirmationMessage = BuildConfirmationMessage(SelectedDatabase.Name, TargetCollation, retainedColumns);
                 LastConfirmationMessage = confirmationMessage;
 
@@ -795,20 +868,6 @@ namespace CollationModifier.ViewModels
                 {
                     _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name} ({retainedColumns} user column(s) would retain prior collations).");
                     SetStatus("Collation change operation cancelled.");
-                    return;
-                }
-
-                token.ThrowIfCancellationRequested();
-
-                // 2. Confirm SINGLE_USER transition only after pre-flight checks pass
-                bool confirmed = ConfirmCollationChangeHandler != null
-                    ? ConfirmCollationChangeHandler(SelectedDatabase.Name, TargetCollation)
-                    : DefaultConfirmCollationChange(SelectedDatabase.Name, TargetCollation);
-
-                if (!confirmed)
-                {
-                    _logger.LogInfo($"Collation change process cancelled by user for database: {SelectedDatabase.Name}");
-                    StatusMessage = "Collation change operation cancelled.";
                     return;
                 }
 
@@ -831,12 +890,11 @@ namespace CollationModifier.ViewModels
 
                 token.ThrowIfCancellationRequested();
 
-                // 3. Execution Phase
+                // 4. Execution Phase
                 alterPhaseStarted = true;
                 StatusMessage = "Altering database collation... This may take a while.";
                 ProgressPercent = 0;
                 IsIndeterminateProgress = true;
-                alterPhaseStarted = true;
                 await _databaseService.AlterCollationAsync(SelectedDatabase.Name, TargetCollation, token);
 
                 string completionStatus = BuildCompletionStatusMessage(TargetCollation, retainedColumns);
@@ -852,16 +910,11 @@ namespace CollationModifier.ViewModels
             {
                 _logger.LogInfo("Process collation change was cancelled by user.");
 
-                if (!alterPhaseStarted)
+                if (!enteredDestructivePhase || SelectedDatabase == null)
                 {
-                    if (!string.IsNullOrEmpty(backupFile))
-                    {
-                        _logger.LogInfo($"Skipping database restore because collation alteration had not started. Unused backup file retained at: {backupFile}");
-                    }
                     SetStatus("Operation cancelled by user.");
                 }
-
-                if (enteredDestructivePhase && SelectedDatabase != null)
+                else
                 {
                     Exception? restoreEx = null;
                     Exception? resetEx = null;
@@ -885,7 +938,7 @@ namespace CollationModifier.ViewModels
                         }
                     }
 
-                    if (SelectedDatabase != null)
+                    if (alterPhaseStarted && SelectedDatabase != null)
                     {
                         try
                         {

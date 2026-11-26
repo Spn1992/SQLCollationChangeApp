@@ -3,9 +3,25 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PATCHER_DIR="$REPO_ROOT/MSBuildDiagnosticPatcher"
+PATCHER_PROJECT="$PATCHER_DIR/MSBuildDiagnosticPatcher.csproj"
+PATCHER_DLL="$PATCHER_DIR/bin/Debug/net8.0/MSBuildDiagnosticPatcher.dll"
+PATCHER_RUNTIMECONFIG="$PATCHER_DIR/bin/Debug/net8.0/MSBuildDiagnosticPatcher.runtimeconfig.json"
+
+needs_build=0
+if [ ! -f "$PATCHER_DLL" ] || [ ! -f "$PATCHER_RUNTIMECONFIG" ]; then
+  needs_build=1
+elif [ -n "$(find "$PATCHER_DIR" \( -path "$PATCHER_DIR/bin" -o -path "$PATCHER_DIR/obj" \) -prune -o -type f \( -name '*.cs' -o -name '*.csproj' \) -newer "$PATCHER_DLL" -print -quit)" ]; then
+  needs_build=1
+fi
+
+if [ "$needs_build" -eq 1 ]; then
+  dotnet build "$PATCHER_PROJECT" -c Debug -p:UseSharedCompilation=false --nologo -v quiet >&2
+  touch -c "$PATCHER_DLL"
+fi
 
 if [ "$#" -eq 0 ]; then
-  dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false --
+  exec dotnet "$PATCHER_DLL"
 else
-  dotnet run --project "$REPO_ROOT/MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj" -p:UseSharedCompilation=false -- --project-root "$REPO_ROOT" "$@"
+  exec dotnet "$PATCHER_DLL" --project-root "$REPO_ROOT" "$@"
 fi

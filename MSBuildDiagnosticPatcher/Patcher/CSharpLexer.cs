@@ -1058,7 +1058,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         public static int SkipWhitespace(string text, int pos, int end)
         {
-            while (pos < end && char.IsWhiteSpace(text[pos]))
+            while (pos < end && (char.IsWhiteSpace(text[pos]) || text[pos] == '\uFEFF'))
             {
                 pos++;
             }

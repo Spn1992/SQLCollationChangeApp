@@ -23,8 +23,6 @@ namespace MSBuildDiagnosticPatcher.Parsers
                 return new List<CompilerDiagnostic>();
             }
 
-            var seenKeys = new HashSet<(string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath)>();
-
             using var reader = new StringReader(logContent);
             return ParseStream(reader);
         }
@@ -33,17 +31,13 @@ namespace MSBuildDiagnosticPatcher.Parsers
         {
             if (reader == null)
             {
-                var diag = ParseLine(line);
-                if (diag != null && seenKeys.Add(CreateDiagnosticKey(diag)))
-                {
-                    results.Add(diag);
-                }
+                throw new ArgumentNullException(nameof(reader));
             }
 
             return LogStreamParser.Parse(reader, this, testParser: null).Diagnostics;
         }
 
-        private static (string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath) CreateDiagnosticKey(CompilerDiagnostic diagnostic)
+        internal static (string FilePath, int LineNumber, int ColumnNumber, DiagnosticSeverity Severity, string Code, string Message, string ProjectPath) CreateDiagnosticKey(CompilerDiagnostic diagnostic)
         {
             return (
                 NormalizePath(diagnostic.FilePath),
@@ -98,6 +92,96 @@ namespace MSBuildDiagnosticPatcher.Parsers
             }
 
             return null;
+        }
+
+        private static bool HasMSBuildDiagnosticCode(string line)
+        {
+            int searchFrom = 0;
+            while (searchFrom < line.Length)
+            {
+                int codeColon = line.IndexOf(':', searchFrom);
+                if (codeColon < 0)
+                {
+                    return false;
+                }
+
+                if (IsDiagnosticCodeBeforeColon(line, codeColon))
+                {
+                    return true;
+                }
+
+                searchFrom = codeColon + 1;
+            }
+
+            return false;
+        }
+
+        private static bool IsDiagnosticCodeBeforeColon(string line, int codeColon)
+        {
+            int p = codeColon - 1;
+            if (p <= 0)
+            {
+                return false;
+            }
+
+            // Optional trailing letter [a-zA-Z]?
+            if (char.IsLetter(line[p]))
+            {
+                p--;
+            }
+
+            // 4 or 5 digits \d{4,5}
+            int digits = 0;
+            while (p >= 0 && char.IsDigit(line[p]))
+            {
+                digits++;
+                p--;
+            }
+
+            if (digits < 4 || digits > 5 || p < 1)
+            {
+                return false;
+            }
+
+            // Match CS, BC, FS, MSB, NETSDK, NU, MC, CA, and SYSLIB code prefixes case-insensitively
+            ReadOnlySpan<char> prefixSpan = line.AsSpan(0, p + 1);
+            int codeStart;
+            if (prefixSpan.EndsWith("CS", StringComparison.OrdinalIgnoreCase) ||
+                prefixSpan.EndsWith("BC", StringComparison.OrdinalIgnoreCase) ||
+                prefixSpan.EndsWith("FS", StringComparison.OrdinalIgnoreCase) ||
+                prefixSpan.EndsWith("NU", StringComparison.OrdinalIgnoreCase) ||
+                prefixSpan.EndsWith("MC", StringComparison.OrdinalIgnoreCase) ||
+                prefixSpan.EndsWith("CA", StringComparison.OrdinalIgnoreCase))
+            {
+                codeStart = p - 1;
+            }
+            else if (prefixSpan.EndsWith("MSB", StringComparison.OrdinalIgnoreCase))
+            {
+                codeStart = p - 2;
+            }
+            else if (prefixSpan.EndsWith("NETSDK", StringComparison.OrdinalIgnoreCase) ||
+                     prefixSpan.EndsWith("SYSLIB", StringComparison.OrdinalIgnoreCase))
+            {
+                codeStart = p - 5;
+            }
+            else
+            {
+                return false;
+            }
+
+            // Require whitespace before code and a severity word preceding it
+            int ws = codeStart - 1;
+            if (ws <= 0 || !char.IsWhiteSpace(line[ws]))
+            {
+                return false;
+            }
+
+            while (ws >= 0 && char.IsWhiteSpace(line[ws]))
+            {
+                ws--;
+            }
+
+            return ws >= 0 && char.IsLetter(line[ws]);
         }
 
         private static CompilerDiagnostic? CreateFromMatch(Match match, string rawLine)

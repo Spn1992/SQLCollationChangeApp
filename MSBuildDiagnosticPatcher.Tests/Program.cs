@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -130,9 +132,12 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("Program_Main_ApplyWithEnclosingCsproj_VerifiesBuildAndSucceedsForValidComplexPatches", Test_Program_Main_ApplyWithEnclosingCsproj_VerifiesBuildAndSucceedsForValidComplexPatches);
             RunTest("Program_Main_ApplyWithEnclosingCsproj_RollsBackUncompilableFallbackPatchAndReturnsOne", Test_Program_Main_ApplyWithEnclosingCsproj_RollsBackUncompilableFallbackPatchAndReturnsOne);
 
-            // 9. CI Workflow Configuration Tests
+            // 9. CI Workflow, Root Solution & Prebuilt Launcher Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
             RunTest("Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix", Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix);
+            RunTest("Solution_RootSln_ClassicFormatIncludesAllFourProjects", Test_Solution_RootSln_ClassicFormatIncludesAllFourProjects);
+            RunTest("Launcher_PrebuiltUpToDate_SkipsMsBuildAndFinishesUnder800ms", Test_Launcher_PrebuiltUpToDate_SkipsMsBuildAndFinishesUnder800ms);
+            RunTest("Launcher_MissingOrStaleBinary_RebuildsWithSharedCompilationDisabled", Test_Launcher_MissingOrStaleBinary_RebuildsWithSharedCompilationDisabled);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -3314,6 +3319,90 @@ public class Greeter : IGreeter
 
         private static int InvokePatcherMain(string[] args) => InvokePatcherMain(args, out _, out _);
 
+        static void Test_DiagnosticReport_SeverityCounts_TrackInfoWarningErrorMutations()
+        {
+            var report = new DiagnosticReport
+            {
+                Diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" },
+                    new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" }
+                }
+            };
+
+            Assert(report.ErrorCount == 1, $"Expected initial ErrorCount 1, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected initial WarningCount 1, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1002" });
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after adding Info, got {report.ErrorCount}");
+            Assert(report.WarningCount == 1, $"Expected WarningCount 1 after adding Info, got {report.WarningCount}");
+
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0219" });
+            report.Diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0103" });
+            Assert(report.ErrorCount == 2, $"Expected ErrorCount 2 after adding Error, got {report.ErrorCount}");
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after adding Warning, got {report.WarningCount}");
+
+            report.Diagnostics[2].Severity = DiagnosticSeverity.Warning;
+            Assert(report.ErrorCount == 1, $"Expected ErrorCount 1 after mutating Error to Warning, got {report.ErrorCount}");
+            Assert(report.WarningCount == 3, $"Expected WarningCount 3 after mutating Error to Warning, got {report.WarningCount}");
+
+            report.Diagnostics.RemoveAt(1);
+            Assert(report.WarningCount == 2, $"Expected WarningCount 2 after RemoveAt, got {report.WarningCount}");
+
+            report.Diagnostics.Clear();
+            Assert(report.ErrorCount == 0, $"Expected ErrorCount 0 after Clear, got {report.ErrorCount}");
+            Assert(report.WarningCount == 0, $"Expected WarningCount 0 after Clear, got {report.WarningCount}");
+        }
+
+        static void Test_DiagnosticReport_ErrorAndWarningCounts_ZeroAllocations()
+        {
+            var diagnostics = new List<CompilerDiagnostic>(128);
+            for (int i = 0; i < 50; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Error, Code = "CS0535" });
+            }
+            for (int i = 0; i < 40; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Warning, Code = "CS0168" });
+            }
+            for (int i = 0; i < 30; i++)
+            {
+                diagnostics.Add(new CompilerDiagnostic { Severity = DiagnosticSeverity.Info, Code = "MSB1001" });
+            }
+
+            var report = new DiagnosticReport { Diagnostics = diagnostics };
+
+            // Warm up JIT tiers before measuring current-thread heap allocations
+            int warmupTotal = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                warmupTotal += report.ErrorCount + report.WarningCount;
+            }
+
+            long beforeError = GC.GetAllocatedBytesForCurrentThread();
+            int errorSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                errorSum += report.ErrorCount;
+            }
+            long errorAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeError;
+
+            long beforeWarning = GC.GetAllocatedBytesForCurrentThread();
+            int warningSum = 0;
+            for (int i = 0; i < 50; i++)
+            {
+                warningSum += report.WarningCount;
+            }
+            long warningAllocated = GC.GetAllocatedBytesForCurrentThread() - beforeWarning;
+
+            GC.KeepAlive(warmupTotal);
+            Assert(errorSum == 50 * 50, $"Expected errorSum 2500, got {errorSum}");
+            Assert(warningSum == 50 * 40, $"Expected warningSum 2000, got {warningSum}");
+            Assert(errorAllocated == 0, $"Expected 0 bytes allocated reading ErrorCount, got {errorAllocated}");
+            Assert(warningAllocated == 0, $"Expected 0 bytes allocated reading WarningCount, got {warningAllocated}");
+        }
+
         static void Test_Program_Main_ReturnsExitCode0_ForCleanBuildLog()
         {
             string tempDir = Path.Combine(Path.GetTempPath(), $"main_test_clean_{Guid.NewGuid():N}");
@@ -3656,45 +3745,66 @@ Time Elapsed 00:00:01.42
             }
         }
 
-        // 9. CI Workflow Configuration Tests
+        // 9. CI Workflow, Root Solution & Prebuilt Launcher Configuration Tests
         static void Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload()
         {
             string workflowPath = FindWorkflowPath();
             string content = File.ReadAllText(workflowPath);
 
-            // Requirement 1: Redirect solution restore, build, and test output to /tmp/build-and-test.log in order
+            // Requirement 2 & 3: Single solution restore, single --no-restore solution build, and two direct compiled test DLL executions
             string restoreCmd = "dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log";
             string buildCmd = "dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
-            string testCmd = "dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
+            string collationTestsCmd = "dotnet CollationModifier.Tests/bin/Debug/net10.0/CollationModifier.Tests.dll 2>&1 | tee -a /tmp/build-and-test.log";
+            string patcherTestsCmd = "dotnet MSBuildDiagnosticPatcher.Tests/bin/Debug/net8.0/MSBuildDiagnosticPatcher.Tests.dll 2>&1 | tee -a /tmp/build-and-test.log";
 
-            Assert(content.Contains(restoreCmd), "Workflow must redirect solution restore output to /tmp/build-and-test.log");
-            Assert(content.Contains(buildCmd), "Workflow must append solution build output to /tmp/build-and-test.log");
-            Assert(content.Contains(testCmd), "Workflow must append solution test output to /tmp/build-and-test.log");
+            Assert(content.Contains(restoreCmd), "Workflow must run single solution restore piped to /tmp/build-and-test.log");
+            Assert(content.Contains(buildCmd), "Workflow must run single --no-restore solution build appended to /tmp/build-and-test.log");
+            Assert(content.Contains(collationTestsCmd), "Workflow must run compiled CollationModifier.Tests.dll directly and append output to /tmp/build-and-test.log");
+            Assert(content.Contains(patcherTestsCmd), "Workflow must run compiled MSBuildDiagnosticPatcher.Tests.dll directly and append output to /tmp/build-and-test.log");
+
+            int restoreCount = Regex.Matches(content, @"\bdotnet\s+restore\b").Count;
+            int buildCount = Regex.Matches(content, @"\bdotnet\s+build\b").Count;
+            int runCount = Regex.Matches(content, @"\bdotnet\s+run\b").Count;
+            int vstestCount = Regex.Matches(content, @"\bdotnet\s+test\b").Count;
+
+            Assert(restoreCount == 1, $"Workflow must run exactly 1 'dotnet restore' command, found {restoreCount}");
+            Assert(buildCount == 1, $"Workflow must run exactly 1 'dotnet build' command, found {buildCount}");
+            Assert(runCount == 0, $"Workflow must not invoke 'dotnet run', found {runCount}");
+            Assert(vstestCount == 0, $"Workflow must not invoke 'dotnet test' VSTest adapter, found {vstestCount}");
 
             int restoreIndex = content.IndexOf(restoreCmd, StringComparison.Ordinal);
             int buildIndex = content.IndexOf(buildCmd, StringComparison.Ordinal);
-            int testIndex = content.IndexOf(testCmd, StringComparison.Ordinal);
-            Assert(restoreIndex != -1 && buildIndex != -1 && testIndex != -1 && restoreIndex < buildIndex && buildIndex < testIndex, "Workflow must run solution restore, build, and test steps in order");
+            int collationTestsIndex = content.IndexOf(collationTestsCmd, StringComparison.Ordinal);
+            int patcherTestsIndex = content.IndexOf(patcherTestsCmd, StringComparison.Ordinal);
+            Assert(
+                restoreIndex != -1 && buildIndex != -1 && collationTestsIndex != -1 && patcherTestsIndex != -1 &&
+                restoreIndex < buildIndex && buildIndex < collationTestsIndex && collationTestsIndex < patcherTestsIndex,
+                "Workflow must run solution restore, solution build, CollationModifier.Tests.dll, and MSBuildDiagnosticPatcher.Tests.dll in order");
 
-            // Launcher requirement: Disable shared Roslyn compilation
+            // Launcher requirements: Prebuilt fast path + fallback rebuild with -p:UseSharedCompilation=false
             string launcherPath = FindLauncherScriptPath();
             string launcherContent = File.ReadAllText(launcherPath);
-            Assert(launcherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher must pass -p:UseSharedCompilation=false to dotnet run");
+            Assert(launcherContent.Contains("MSBuildDiagnosticPatcher.dll"), "Launcher script bin/msbuild-patcher must execute prebuilt MSBuildDiagnosticPatcher.dll");
+            Assert(launcherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher must pass -p:UseSharedCompilation=false on fallback build");
+            Assert(!Regex.IsMatch(launcherContent, @"\bdotnet\s+run\b"), "Launcher script bin/msbuild-patcher must not invoke dotnet run");
 
             string cmdLauncherPath = FindLauncherCmdPath();
             string cmdLauncherContent = File.ReadAllText(cmdLauncherPath);
-            Assert(cmdLauncherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher.cmd must pass -p:UseSharedCompilation=false to dotnet run");
+            Assert(cmdLauncherContent.Contains("MSBuildDiagnosticPatcher.dll"), "Launcher script bin/msbuild-patcher.cmd must execute prebuilt MSBuildDiagnosticPatcher.dll");
+            Assert(cmdLauncherContent.Contains("-p:UseSharedCompilation=false"), "Launcher script bin/msbuild-patcher.cmd must pass -p:UseSharedCompilation=false on fallback build");
+            Assert(!Regex.IsMatch(cmdLauncherContent, @"\bdotnet\s+run\b"), "Launcher script bin/msbuild-patcher.cmd must not invoke dotnet run");
 
-            // Requirement 2: Invoke bin/msbuild-patcher under if: failure()
+            // Failure reporting guardrails: Invoke bin/msbuild-patcher under if: failure()
             Assert(content.Contains("bin/msbuild-patcher /tmp/build-and-test.log"), "Workflow must invoke bin/msbuild-patcher /tmp/build-and-test.log");
             Assert(content.Contains("if: failure()"), "Diagnostic reporting steps must run under if: failure()");
 
-            // Requirement 4 & 6: Verify diagnostic-report.md exists before writing to $GITHUB_STEP_SUMMARY
+            // Verify diagnostic-report.md exists and 1048576-byte truncation is preserved before writing to $GITHUB_STEP_SUMMARY
             Assert(content.Contains("build-diagnostics/diagnostic-report.md"), "Workflow must reference build-diagnostics/diagnostic-report.md");
+            Assert(content.Contains("1048576"), "Workflow must preserve 1048576-byte truncation for $GITHUB_STEP_SUMMARY");
             Assert(content.Contains("$GITHUB_STEP_SUMMARY"), "Workflow must write to $GITHUB_STEP_SUMMARY");
             Assert(content.Contains("-f \"build-diagnostics/diagnostic-report.md\"") || content.Contains("-f build-diagnostics/diagnostic-report.md"), "Workflow must verify diagnostic-report.md exists before appending");
 
-            // Requirement 5 & Criterion 3: Upload build-diagnostics-report artifact via actions/upload-artifact@v4
+            // Upload build-diagnostics-report artifact via actions/upload-artifact@v4
             Assert(content.Contains("actions/upload-artifact@v4"), "Workflow must use actions/upload-artifact@v4");
             Assert(content.Contains("name: build-diagnostics-report"), "Workflow must name artifact build-diagnostics-report");
             Assert(content.Contains("build-diagnostics/"), "Workflow artifact path must include build-diagnostics/");
@@ -3710,13 +3820,304 @@ Time Elapsed 00:00:01.42
             Assert(content.Contains("windows-latest"), "Workflow matrix must include windows-latest");
             Assert(content.Contains("runs-on: ${{ matrix.os }}"), "Workflow must run across ${{ matrix.os }}");
             Assert(content.Contains("shell: bash"), "Workflow must set shell: bash so pipefail propagates non-zero exit codes across Linux and Windows");
-            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
-                "Workflow must explicitly verify net8.0-windows compilation and redirect output to /tmp/build-and-test.log");
+            Assert(content.Contains("dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must build SQLCollationChangeApp.sln (which includes net8.0-windows via CollationModifier.csproj) and redirect output to /tmp/build-and-test.log");
 
-            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj", StringComparison.Ordinal);
-            int windowsBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows", StringComparison.Ordinal);
-            Assert(patcherBuildIndex != -1 && windowsBuildIndex != -1 && patcherBuildIndex < windowsBuildIndex,
-                "Workflow must build MSBuildDiagnosticPatcher before net8.0-windows verification step");
+            string repoRoot = FindRepoRootPath();
+            string slnContent = File.ReadAllText(Path.Combine(repoRoot, "SQLCollationChangeApp.sln"));
+            int patcherSlnIdx = slnContent.IndexOf("MSBuildDiagnosticPatcher\\MSBuildDiagnosticPatcher.csproj", StringComparison.Ordinal);
+            int collationSlnIdx = slnContent.IndexOf("CollationModifier\\CollationModifier.csproj", StringComparison.Ordinal);
+            Assert(patcherSlnIdx != -1 && collationSlnIdx != -1 && patcherSlnIdx < collationSlnIdx,
+                "SQLCollationChangeApp.sln must list MSBuildDiagnosticPatcher before CollationModifier so MSBuildDiagnosticPatcher compiles even if CollationModifier fails");
+
+            string collationCsproj = File.ReadAllText(Path.Combine(repoRoot, "CollationModifier", "CollationModifier.csproj"));
+            Assert(collationCsproj.Contains("net8.0;net8.0-windows"), "CollationModifier.csproj must multi-target net8.0;net8.0-windows");
+            Assert(collationCsproj.Contains("<EnableWindowsTargeting>true</EnableWindowsTargeting>"), "CollationModifier.csproj must set EnableWindowsTargeting=true");
+        }
+
+        static void Test_Solution_RootSln_ClassicFormatIncludesAllFourProjects()
+        {
+            string repoRoot = FindRepoRootPath();
+            string slnPath = Path.Combine(repoRoot, "SQLCollationChangeApp.sln");
+            Assert(File.Exists(slnPath), $"Expected root solution file at {slnPath}");
+            Assert(!File.Exists(Path.Combine(repoRoot, "SQLCollationChangeApp.slnx")), "Solution must use classic .sln format, not .slnx");
+
+            string slnContent = File.ReadAllText(slnPath);
+            Assert(slnContent.Contains("Microsoft Visual Studio Solution File, Format Version 12.00"),
+                "SQLCollationChangeApp.sln must use classic Format Version 12.00 header for .NET 8 and .NET 10 compatibility");
+
+            string[] requiredProjects =
+            {
+                "MSBuildDiagnosticPatcher\\MSBuildDiagnosticPatcher.csproj",
+                "CollationModifier\\CollationModifier.csproj",
+                "CollationModifier.Tests\\CollationModifier.Tests.csproj",
+                "MSBuildDiagnosticPatcher.Tests\\MSBuildDiagnosticPatcher.Tests.csproj"
+            };
+
+            foreach (string projectRelPath in requiredProjects)
+            {
+                Assert(slnContent.Contains($"\"{projectRelPath}\""),
+                    $"SQLCollationChangeApp.sln must include project '{projectRelPath}'");
+            }
+        }
+
+        static void Test_Launcher_PrebuiltUpToDate_SkipsMsBuildAndFinishesUnder800ms()
+        {
+            string repoRoot = FindRepoRootPath();
+            string patcherDll = Path.Combine(repoRoot, "MSBuildDiagnosticPatcher", "bin", "Debug", "net8.0", "MSBuildDiagnosticPatcher.dll");
+            Assert(File.Exists(patcherDll), $"Expected prebuilt {patcherDll} to exist during test execution");
+
+            // Ensure DLL timestamp is strictly newer than all source inputs before measuring fast path
+            File.SetLastWriteTimeUtc(patcherDll, DateTime.UtcNow);
+
+            string tempDir = Path.Combine(Path.GetTempPath(), $"launcher_fastpath_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var logBuilder = new StringBuilder(32768);
+                for (int i = 1; i <= 499; i++)
+                {
+                    logBuilder.Append("  Compiling item ").Append(i).AppendLine(" of 500...");
+                }
+                logBuilder.AppendLine("Build succeeded. 0 Warning(s) 0 Error(s)");
+
+                string logFile = Path.Combine(tempDir, "build-500.log");
+                File.WriteAllText(logFile, logBuilder.ToString());
+
+                string shimDir = Path.Combine(tempDir, "shim");
+                string invocationLog = Path.Combine(tempDir, "dotnet-invocations.log");
+                CreateDotnetRecordingShim(shimDir, invocationLog);
+
+                string warmOut = Path.Combine(tempDir, "warm-out");
+                RunLauncherProcess(repoRoot, shimDir, new[] { logFile, "-o", warmOut });
+                if (File.Exists(invocationLog)) File.Delete(invocationLog);
+
+                string measuredOut = Path.Combine(tempDir, "measured-out");
+                var sw = Stopwatch.StartNew();
+                var (exitCode, stdout, stderr) = RunLauncherProcess(repoRoot, shimDir, new[] { logFile, "-o", measuredOut });
+                sw.Stop();
+
+                Assert(exitCode == 0, $"Expected exit code 0 for clean 500-line log, got {exitCode}. Stdout: {stdout}\nStderr: {stderr}");
+                Assert(File.Exists(Path.Combine(measuredOut, "diagnostic-report.md")), "Expected diagnostic-report.md to be generated");
+                Assert(sw.Elapsed.TotalMilliseconds < 800.0,
+                    $"Expected up-to-date prebuilt launcher to finish in < 800 ms on 500-line log, took {sw.Elapsed.TotalMilliseconds:F1} ms");
+
+                string recordedCalls = File.Exists(invocationLog) ? File.ReadAllText(invocationLog) : string.Empty;
+                var callLines = recordedCalls.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                Assert(callLines.Length == 1, $"Expected exactly 1 dotnet invocation on fast path, got {callLines.Length}:\n{recordedCalls}");
+                Assert(callLines[0].Contains("MSBuildDiagnosticPatcher.dll"), $"Expected direct MSBuildDiagnosticPatcher.dll execution, got: {callLines[0]}");
+                Assert(!callLines[0].StartsWith("build ", StringComparison.OrdinalIgnoreCase) && !callLines[0].StartsWith("run ", StringComparison.OrdinalIgnoreCase),
+                    $"Fast path must skip dotnet build/run, got: {callLines[0]}");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_Launcher_MissingOrStaleBinary_RebuildsWithSharedCompilationDisabled()
+        {
+            string repoRoot = FindRepoRootPath();
+            string tempRepo = Path.Combine(Path.GetTempPath(), $"launcher_fallback_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempRepo);
+            try
+            {
+                // Copy bin/ launchers and MSBuildDiagnosticPatcher/ source inputs (excluding bin/ and obj/, copying obj/ restore assets if present so offline build works)
+                string destBin = Path.Combine(tempRepo, "bin");
+                Directory.CreateDirectory(destBin);
+                File.Copy(Path.Combine(repoRoot, "bin", "msbuild-patcher"), Path.Combine(destBin, "msbuild-patcher"));
+                File.Copy(Path.Combine(repoRoot, "bin", "msbuild-patcher.cmd"), Path.Combine(destBin, "msbuild-patcher.cmd"));
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    File.SetUnixFileMode(
+                        Path.Combine(destBin, "msbuild-patcher"),
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                        UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                        UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                }
+
+                string srcPatcherDir = Path.Combine(repoRoot, "MSBuildDiagnosticPatcher");
+                string destPatcherDir = Path.Combine(tempRepo, "MSBuildDiagnosticPatcher");
+                CopyDirectoryExcludingBinObj(srcPatcherDir, destPatcherDir);
+
+                string logFile = Path.Combine(tempRepo, "sample-error.log");
+                File.WriteAllText(logFile, "CollationModifier/ViewModels/MainViewModel.cs(10,5): error CS1002: ; expected [CollationModifier/CollationModifier.csproj]\n");
+
+                string shimDir = Path.Combine(tempRepo, "shim");
+                string invocationLog = Path.Combine(tempRepo, "dotnet-invocations.log");
+                CreateDotnetRecordingShim(shimDir, invocationLog);
+
+                string builtDll = Path.Combine(destPatcherDir, "bin", "Debug", "net8.0", "MSBuildDiagnosticPatcher.dll");
+                Assert(!File.Exists(builtDll), "Precondition: MSBuildDiagnosticPatcher.dll must not exist in isolated temp repo");
+
+                // 1. Missing binary -> rebuilds with -p:UseSharedCompilation=false and writes diagnostic-report.md
+                string outMissing = Path.Combine(tempRepo, "out-missing");
+                var (missingExit, missingOut, missingErr) = RunLauncherProcess(tempRepo, shimDir, new[] { logFile, "-o", outMissing });
+                Assert(missingExit == 1, $"Expected exit code 1 when log has compiler error, got {missingExit}. Out: {missingOut}\nErr: {missingErr}");
+                Assert(File.Exists(builtDll), "Fallback path must compile MSBuildDiagnosticPatcher.dll when missing");
+                Assert(File.Exists(Path.Combine(outMissing, "diagnostic-report.md")), "Fallback path must produce diagnostic-report.md");
+
+                var missingCalls = File.ReadAllLines(invocationLog).Where(l => !string.IsNullOrWhiteSpace(l)).ToArray();
+                Assert(missingCalls.Length == 2, $"Expected 2 dotnet calls (build + dll exec) when binary missing, got {missingCalls.Length}:\n{string.Join("\n", missingCalls)}");
+                Assert(missingCalls[0].Contains("build") && missingCalls[0].Contains("-p:UseSharedCompilation=false"),
+                    $"Fallback build must pass -p:UseSharedCompilation=false, got: {missingCalls[0]}");
+                Assert(missingCalls[1].Contains("MSBuildDiagnosticPatcher.dll") && missingCalls[1].Contains("--project-root"),
+                    $"Launcher must execute compiled MSBuildDiagnosticPatcher.dll with --project-root, got: {missingCalls[1]}");
+
+                // 2. Up-to-date binary -> skips MSBuild
+                File.Delete(invocationLog);
+                string outUpToDate = Path.Combine(tempRepo, "out-uptodate");
+                var (upExit, _, _) = RunLauncherProcess(tempRepo, shimDir, new[] { logFile, "-o", outUpToDate });
+                Assert(upExit == 1, $"Expected exit code 1 for error log on up-to-date binary, got {upExit}");
+                var upToDateCalls = File.ReadAllLines(invocationLog).Where(l => !string.IsNullOrWhiteSpace(l)).ToArray();
+                Assert(upToDateCalls.Length == 1 && !upToDateCalls[0].Contains("build "),
+                    $"Up-to-date run must skip dotnet build, got:\n{string.Join("\n", upToDateCalls)}");
+
+                // 3. Stale binary (.cs newer than .dll) -> rebuilds with -p:UseSharedCompilation=false and refreshes DLL mtime
+                File.Delete(invocationLog);
+                DateTime nowUtc = DateTime.UtcNow;
+                File.SetLastWriteTimeUtc(builtDll, nowUtc.AddSeconds(-15));
+                File.SetLastWriteTimeUtc(Path.Combine(destPatcherDir, "Program.cs"), nowUtc.AddSeconds(-3));
+
+                string outStale = Path.Combine(tempRepo, "out-stale");
+                var (staleExit, staleOut, staleErr) = RunLauncherProcess(tempRepo, shimDir, new[] { logFile, "-o", outStale });
+                Assert(staleExit == 1, $"Expected exit code 1 on stale rebuild run, got {staleExit}. Out: {staleOut}\nErr: {staleErr}");
+                var staleCalls = File.ReadAllLines(invocationLog).Where(l => !string.IsNullOrWhiteSpace(l)).ToArray();
+                Assert(staleCalls.Length == 2 && staleCalls[0].Contains("build") && staleCalls[0].Contains("-p:UseSharedCompilation=false"),
+                    $"Stale source input must trigger rebuild with -p:UseSharedCompilation=false, got:\n{string.Join("\n", staleCalls)}");
+                Assert(File.GetLastWriteTimeUtc(builtDll) >= File.GetLastWriteTimeUtc(Path.Combine(destPatcherDir, "Program.cs")),
+                    "Launcher must refresh MSBuildDiagnosticPatcher.dll mtime so subsequent runs do not rebuild repeatedly");
+
+                // 4. Verify Windows .cmd launcher parity
+                string cmdContent = File.ReadAllText(Path.Combine(destBin, "msbuild-patcher.cmd"));
+                Assert(cmdContent.Contains("if not exist \"%PATCHER_DLL%\" goto :build_patcher"), "msbuild-patcher.cmd must rebuild when PATCHER_DLL is missing");
+                Assert(cmdContent.Contains("EnumerateFiles"), "msbuild-patcher.cmd must check .cs and .csproj timestamps against PATCHER_DLL");
+                Assert(cmdContent.Contains("dotnet build \"%PATCHER_PROJECT%\" -c Debug -p:UseSharedCompilation=false"), "msbuild-patcher.cmd must rebuild with -p:UseSharedCompilation=false");
+                Assert(cmdContent.Contains("dotnet \"%PATCHER_DLL%\" --project-root \"%REPO_ROOT%\" %*"), "msbuild-patcher.cmd must forward --project-root and CLI arguments to PATCHER_DLL");
+            }
+            finally
+            {
+                if (Directory.Exists(tempRepo)) Directory.Delete(tempRepo, true);
+            }
+        }
+
+        private static string FindRepoRootPath()
+        {
+            string workflowPath = FindWorkflowPath();
+            return Directory.GetParent(Directory.GetParent(Path.GetDirectoryName(workflowPath)!)!.FullName)!.FullName;
+        }
+
+        private static void CopyDirectoryExcludingBinObj(string sourceDir, string destDir)
+        {
+            Directory.CreateDirectory(destDir);
+            foreach (string file in Directory.GetFiles(sourceDir))
+            {
+                File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)), overwrite: true);
+            }
+            foreach (string subDir in Directory.GetDirectories(sourceDir))
+            {
+                string name = Path.GetFileName(subDir);
+                if (name.Equals("bin", StringComparison.OrdinalIgnoreCase) ||
+                    name.Equals("obj", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                CopyDirectoryExcludingBinObj(subDir, Path.Combine(destDir, name));
+            }
+        }
+
+        private static string ResolveDotnetExecutablePath()
+        {
+            string? processPath = Environment.ProcessPath;
+            if (!string.IsNullOrEmpty(processPath) &&
+                Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase) &&
+                File.Exists(processPath))
+            {
+                return processPath;
+            }
+
+            string exeName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "dotnet.exe" : "dotnet";
+            string pathEnv = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            foreach (string dir in pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+            {
+                string candidate = Path.Combine(dir, exeName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+
+            return exeName;
+        }
+
+        private static void CreateDotnetRecordingShim(string shimDir, string invocationLogPath)
+        {
+            Directory.CreateDirectory(shimDir);
+            string realDotnet = ResolveDotnetExecutablePath();
+
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                string cmdShim = Path.Combine(shimDir, "dotnet.cmd");
+                File.WriteAllText(cmdShim,
+                    $"@echo off\r\necho %*>>\"{invocationLogPath}\"\r\n\"{realDotnet}\" %*\r\nexit /b %ERRORLEVEL%\r\n");
+            }
+            else
+            {
+                string shShim = Path.Combine(shimDir, "dotnet");
+                File.WriteAllText(shShim,
+                    $"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"{invocationLogPath}\"\nexec \"{realDotnet}\" \"$@\"\n");
+                File.SetUnixFileMode(
+                    shShim,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+        }
+
+        private static (int ExitCode, string Stdout, string Stderr) RunLauncherProcess(
+            string targetRepoRoot,
+            string shimDir,
+            string[] args)
+        {
+            ProcessStartInfo psi;
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                psi = new ProcessStartInfo("cmd.exe")
+                {
+                    WorkingDirectory = targetRepoRoot,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("/c");
+                psi.ArgumentList.Add(Path.Combine(targetRepoRoot, "bin", "msbuild-patcher.cmd"));
+            }
+            else
+            {
+                psi = new ProcessStartInfo(Path.Combine(targetRepoRoot, "bin", "msbuild-patcher"))
+                {
+                    WorkingDirectory = targetRepoRoot,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+            }
+
+            foreach (string arg in args)
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            string existingPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+            psi.Environment["PATH"] = $"{shimDir}{Path.PathSeparator}{existingPath}";
+
+            using var proc = Process.Start(psi)!;
+            Task<string> outTask = proc.StandardOutput.ReadToEndAsync();
+            Task<string> errTask = proc.StandardError.ReadToEndAsync();
+            proc.WaitForExit();
+            return (proc.ExitCode, outTask.GetAwaiter().GetResult(), errTask.GetAwaiter().GetResult());
         }
 
         private static string FindWorkflowPath()
