@@ -71,9 +71,10 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
                 // Generate stubs for the missing members
                 var stubsBuilder = new StringBuilder();
+                var overloadCache = new Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>(StringComparer.Ordinal);
                 foreach (var member in memberInfos)
                 {
-                    string stub = GenerateMemberStub(member, originalContent);
+                    string stub = GenerateMemberStub(member, originalContent, overloadCache);
                     stubsBuilder.AppendLine(stub);
                 }
 
@@ -100,6 +101,14 @@ namespace MSBuildDiagnosticPatcher.Patcher
 
         public string GenerateMemberStub(InterfaceMemberInfo member, string classSource)
         {
+            return GenerateMemberStub(member, classSource, overloadCache: null);
+        }
+
+        private string GenerateMemberStub(
+            InterfaceMemberInfo member,
+            string classSource,
+            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache)
+        {
             var sb = new StringBuilder();
 
             if (member.IsProperty)
@@ -119,7 +128,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             // Check if class has an existing overload of the same method
-            string? delegationCall = FindDelegationCall(member, classSource);
+            string? delegationCall = FindDelegationCall(member, classSource, overloadCache);
 
             sb.AppendLine($"        public virtual {member.ReturnType} {member.MemberName}({member.ParameterList})");
             sb.AppendLine("        {");
@@ -144,21 +153,35 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return sb.ToString();
         }
 
-        private static string? FindDelegationCall(InterfaceMemberInfo member, string classSource)
+        private static string? FindDelegationCall(
+            InterfaceMemberInfo member,
+            string classSource,
+            Dictionary<string, List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>>? overloadCache = null)
         {
-            // Look for existing method in class with the same name:
-            // e.g. BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
-            var pattern = new Regex(
-                $@"\b(?:public|protected|internal|private)?\s*(?:async\s+)?(?:virtual\s+)?[\w\<\>\?,\.\s]+\s+{Regex.Escape(member.MemberName)}\s*\((?<params>[^)]*)\)");
+            if (string.IsNullOrWhiteSpace(member.MemberName) || string.IsNullOrEmpty(classSource))
+            {
+                return null;
+            }
 
-            var matches = pattern.Matches(classSource);
+            List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>? overloads;
+            if (overloadCache == null || !overloadCache.TryGetValue(member.MemberName, out overloads))
+            {
+                overloads = ExtractMethodOverloadParameters(classSource, member.MemberName);
+                if (overloadCache != null)
+                {
+                    overloadCache[member.MemberName] = overloads;
+                }
+            }
+
+            if (overloads.Count == 0)
+            {
+                return null;
+            }
+
             var myParamNames = ExtractParameterNames(member.ParameterList);
 
-            foreach (Match match in matches)
+            foreach (var existingParams in overloads)
             {
-                string existingParamList = match.Groups["params"].Value.Trim();
-                var existingParams = ParseParameters(existingParamList);
-
                 // If existing method has strictly more parameters than the missing member
                 if (existingParams.Count > myParamNames.Count)
                 {
@@ -204,6 +227,66 @@ namespace MSBuildDiagnosticPatcher.Patcher
             }
 
             return null;
+        }
+
+        private static List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>> ExtractMethodOverloadParameters(
+            string classSource,
+            string memberName)
+        {
+            var results = new List<List<(string Type, string Name, bool HasDefault, string DefaultValue)>>();
+            ReadOnlySpan<char> source = classSource.AsSpan();
+            ReadOnlySpan<char> targetName = memberName.AsSpan();
+            int searchStart = 0;
+
+            while (searchStart < source.Length)
+            {
+                int relIdx = source.Slice(searchStart).IndexOf(targetName, StringComparison.Ordinal);
+                if (relIdx < 0)
+                {
+                    break;
+                }
+
+                int nameIdx = searchStart + relIdx;
+                searchStart = nameIdx + 1;
+
+                // Must be preceded by whitespace
+                if (nameIdx == 0 || !char.IsWhiteSpace(source[nameIdx - 1]))
+                {
+                    continue;
+                }
+
+                // Must be followed by optional whitespace and '('
+                int afterName = nameIdx + targetName.Length;
+                while (afterName < source.Length && char.IsWhiteSpace(source[afterName]))
+                {
+                    afterName++;
+                }
+
+                if (afterName >= source.Length || source[afterName] != '(')
+                {
+                    continue;
+                }
+
+                // Scan backward across valid return-type characters to confirm an identifier token
+                if (!InterfaceDefinitionResolver.TryExtractReturnTypeSpan(source, nameIdx, out _))
+                {
+                    continue;
+                }
+
+                int paramStart = afterName + 1;
+                int closeParenRel = source.Slice(paramStart).IndexOf(')');
+                if (closeParenRel < 0)
+                {
+                    break;
+                }
+
+                string existingParamList = source.Slice(paramStart, closeParenRel).Trim().ToString();
+                results.Add(ParseParameters(existingParamList));
+
+                searchStart = paramStart + closeParenRel + 1;
+            }
+
+            return results;
         }
 
         private static List<string> ExtractParameterNames(string paramList)

@@ -66,6 +66,9 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("InterfaceDefinitionResolver_Caching_ReadsFileOnce", Test_InterfaceDefinitionResolver_Caching_ReadsFileOnce);
             RunTest("InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches", Test_InterfaceDefinitionResolver_NegativeCaching_PreventsRepetitiveSearches);
             RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesFileAndContentCache);
+            RunTest("InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments", Test_InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments);
+            RunTest("InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType", Test_InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType);
+            RunTest("InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets", Test_InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets);
 
             // 4. PatchGenerator Tests
             RunTest("PatchGenerator_FindClassInsertionPoint_FindsClassClosingBrace", Test_PatchGenerator_FindClassInsertionPoint);
@@ -76,6 +79,8 @@ namespace MSBuildDiagnosticPatcher.Tests
             RunTest("PatchGenerator_GenerateMemberStub_GeneratesNotImplementedException", Test_PatchGenerator_GenerateMemberStub_NotImplemented);
             RunTest("PatchGenerator_GenerateUnifiedDiff_ProducesValidDiffHeader", Test_PatchGenerator_GenerateUnifiedDiff);
             RunTest("PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs", Test_PatchGenerator_RepeatedMemberLookups_UseCacheAndGenerateCorrectStubs);
+            RunTest("PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks", Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks);
+            RunTest("PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache", Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache);
 
             // 5. PatchApplicator Tests
             RunTest("PatchApplicator_ApplyPatch_InsertsCodeWithoutDamagingComments", Test_PatchApplicator_ApplyPatch);
@@ -1024,6 +1029,174 @@ public interface IMutableInterface
             }
         }
 
+        static void Test_InterfaceDefinitionResolver_ExtractMember_IgnoresDefaultCallsAndComments()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string interfaceSource = @"
+namespace CollationModifier.Services
+{
+    public interface IDatabaseServiceLike
+    {
+        /// <summary>
+        /// Backs up the specified database.
+        /// </summary>
+        Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default);
+        Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken) => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
+
+        // Expression-bodied default member with no abstract overload must not match header or arrow call
+        Task OnlyDefaultAsync(string databaseName) => OnlyDefaultAsync(databaseName, CancellationToken.None);
+
+        // Single-line comment right above declaration must never pollute ReturnType
+        string ServerName { get; set; }
+
+        /// <summary>Multi-line generic return type</summary>
+        Task<Dictionary<
+            string,
+            List<int?>>> FetchMappingsAsync(string schemaName);
+    }
+}";
+
+            var backupMember = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "BackupDatabaseAsync",
+                "string, string, CancellationToken");
+            Assert(backupMember != null, "Expected abstract BackupDatabaseAsync overload fallback to be resolved.");
+            Assert(backupMember!.ReturnType == "Task<string>", $"Expected clean ReturnType 'Task<string>', got '{backupMember.ReturnType}'");
+            Assert(backupMember.ParameterList.Contains("IProgress<int>? progress = null"), "Expected abstract overload parameters rather than default call arguments.");
+
+            var defaultOnly = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "OnlyDefaultAsync",
+                "string");
+            Assert(defaultOnly == null, "Expected default interface implementation and its arrow call to be ignored.");
+
+            var prop = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "ServerName",
+                "");
+            Assert(prop != null && prop.IsProperty, "Expected ServerName property to be extracted.");
+            Assert(prop!.ReturnType == "string", $"Expected clean property ReturnType 'string', got '{prop.ReturnType}'");
+
+            var multiLineGeneric = resolver.ExtractMemberFromInterfaceSource(
+                interfaceSource,
+                "IDatabaseServiceLike",
+                "FetchMappingsAsync",
+                "string");
+            Assert(multiLineGeneric != null, "Expected multi-line generic method to be extracted.");
+            Assert(multiLineGeneric!.ReturnType == "Task<Dictionary<string, List<int?>>>",
+                $"Expected normalized multi-line generic ReturnType, got '{multiLineGeneric.ReturnType}'");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ExtractMember_OverloadsPrecedenceAndSameNameReturnType()
+        {
+            var resolver = new InterfaceDefinitionResolver();
+            string source = @"
+public interface IUnrelatedInterface
+{
+    double Compute(string ignored);
+}
+
+public interface IAdvancedService
+{
+    Status Status { get; }
+    Status Status(string name);
+    Status Status(string name, int timeoutSeconds);
+    void WriteOnlySecret { set; }
+    Config Config { get; set; }
+}";
+
+            // Multi-overload selection & method-over-property precedence + identical return-type and member name
+            var statusTwoArgs = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Status", "string, int");
+            Assert(statusTwoArgs != null && !statusTwoArgs.IsProperty, "Expected method to take precedence over property and match 2-arg overload.");
+            Assert(statusTwoArgs!.ReturnType == "Status", $"Expected ReturnType 'Status', got '{statusTwoArgs.ReturnType}'");
+            Assert(statusTwoArgs.ParameterList == "string name, int timeoutSeconds", $"Unexpected ParameterList '{statusTwoArgs.ParameterList}'");
+
+            var statusOneArg = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Status", "string");
+            Assert(statusOneArg != null && !statusOneArg.IsProperty, "Expected 1-arg Status method overload.");
+            Assert(statusOneArg!.ParameterList == "string name", $"Unexpected ParameterList '{statusOneArg.ParameterList}'");
+
+            // Fallback to first method when expected parameter types do not match any method overload (still preferring method over property)
+            var statusFallback = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Status", "Guid");
+            Assert(statusFallback != null && !statusFallback.IsProperty, "Expected method precedence over property on parameter mismatch.");
+            Assert(statusFallback!.ParameterList == "string name", $"Expected first method overload as bestMatch, got '{statusFallback.ParameterList}'");
+
+            // Property with identical return-type and property name
+            var configProp = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Config", "");
+            Assert(configProp != null && configProp.IsProperty, "Expected Config property.");
+            Assert(configProp!.ReturnType == "Config", $"Expected ReturnType 'Config', got '{configProp.ReturnType}'");
+            Assert(configProp.HasGetter && configProp.HasSetter, "Expected both getter and setter on Config.");
+
+            // Setter-only property
+            var writeOnlyProp = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "WriteOnlySecret", "");
+            Assert(writeOnlyProp != null && writeOnlyProp.IsProperty, "Expected WriteOnlySecret property.");
+            Assert(!writeOnlyProp!.HasGetter && writeOnlyProp.HasSetter, "Expected setter-only property flags.");
+
+            // Unrelated interface member is excluded by interface body slicing
+            var unrelated = resolver.ExtractMemberFromInterfaceSource(source, "IAdvancedService", "Compute", "string");
+            Assert(unrelated == null, "Expected member from IUnrelatedInterface not to match inside IAdvancedService.");
+        }
+
+        static void Test_InterfaceDefinitionResolver_ClearCache_InvalidatesCachedBodyOffsets()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"body_offset_cache_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IShiftedService.cs");
+                File.WriteAllText(ifaceFile, @"public interface IShiftedService
+{
+    string Alpha(int id);
+    bool Beta();
+}");
+                string contextFile = Path.Combine(tempDir, "ShiftedService.cs");
+                var resolver = new InterfaceDefinitionResolver();
+
+                var alpha1 = resolver.ResolveInterfaceMember("IShiftedService", "Alpha", "int", contextFile, tempDir);
+                var beta1 = resolver.ResolveInterfaceMember("IShiftedService", "Beta", "", contextFile, tempDir);
+                Assert(alpha1 != null && alpha1.ReturnType == "string", "Expected initial Alpha return type 'string'.");
+                Assert(beta1 != null && beta1.ReturnType == "bool", "Expected initial Beta return type 'bool'.");
+
+                // Rewrite file with a large comment/namespace preamble that shifts '{ ... }' offsets significantly
+                File.WriteAllText(ifaceFile, @"
+// Preamble shifting interface declaration body offsets by well over 150 characters
+// =================================================================================
+namespace Shifted.Namespace.Declaration
+{
+    public interface IOtherDecoy
+    {
+        double Alpha(int id);
+    }
+
+    public interface IShiftedService
+    {
+        long Alpha(int id);
+        Guid Beta();
+    }
+}");
+
+                // Prior to ClearCache, cached body offsets and content still resolve original signatures
+                var cachedAlpha = resolver.ResolveInterfaceMember("IShiftedService", "Alpha", "int", contextFile, tempDir);
+                Assert(cachedAlpha != null && cachedAlpha.ReturnType == "string", "Expected cached return type prior to ClearCache.");
+
+                // ClearCache must clear cached body offsets as well as file content
+                resolver.ClearCache();
+                var refreshedAlpha = resolver.ResolveInterfaceMember("IShiftedService", "Alpha", "int", contextFile, tempDir);
+                var refreshedBeta = resolver.ResolveInterfaceMember("IShiftedService", "Beta", "", contextFile, tempDir);
+                Assert(refreshedAlpha != null && refreshedAlpha.ReturnType == "long",
+                    $"Expected refreshed Alpha return type 'long' after ClearCache, got '{refreshedAlpha?.ReturnType}'");
+                Assert(refreshedBeta != null && refreshedBeta.ReturnType == "Guid",
+                    $"Expected refreshed Beta return type 'Guid' after ClearCache, got '{refreshedBeta?.ReturnType}'");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
         // 4. PatchGenerator Tests
         static void Test_PatchGenerator_FindClassInsertionPoint()
         {
@@ -1347,6 +1520,114 @@ public class SqlWorker : ISqlWorker
                 var patches2 = generator.GeneratePatches(diagnostics, tempDir);
                 Assert(patches2.Count == 1, "Expected patch generation to succeed from cache after file deletion.");
                 Assert(patches2[0].UnifiedDiff == diff, "Expected identical diff output from cache.");
+            }
+            finally
+            {
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+        }
+
+        static void Test_PatchGenerator_GenerateMemberStub_LinearScalingOnLargeWordBlocks()
+        {
+            var generator = new PatchGenerator();
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("namespace ScalingTest {");
+            sb.AppendLine("public class LargeService {");
+            sb.Append("    /* ");
+            for (int i = 0; i < 800; i++)
+            {
+                sb.Append("wordToken").Append(i).Append(' ');
+                if ((i + 1) % 20 == 0) sb.AppendLine();
+            }
+            sb.AppendLine("*/");
+            sb.AppendLine("    public virtual Task<string> RunOperationAsync(string opName, int timeoutMs = 500, CancellationToken cancellationToken = default) => Task.FromResult(opName);");
+            sb.AppendLine("} }");
+            string largeClassSource = sb.ToString();
+
+            var missingMember = new InterfaceMemberInfo
+            {
+                InterfaceName = "ILargeService",
+                MemberName = "MissingBenchmarkMethodAsync",
+                ReturnType = "Task<string>",
+                ParameterList = "string opName, CancellationToken cancellationToken = default"
+            };
+
+            // Warmup JIT
+            generator.GenerateMemberStub(missingMember, largeClassSource);
+
+            var sw = Stopwatch.StartNew();
+            for (int iter = 0; iter < 5; iter++)
+            {
+                string stub = generator.GenerateMemberStub(missingMember, largeClassSource);
+                Assert(stub.Contains("throw new NotImplementedException();"), "Expected fallback stub when no overload exists.");
+            }
+            sw.Stop();
+
+            // Uncached backtracking regex took ~560-720 ms per call (>2800 ms for 5 calls); ordinal scan completes in < 1 ms
+            Assert(sw.Elapsed.TotalMilliseconds < 100.0,
+                $"Expected 5 GenerateMemberStub calls on 800-word block to complete in < 100 ms, took {sw.Elapsed.TotalMilliseconds:F2} ms");
+        }
+
+        static void Test_PatchGenerator_FindDelegationCall_HandlesSameNameReturnTypeAndOverloadCache()
+        {
+            string tempDir = Path.Combine(Path.GetTempPath(), $"delegation_edge_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempDir);
+
+            try
+            {
+                string ifaceFile = Path.Combine(tempDir, "IStatusService.cs");
+                File.WriteAllText(ifaceFile, @"
+public interface IStatusService
+{
+    Status Status(string id);
+    Status Status(string id, int retryCount);
+}
+");
+                string classFile = Path.Combine(tempDir, "StatusService.cs");
+                File.WriteAllText(classFile, @"
+public class StatusService : IStatusService
+{
+    // public virtual Status Status(string id, string nonDefaultRequired, int retryCount = 99)
+    public Status Helper(string id) => Status(id, 5, default);
+
+    public virtual Status Status(string id, int retryCount = 3, CancellationToken cancellationToken = default)
+    {
+        return new Status();
+    }
+}
+");
+                var diagnostics = new List<CompilerDiagnostic>
+                {
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'StatusService' does not implement interface member 'IStatusService.Status(string)'"
+                    },
+                    new CompilerDiagnostic
+                    {
+                        Code = "CS0535",
+                        Severity = DiagnosticSeverity.Error,
+                        FilePath = classFile,
+                        LineNumber = 2,
+                        ColumnNumber = 14,
+                        Message = "'StatusService' does not implement interface member 'IStatusService.Status(string, int)'"
+                    }
+                };
+
+                var generator = new PatchGenerator(new InterfaceDefinitionResolver());
+                var patches = generator.GeneratePatches(diagnostics, tempDir);
+                Assert(patches.Count == 1, $"Expected 1 patch candidate, got {patches.Count}");
+                Assert(patches[0].ResolvedErrorCount == 2, $"Expected 2 resolved errors, got {patches[0].ResolvedErrorCount}");
+
+                string generated = patches[0].GeneratedCode;
+                Assert(generated.Contains("public virtual Status Status(string id)"), "Expected 1-arg Status stub.");
+                Assert(generated.Contains("return Status(id, 3, default);"), $"Expected 1-arg Status delegation, got:\n{generated}");
+                Assert(generated.Contains("public virtual Status Status(string id, int retryCount)"), "Expected 2-arg Status stub.");
+                Assert(generated.Contains("return Status(id, retryCount, default);"), $"Expected 2-arg Status delegation, got:\n{generated}");
             }
             finally
             {
