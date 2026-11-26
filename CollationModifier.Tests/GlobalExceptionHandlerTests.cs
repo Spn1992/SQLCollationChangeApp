@@ -8,30 +8,72 @@ namespace CollationModifier.Tests
 {
     public static class GlobalExceptionHandlerTests
     {
-        public static async Task RunAllTestsAsync()
+        public static Task<int> RunAllTestsAsync() => RunAllTestsAsync(null);
+
+        internal static async Task<int> RunAllTestsAsync(Action<string>? beforeTest)
         {
             Console.WriteLine("\n=== Running GlobalExceptionHandler & Centralized WPF Exception Pipeline Tests ===");
+            int failed = 0;
 
-            await Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes();
-            Console.WriteLine("PASS: Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes");
+            await RunAsyncTest(
+                nameof(Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes),
+                Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes);
 
-            await Test_DispatcherUnhandledException_LogsToLoggerService_AndInitiatesShutdownWhenUserChoosesNo();
-            Console.WriteLine("PASS: Test_DispatcherUnhandledException_LogsToLoggerService_AndInitiatesShutdownWhenUserChoosesNo");
+            await RunAsyncTest(
+                nameof(Test_DispatcherUnhandledException_LogsToLoggerService_AndInitiatesShutdownWhenUserChoosesNo),
+                Test_DispatcherUnhandledException_LogsToLoggerService_AndInitiatesShutdownWhenUserChoosesNo);
 
-            await Test_FatalExceptions_AreNotSuppressed_AndLoggedAsFatal();
-            Console.WriteLine("PASS: Test_FatalExceptions_AreNotSuppressed_AndLoggedAsFatal");
+            await RunAsyncTest(
+                nameof(Test_FatalExceptions_AreNotSuppressed_AndLoggedAsFatal),
+                Test_FatalExceptions_AreNotSuppressed_AndLoggedAsFatal);
 
-            Test_SqlCredentialsAndPasswords_AreSanitizedInDialog();
-            Console.WriteLine("PASS: Test_SqlCredentialsAndPasswords_AreSanitizedInDialog");
+            RunSyncTest(
+                nameof(Test_SqlCredentialsAndPasswords_AreSanitizedInDialog),
+                Test_SqlCredentialsAndPasswords_AreSanitizedInDialog);
 
-            await Test_AppDomainUnhandledException_LogsStackTraceAndFlushesWithin5Seconds();
-            Console.WriteLine("PASS: Test_AppDomainUnhandledException_LogsStackTraceAndFlushesWithin5Seconds");
+            await RunAsyncTest(
+                nameof(Test_AppDomainUnhandledException_LogsStackTraceAndFlushesWithin5Seconds),
+                Test_AppDomainUnhandledException_LogsStackTraceAndFlushesWithin5Seconds);
 
-            await Test_UnobservedTaskException_LogsAndMarksObserved();
-            Console.WriteLine("PASS: Test_UnobservedTaskException_LogsAndMarksObserved");
+            await RunAsyncTest(
+                nameof(Test_UnobservedTaskException_LogsAndMarksObserved),
+                Test_UnobservedTaskException_LogsAndMarksObserved);
 
-            Test_AppXamlCs_ConfigurationAndRegistrationVerification();
-            Console.WriteLine("PASS: Test_AppXamlCs_ConfigurationAndRegistrationVerification");
+            RunSyncTest(
+                nameof(Test_AppXamlCs_ConfigurationAndRegistrationVerification),
+                Test_AppXamlCs_ConfigurationAndRegistrationVerification);
+
+            return failed;
+
+            async Task RunAsyncTest(string methodName, Func<Task> testAction)
+            {
+                try
+                {
+                    beforeTest?.Invoke(methodName);
+                    await testAction();
+                    Console.WriteLine($"PASS: {methodName}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  [FAIL] {nameof(GlobalExceptionHandlerTests)}.{methodName} - {ex}");
+                    failed++;
+                }
+            }
+
+            void RunSyncTest(string methodName, Action testAction)
+            {
+                try
+                {
+                    beforeTest?.Invoke(methodName);
+                    testAction();
+                    Console.WriteLine($"PASS: {methodName}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"  [FAIL] {nameof(GlobalExceptionHandlerTests)}.{methodName} - {ex}");
+                    failed++;
+                }
+            }
         }
 
         private static async Task Test_DispatcherUnhandledException_LogsToLoggerService_AndContinuesWhenUserChoosesYes()
