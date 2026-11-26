@@ -3282,14 +3282,19 @@ Time Elapsed 00:00:01.42
             string workflowPath = FindWorkflowPath();
             string content = File.ReadAllText(workflowPath);
 
-            // Requirement 1: Redirect build and test output to /tmp/build-and-test.log
-            Assert(content.Contains("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must redirect patcher build output to /tmp/build-and-test.log");
-            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append CollationModifier build output to /tmp/build-and-test.log");
-            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj");
-            int collationModifierBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj");
-            Assert(patcherBuildIndex != -1 && collationModifierBuildIndex != -1 && patcherBuildIndex < collationModifierBuildIndex, "Workflow must build patcher before CollationModifier");
-            Assert(content.Contains("tee /tmp/build-and-test.log"), "Workflow must redirect build output to /tmp/build-and-test.log using tee");
-            Assert(content.Contains("tee -a /tmp/build-and-test.log"), "Workflow must append test output to /tmp/build-and-test.log using tee -a");
+            // Requirement 1: Redirect solution restore, build, and test output to /tmp/build-and-test.log in order
+            string restoreCmd = "dotnet restore SQLCollationChangeApp.sln 2>&1 | tee /tmp/build-and-test.log";
+            string buildCmd = "dotnet build SQLCollationChangeApp.sln --no-restore -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
+            string testCmd = "dotnet test SQLCollationChangeApp.sln --no-build -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log";
+
+            Assert(content.Contains(restoreCmd), "Workflow must redirect solution restore output to /tmp/build-and-test.log");
+            Assert(content.Contains(buildCmd), "Workflow must append solution build output to /tmp/build-and-test.log");
+            Assert(content.Contains(testCmd), "Workflow must append solution test output to /tmp/build-and-test.log");
+
+            int restoreIndex = content.IndexOf(restoreCmd, StringComparison.Ordinal);
+            int buildIndex = content.IndexOf(buildCmd, StringComparison.Ordinal);
+            int testIndex = content.IndexOf(testCmd, StringComparison.Ordinal);
+            Assert(restoreIndex != -1 && buildIndex != -1 && testIndex != -1 && restoreIndex < buildIndex && buildIndex < testIndex, "Workflow must run solution restore, build, and test steps in order");
 
             // Launcher requirement: Disable shared Roslyn compilation
             string launcherPath = FindLauncherScriptPath();

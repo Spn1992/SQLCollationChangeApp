@@ -6,6 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>MSBuildDiagnosticPatcher.Tests</RootNamespace>
+    <IsConsoleTestRunner>true</IsConsoleTestRunner>
   </PropertyGroup>
 
   <ItemGroup>
