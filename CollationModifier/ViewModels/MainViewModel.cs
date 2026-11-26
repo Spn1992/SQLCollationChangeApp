@@ -17,12 +17,14 @@ namespace CollationModifier.ViewModels
     {
         private readonly IDatabaseService _databaseService;
         private readonly LoggerService _logger;
+        private readonly bool _ownsLogger;
         private CancellationTokenSource? _cts;
 
         public MainViewModel() : this(null, null) { }
 
         public MainViewModel(IDatabaseService? databaseService = null, LoggerService? logger = null)
         {
+            _ownsLogger = logger == null;
             _logger = logger ?? new LoggerService();
             _databaseService = databaseService ?? CreateDefaultDatabaseService(_logger);
 
@@ -718,17 +720,26 @@ namespace CollationModifier.ViewModels
 
         public void Dispose()
         {
-            if (_cts != null)
+            var cts = Interlocked.Exchange(ref _cts, null);
+            if (cts != null)
             {
                 try
                 {
-                    _cts.Cancel();
+                    cts.Cancel();
                 }
                 catch { }
-                _cts.Dispose();
-                _cts = null;
+
+                try
+                {
+                    cts.Dispose();
+                }
+                catch { }
             }
-            _logger?.Dispose();
+
+            if (_ownsLogger)
+            {
+                _logger?.Dispose();
+            }
         }
     }
 }
