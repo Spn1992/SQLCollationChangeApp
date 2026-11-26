@@ -68,10 +68,12 @@ namespace MSBuildDiagnosticPatcher
             var msbuildParser = new MSBuildLogParser();
             var testParser = new TestExecutionLogParser();
 
-            string logContent = File.ReadAllText(logFilePath);
-
-            var diagnostics = msbuildParser.ParseText(logContent);
-            var testFailures = testParser.ParseText(logContent);
+            List<CompilerDiagnostic> diagnostics;
+            List<TestFailure> testFailures;
+            using (var reader = new StreamReader(logFilePath))
+            {
+                (diagnostics, testFailures) = LogStreamParser.Parse(reader, msbuildParser, testParser);
+            }
 
             stopwatch.Stop();
 
