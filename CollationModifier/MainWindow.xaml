@@ -14,6 +14,10 @@
         <viewmodels:MainViewModel />
     </Window.DataContext>
 
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </Window.Resources>
+
     <Grid>
         <!-- Main Content Area -->
         <Grid Margin="0,0,0,30">
@@ -84,7 +88,9 @@
                                    Foreground="{StaticResource OverlayForegroundBrush}" FontSize="16" />
                     </Border>
 
-                    <StackPanel IsEnabled="{Binding IsConnected}" AutomationProperties.Name="Database Operations">
+                    <StackPanel IsEnabled="{Binding IsConnected}"
+                                Visibility="{Binding IsConnected, Converter={StaticResource BooleanToVisibilityConverter}}"
+                                AutomationProperties.Name="Database Operations">
                         <Label Content="Database Operations" Style="{StaticResource CardHeader}" AutomationProperties.HeadingLevel="Level1" FontSize="20" Margin="0,0,0,24" />
 
                         <!-- Database Selector -->
@@ -257,8 +263,4 @@
             </DockPanel>
         </Border>
     </Grid>
-
-    <Window.Resources>
-        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-    </Window.Resources>
 </Window>
