@@ -542,7 +542,18 @@ namespace CollationModifier.ViewModels
 
         private bool CanProcessCollationChange()
         {
-            return IsConnected && !IsBusy && SelectedDatabase != null && !string.IsNullOrWhiteSpace(TargetCollation);
+            if (!IsConnected || IsBusy || SelectedDatabase == null || string.IsNullOrWhiteSpace(TargetCollation))
+            {
+                return false;
+            }
+
+            if (!string.IsNullOrWhiteSpace(SelectedDatabase.Collation) &&
+                string.Equals(TargetCollation.Trim(), SelectedDatabase.Collation.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return true;
         }
 
         public async Task ProcessCollationChangeAsync()

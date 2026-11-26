@@ -4087,6 +4087,72 @@ namespace CollationModifier.Tests
                 Assert(vm.StatusMessage == "Collation changed successfully!", $"Expected success message, got: '{vm.StatusMessage}'");
             });
 
+            await RunAsyncTest("ProcessCommand_CanExecute_ReturnsFalse_WhenTargetCollationMatchesCurrentCollation_CaseInsensitivelyAndWithWhitespace", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "PredicateTestDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                // Identical collation
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be false when target collation matches current collation identically.");
+
+                // Case-insensitive match
+                vm.TargetCollation = "sql_latin1_general_cp1_ci_as";
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be false when target collation matches current collation case-insensitively.");
+
+                // Match with leading and trailing whitespace
+                vm.TargetCollation = "  sql_latin1_general_cp1_ci_as  ";
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be false when target collation matches current collation with whitespace.");
+
+                // Match when database collation also has whitespace
+                var dbWithWhitespace = new DatabaseInfo { Name = "WhitespaceDb", Collation = "  SQL_Latin1_General_CP1_CI_AS  " };
+                vm.SelectedDatabase = dbWithWhitespace;
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
+                Assert(!vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be false when database collation has padding whitespace and target matches.");
+            });
+
+            await RunAsyncTest("ProcessCommand_CanExecute_ReturnsTrue_WhenCollationsDiffer_OrWhenDatabaseCollationIsNullOrWhitespace", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "DistinctDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb }
+                };
+
+                var vm = new MainViewModel(mockService);
+                await vm.ConnectAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+
+                // Collations differ
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be true when target collation differs from current collation.");
+
+                // Database collation is null
+                var dbWithNullCollation = new DatabaseInfo { Name = "NullCollationDb", Collation = null! };
+                vm.SelectedDatabase = dbWithNullCollation;
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be true when database collation is null (permits preflight verification).");
+
+                // Database collation is empty
+                var dbWithEmptyCollation = new DatabaseInfo { Name = "EmptyCollationDb", Collation = string.Empty };
+                vm.SelectedDatabase = dbWithEmptyCollation;
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be true when database collation is empty.");
+
+                // Database collation is whitespace
+                var dbWithWhitespaceCollation = new DatabaseInfo { Name = "WhitespaceCollationDb", Collation = "   " };
+                vm.SelectedDatabase = dbWithWhitespaceCollation;
+                vm.TargetCollation = "SQL_Latin1_General_CP1_CI_AS";
+                Assert(vm.ProcessCommand.CanExecute(null), "ProcessCommand.CanExecute should be true when database collation is whitespace.");
+            });
+
             RunSyncTest("MainWindowXaml_TargetConfiguration_StackedVertically_AndFullWidthBackupDirectory", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
