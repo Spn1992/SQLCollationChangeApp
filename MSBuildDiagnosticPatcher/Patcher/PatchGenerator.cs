@@ -23,12 +23,16 @@ namespace MSBuildDiagnosticPatcher.Patcher
             string? projectRoot = null)
         {
             var candidates = new List<PatchCandidate>();
-            string root = string.IsNullOrWhiteSpace(projectRoot) ? Directory.GetCurrentDirectory() : projectRoot;
+            bool hasExplicitProjectRoot = !string.IsNullOrWhiteSpace(projectRoot);
+            string root = hasExplicitProjectRoot ? Path.GetFullPath(projectRoot!) : Directory.GetCurrentDirectory();
+            var pathComparer = OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal;
 
             // Group CS0535 diagnostics by target file
             var cs0535Diags = diagnostics
                 .Where(d => d.Code.Equals("CS0535", StringComparison.OrdinalIgnoreCase))
-                .GroupBy(d => ResolveAbsoluteFilePath(d.FilePath, root));
+                .GroupBy(d => ResolveAbsoluteFilePath(d.FilePath, root, d.ProjectPath), pathComparer);
 
             foreach (var group in cs0535Diags)
             {
@@ -55,12 +59,18 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     targetClassName = parsed.Value.ClassName;
                     interfaceName = parsed.Value.InterfaceName;
 
+                    string interfaceSearchRoot = hasExplicitProjectRoot
+                        ? root
+                        : FindRepoRoot(targetFilePath)
+                            ?? ResolveProjectDirectory(diag.ProjectPath, root)
+                            ?? root;
+
                     var member = _resolver.ResolveInterfaceMember(
                         interfaceName,
                         parsed.Value.MemberName,
                         parsed.Value.ExpectedParamTypes,
                         targetFilePath,
-                        root);
+                        interfaceSearchRoot);
 
                     if (member != null)
                     {
@@ -844,10 +854,75 @@ namespace MSBuildDiagnosticPatcher.Patcher
             return matched;
         }
 
-        private static string ResolveAbsoluteFilePath(string path, string root)
+        private static string ResolveAbsoluteFilePath(string path, string root, string? projectPath = null)
         {
-            if (Path.IsPathRooted(path)) return path;
-            return Path.GetFullPath(Path.Combine(root, path));
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return string.Empty;
+            }
+
+            if (Path.IsPathRooted(path))
+            {
+                return path;
+            }
+
+            string normalizedPath = NormalizeRelativePath(path);
+            string? projectDir = ResolveProjectDirectory(projectPath, root);
+            if (!string.IsNullOrEmpty(projectDir))
+            {
+                try
+                {
+                    string projectCandidate = Path.GetFullPath(Path.Combine(projectDir, normalizedPath));
+                    if (File.Exists(projectCandidate))
+                    {
+                        return projectCandidate;
+                    }
+                }
+                catch
+                {
+                    // Fall back to root below
+                }
+            }
+
+            return Path.GetFullPath(Path.Combine(root, normalizedPath));
+        }
+
+        private static string? ResolveProjectDirectory(string? projectPath, string root)
+        {
+            if (string.IsNullOrWhiteSpace(projectPath))
+            {
+                return null;
+            }
+
+            try
+            {
+                string resolvedProjectPath = Path.IsPathRooted(projectPath)
+                    ? Path.GetFullPath(projectPath)
+                    : Path.GetFullPath(Path.Combine(root, NormalizeRelativePath(projectPath)));
+
+                if (Directory.Exists(resolvedProjectPath))
+                {
+                    return resolvedProjectPath;
+                }
+
+                return Path.GetDirectoryName(resolvedProjectPath);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string NormalizeRelativePath(string path)
+        {
+            if (!OperatingSystem.IsWindows() &&
+                path.Contains('\\') &&
+                !Regex.IsMatch(path, @"^[a-zA-Z]:[\\/]"))
+            {
+                return path.Replace('\\', Path.DirectorySeparatorChar);
+            }
+
+            return path;
         }
 
         private static string GetRelativePath(string relativeTo, string path)
@@ -869,7 +944,8 @@ namespace MSBuildDiagnosticPatcher.Patcher
                 string? dir = Path.GetDirectoryName(filePath);
                 while (!string.IsNullOrEmpty(dir))
                 {
-                    if (Directory.Exists(Path.Combine(dir, ".git")))
+                    string gitPath = Path.Combine(dir, ".git");
+                    if (Directory.Exists(gitPath) || File.Exists(gitPath))
                     {
                         return dir;
                     }
