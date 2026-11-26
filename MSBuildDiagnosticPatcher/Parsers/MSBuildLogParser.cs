@@ -18,24 +18,23 @@ namespace MSBuildDiagnosticPatcher.Parsers
 
         public List<CompilerDiagnostic> ParseText(string logContent)
         {
-            var results = new List<CompilerDiagnostic>();
             if (string.IsNullOrWhiteSpace(logContent))
             {
-                return results;
+                return new List<CompilerDiagnostic>();
             }
 
             using var reader = new StringReader(logContent);
-            string? line;
-            while ((line = reader.ReadLine()) != null)
+            return ParseStream(reader);
+        }
+
+        public List<CompilerDiagnostic> ParseStream(TextReader reader)
+        {
+            if (reader == null)
             {
-                var diag = ParseLine(line);
-                if (diag != null)
-                {
-                    results.Add(diag);
-                }
+                throw new ArgumentNullException(nameof(reader));
             }
 
-            return results;
+            return LogStreamParser.Parse(reader, this, testParser: null).Diagnostics;
         }
 
         public CompilerDiagnostic? ParseLine(string rawLine)
@@ -47,17 +46,32 @@ namespace MSBuildDiagnosticPatcher.Parsers
 
             // Clean ANSI escape sequences
             string cleanLine = AnsiCleaner.Clean(rawLine);
+            return ParseCleanedLine(rawLine, cleanLine);
+        }
 
-            var match = CompilerDiagnosticRegex.Match(cleanLine);
-            if (match.Success)
+        internal CompilerDiagnostic? ParseCleanedLine(string rawLine, string cleanLine)
+        {
+            if (cleanLine.Length == 0)
             {
-                return CreateFromMatch(match, rawLine);
+                return null;
             }
 
-            var msbMatch = MSBuildErrorRegex.Match(cleanLine);
-            if (msbMatch.Success)
+            if (cleanLine.Contains("):", StringComparison.Ordinal))
             {
-                return CreateFromMatch(msbMatch, rawLine);
+                var match = CompilerDiagnosticRegex.Match(cleanLine);
+                if (match.Success)
+                {
+                    return CreateFromMatch(match, rawLine);
+                }
+            }
+
+            if (HasMSBuildDiagnosticCode(cleanLine))
+            {
+                var msbMatch = MSBuildErrorRegex.Match(cleanLine);
+                if (msbMatch.Success)
+                {
+                    return CreateFromMatch(msbMatch, rawLine);
+                }
             }
 
             return null;

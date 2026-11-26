@@ -651,9 +651,6 @@ namespace CollationModifier.Services
             return report;
         }
 
-        public virtual Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, CancellationToken cancellationToken)
-            => BackupDatabaseAsync(databaseName, backupDirectory, null, cancellationToken);
-
         public virtual async Task<string> BackupDatabaseAsync(string databaseName, string backupDirectory, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             ValidateBackupDirectoryPath(backupDirectory);
@@ -668,9 +665,9 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await connection.OpenAsync(cancellationToken);
+                    await OpenConnectionAsync(connection, cancellationToken);
                     var query = $"BACKUP DATABASE [{safeDbName}] TO DISK = @BackupFile WITH FORMAT, INIT, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, query, 3600, new SqlParameter("@BackupFile", backupFile));
+                    await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
                 }
                 _logger.LogInfo($"Successfully backed up {databaseName} to {backupFile}");
                 return backupFile;
@@ -682,11 +679,6 @@ namespace CollationModifier.Services
             }
         }
 
-
-
-        public virtual Task RestoreDatabaseAsync(string databaseName, string backupFile, CancellationToken cancellationToken)
-            => RestoreDatabaseAsync(databaseName, backupFile, null, cancellationToken);
-
         public virtual async Task RestoreDatabaseAsync(string databaseName, string backupFile, IProgress<int>? progress = null, CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
@@ -695,12 +687,12 @@ namespace CollationModifier.Services
                 using (var connection = new SqlConnection(_connectionString))
                 {
                     AttachProgressHandler(connection, progress);
-                    await connection.OpenAsync(cancellationToken);
-                    await ExecuteNonQueryAsync(connection, "USE [master];");
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
+                    await OpenConnectionAsync(connection, cancellationToken);
+                    await ExecuteNonQueryAsync(connection, "USE [master];", 3600, cancellationToken);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
                     var restoreQuery = $"RESTORE DATABASE [{safeDbName}] FROM DISK = @BackupFile WITH REPLACE, STATS = 10;";
-                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, new SqlParameter("@BackupFile", backupFile));
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
+                    await ExecuteNonQueryAsync(connection, restoreQuery, 3600, cancellationToken, new SqlParameter("@BackupFile", backupFile));
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
                 }
                 _logger.LogInfo($"Successfully restored {databaseName} from {backupFile}");
             }
@@ -733,11 +725,11 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(cancellationToken);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER");
+                    await OpenConnectionAsync(connection, cancellationToken);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "SINGLE_USER", cancellationToken);
                     var query = $"ALTER DATABASE [{safeDbName}] COLLATE {newCollation};";
-                    await ExecuteNonQueryAsync(connection, query, 3600);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
+                    await ExecuteNonQueryAsync(connection, query, 3600, cancellationToken);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
                 }
                 _logger.LogInfo($"Successfully changed collation of {databaseName} to {newCollation}");
             }
@@ -766,8 +758,8 @@ namespace CollationModifier.Services
             {
                 using (var connection = new SqlConnection(_connectionString))
                 {
-                    await connection.OpenAsync(CancellationToken.None);
-                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER");
+                    await OpenConnectionAsync(connection, CancellationToken.None);
+                    await SetDatabaseUserModeAsync(connection, databaseName, "MULTI_USER", CancellationToken.None);
                 }
             }
             catch (Exception ex)
@@ -782,10 +774,20 @@ namespace CollationModifier.Services
             return identifier.Replace("]", "]]");
         }
 
-        private static async Task<int> ExecuteNonQueryAsync(
+        internal Func<SqlCommand, CancellationToken, Task<int>>? NonQueryCommandExecutor { get; set; }
+
+        protected internal virtual Task OpenConnectionAsync(
+            SqlConnection connection,
+            CancellationToken cancellationToken = default)
+        {
+            return connection.OpenAsync(cancellationToken);
+        }
+
+        protected internal virtual async Task<int> ExecuteNonQueryAsync(
             SqlConnection connection,
             string commandText,
             int timeoutSeconds = 3600,
+            CancellationToken cancellationToken = default,
             params SqlParameter[] parameters)
         {
             using (var command = new SqlCommand(commandText, connection))
@@ -795,18 +797,37 @@ namespace CollationModifier.Services
                 {
                     command.Parameters.AddRange(parameters);
                 }
-                return await command.ExecuteNonQueryAsync();
+
+                try
+                {
+                    if (NonQueryCommandExecutor != null)
+                    {
+                        return await NonQueryCommandExecutor(command, cancellationToken);
+                    }
+
+                    return await command.ExecuteNonQueryAsync(cancellationToken);
+                }
+                catch (SqlException ex) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException("SQL command execution was cancelled.", ex, cancellationToken);
+                }
             }
         }
 
-        private async Task SetDatabaseUserModeAsync(SqlConnection connection, string databaseName, string mode)
+        protected internal virtual async Task SetDatabaseUserModeAsync(
+            SqlConnection connection,
+            string databaseName,
+            string mode,
+            CancellationToken cancellationToken = default)
         {
             var safeDbName = EscapeIdentifier(databaseName);
-            string query = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase)
+            bool isSingleUser = string.Equals(mode, "SINGLE_USER", StringComparison.OrdinalIgnoreCase);
+            string query = isSingleUser
                 ? $"ALTER DATABASE [{safeDbName}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;"
                 : $"ALTER DATABASE [{safeDbName}] SET MULTI_USER;";
 
-            await ExecuteNonQueryAsync(connection, query);
+            var effectiveToken = isSingleUser ? cancellationToken : CancellationToken.None;
+            await ExecuteNonQueryAsync(connection, query, 3600, effectiveToken);
         }
 
         private static void AttachProgressHandler(SqlConnection connection, IProgress<int>? progress)
