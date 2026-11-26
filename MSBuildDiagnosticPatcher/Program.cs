@@ -12,7 +12,7 @@ namespace MSBuildDiagnosticPatcher
     {
         public static int Main(string[] args)
         {
-            if (args.Length == 0 || args[0] == "-h" || args[0] == "--help")
+            if (args.Length == 0)
             {
                 PrintHelp();
                 return 0;
@@ -20,20 +20,31 @@ namespace MSBuildDiagnosticPatcher
 
             string logFilePath = string.Empty;
             string outputDir = Path.Combine(Directory.GetCurrentDirectory(), "build-diagnostics");
-            string projectRoot = Directory.GetCurrentDirectory();
+            string? projectRoot = null;
             bool applyPatches = false;
             bool autoConfirm = false;
 
             for (int i = 0; i < args.Length; i++)
             {
                 string arg = args[i];
-                if (arg == "-o" || arg == "--output-dir")
+                if (arg == "-h" || arg == "--help")
                 {
-                    if (i + 1 < args.Length) outputDir = args[++i];
+                    PrintHelp();
+                    return 0;
+                }
+                else if (arg == "-o" || arg == "--output-dir")
+                {
+                    if (i + 1 < args.Length && args[i + 1] != "-h" && args[i + 1] != "--help")
+                    {
+                        outputDir = args[++i];
+                    }
                 }
                 else if (arg == "-p" || arg == "--project-root")
                 {
-                    if (i + 1 < args.Length) projectRoot = args[++i];
+                    if (i + 1 < args.Length && args[i + 1] != "-h" && args[i + 1] != "--help")
+                    {
+                        projectRoot = args[++i];
+                    }
                 }
                 else if (arg == "-a" || arg == "--apply")
                 {
@@ -68,10 +79,12 @@ namespace MSBuildDiagnosticPatcher
             var msbuildParser = new MSBuildLogParser();
             var testParser = new TestExecutionLogParser();
 
-            string logContent = File.ReadAllText(logFilePath);
-
-            var diagnostics = msbuildParser.ParseText(logContent);
-            var testFailures = testParser.ParseText(logContent);
+            List<CompilerDiagnostic> diagnostics;
+            List<TestFailure> testFailures;
+            using (var reader = new StreamReader(logFilePath))
+            {
+                (diagnostics, testFailures) = LogStreamParser.Parse(reader, msbuildParser, testParser);
+            }
 
             stopwatch.Stop();
 
