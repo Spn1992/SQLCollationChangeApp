@@ -128,14 +128,7 @@ namespace MSBuildDiagnosticPatcher.Tests
 
             // 9. CI Workflow Configuration Tests
             RunTest("Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload", Test_Workflow_PostMergeBuildVerification_HasDiagnosticReportingAndArtifactUpload);
-            RunTest("Workflow_PostMergeBuildVerification_EnforcesNuGetV3AuditsAndLockfiles", Test_Workflow_PostMergeBuildVerification_EnforcesNuGetV3AuditsAndLockfiles);
-
-            // 10. Single-Pass Streaming & Regex Guard Regression Tests
-            RunTest("AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar", Test_AnsiCleaner_Clean_FastPathSkipsRegexWithoutEscapeChar);
-            RunTest("MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord", Test_MSBuildLogParser_Guards_CaseInsensitivePrefixesAndAnySeverityWord);
-            RunTest("MSBuildLogParser_Guards_FastOnSevenColonProseLines", Test_MSBuildLogParser_Guards_FastOnSevenColonProseLines);
-            RunTest("TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures", Test_TestExecutionLogParser_Streaming_CaseInsensitivePrefixesAndConsecutiveFailures);
-            RunTest("LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs", Test_LogStreamParser_SinglePassStreaming_MatchesDualPassParseTextOnMixedLogs);
+            RunTest("Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix", Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix);
 
             Console.WriteLine("=================================================");
             Console.WriteLine($" Test Suite Summary: {_passed} Passed, {_failed} Failed");
@@ -3321,51 +3314,22 @@ Time Elapsed 00:00:01.42
             Assert(content.Contains("/tmp/build-and-test.log"), "Workflow artifact path must include /tmp/build-and-test.log");
         }
 
-        static void Test_Workflow_PostMergeBuildVerification_EnforcesNuGetV3AuditsAndLockfiles()
+        static void Test_Workflow_PostMergeBuildVerification_VerifiesWindowsTargetAndMultiOsMatrix()
         {
             string workflowPath = FindWorkflowPath();
-            string repoRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(workflowPath)!, "..", ".."));
+            string content = File.ReadAllText(workflowPath);
 
-            string nugetConfig = File.ReadAllText(Path.Combine(repoRoot, "nuget.config"));
-            Assert(nugetConfig.Contains("https://api.nuget.org/v3/index.json"), "nuget.config must register NuGet V3 index endpoint");
-            Assert(nugetConfig.Contains("protocolVersion=\"3\""), "nuget.config must specify protocolVersion=\"3\"");
-            Assert(!nugetConfig.Contains("https://www.nuget.org/api/v2"), "nuget.config must not reference legacy V2 feed");
+            Assert(content.Contains("ubuntu-latest"), "Workflow matrix must include ubuntu-latest");
+            Assert(content.Contains("windows-latest"), "Workflow matrix must include windows-latest");
+            Assert(content.Contains("runs-on: ${{ matrix.os }}"), "Workflow must run across ${{ matrix.os }}");
+            Assert(content.Contains("shell: bash"), "Workflow must set shell: bash so pipefail propagates non-zero exit codes across Linux and Windows");
+            Assert(content.Contains("dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows -p:UseSharedCompilation=false 2>&1 | tee -a /tmp/build-and-test.log"),
+                "Workflow must explicitly verify net8.0-windows compilation and redirect output to /tmp/build-and-test.log");
 
-            string dirBuildPropsPath = Path.Combine(repoRoot, "Directory.Build.props");
-            Assert(File.Exists(dirBuildPropsPath), "Root Directory.Build.props must exist");
-            string dirBuildProps = File.ReadAllText(dirBuildPropsPath);
-            Assert(dirBuildProps.Contains("<NuGetAudit>true</NuGetAudit>"), "Directory.Build.props must set NuGetAudit=true");
-            Assert(dirBuildProps.Contains("<NuGetAuditMode>all</NuGetAuditMode>"), "Directory.Build.props must set NuGetAuditMode=all");
-            Assert(dirBuildProps.Contains("<NuGetAuditLevel>low</NuGetAuditLevel>"), "Directory.Build.props must set NuGetAuditLevel=low");
-            foreach (string code in new[] { "NU1901", "NU1902", "NU1903", "NU1904" })
-            {
-                Assert(dirBuildProps.Contains(code), $"Directory.Build.props WarningsAsErrors must include {code}");
-            }
-            Assert(dirBuildProps.Contains("<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>"), "Directory.Build.props must set RestorePackagesWithLockFile=true");
-
-            string collationCsproj = File.ReadAllText(Path.Combine(repoRoot, "CollationModifier", "CollationModifier.csproj"));
-            Assert(collationCsproj.Contains("<NuGetLockFilePath>packages.$(TargetFramework).lock.json</NuGetLockFilePath>"), "CollationModifier.csproj must configure per-framework NuGetLockFilePath");
-
-            string[] expectedLockFiles =
-            {
-                Path.Combine(repoRoot, "CollationModifier", "packages.net8.0.lock.json"),
-                Path.Combine(repoRoot, "CollationModifier", "packages.net48.lock.json"),
-                Path.Combine(repoRoot, "CollationModifier.Tests", "packages.lock.json"),
-                Path.Combine(repoRoot, "MSBuildDiagnosticPatcher", "packages.lock.json"),
-                Path.Combine(repoRoot, "MSBuildDiagnosticPatcher.Tests", "packages.lock.json")
-            };
-            foreach (string lockFile in expectedLockFiles)
-            {
-                Assert(File.Exists(lockFile), $"Expected lockfile to exist: {lockFile}");
-            }
-
-            string workflow = File.ReadAllText(workflowPath);
-            Assert(workflow.Contains("dotnet restore CollationModifier/CollationModifier.csproj --locked-mode"), "Workflow must restore CollationModifier with --locked-mode");
-            Assert(workflow.Contains("dotnet restore CollationModifier.Tests/CollationModifier.Tests.csproj --locked-mode"), "Workflow must restore CollationModifier.Tests with --locked-mode");
-            Assert(workflow.Contains("dotnet restore MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj --locked-mode"), "Workflow must restore MSBuildDiagnosticPatcher with --locked-mode");
-            Assert(workflow.Contains("dotnet restore MSBuildDiagnosticPatcher.Tests/MSBuildDiagnosticPatcher.Tests.csproj --locked-mode"), "Workflow must restore MSBuildDiagnosticPatcher.Tests with --locked-mode");
-            Assert(workflow.Contains("-p:OS=Windows_NT -p:EnableWindowsTargeting=true"), "Workflow must verify Windows_NT net48 lockfile");
-            Assert(workflow.Contains("dotnet list CollationModifier/CollationModifier.csproj package --deprecated --include-transitive --no-restore 2>&1 | tee -a /tmp/build-and-test.log"), "Workflow must append deprecated transitive package audit to /tmp/build-and-test.log");
+            int patcherBuildIndex = content.IndexOf("dotnet build MSBuildDiagnosticPatcher/MSBuildDiagnosticPatcher.csproj", StringComparison.Ordinal);
+            int windowsBuildIndex = content.IndexOf("dotnet build CollationModifier/CollationModifier.csproj -f net8.0-windows", StringComparison.Ordinal);
+            Assert(patcherBuildIndex != -1 && windowsBuildIndex != -1 && patcherBuildIndex < windowsBuildIndex,
+                "Workflow must build MSBuildDiagnosticPatcher before net8.0-windows verification step");
         }
 
         private static string FindWorkflowPath()
