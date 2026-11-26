@@ -255,6 +255,71 @@ namespace CollationModifier.Tests
 
     public class SynchronousSynchronizationContext : SynchronizationContext
     {
+        private readonly List<Exception> _unhandledExceptions = new List<Exception>();
+        private readonly object _lock = new object();
+
+        public IReadOnlyList<Exception> UnhandledExceptions
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _unhandledExceptions.ToArray();
+                }
+            }
+        }
+
+        public bool HasUnhandledExceptions
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _unhandledExceptions.Count > 0;
+                }
+            }
+        }
+
+        public void ThrowIfUnhandledExceptions()
+        {
+            List<Exception> snapshot;
+            lock (_lock)
+            {
+                if (_unhandledExceptions.Count == 0)
+                {
+                    return;
+                }
+
+                snapshot = new List<Exception>(_unhandledExceptions);
+                _unhandledExceptions.Clear();
+            }
+
+            if (snapshot.Count == 1)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(snapshot[0]).Throw();
+            }
+
+            throw new AggregateException("Unhandled exception(s) occurred on SynchronizationContext.", snapshot);
+        }
+
+        public Exception CombineWithUnhandledExceptions(Exception primaryException)
+        {
+            List<Exception> snapshot;
+            lock (_lock)
+            {
+                if (_unhandledExceptions.Count == 0)
+                {
+                    return primaryException;
+                }
+
+                snapshot = new List<Exception>(_unhandledExceptions.Count + 1) { primaryException };
+                snapshot.AddRange(_unhandledExceptions);
+                _unhandledExceptions.Clear();
+            }
+
+            return new AggregateException("Test failed with additional unhandled SynchronizationContext exception(s).", snapshot);
+        }
+
         public override void Post(SendOrPostCallback d, object? state)
         {
             var prev = Current;
@@ -262,6 +327,13 @@ namespace CollationModifier.Tests
             {
                 SetSynchronizationContext(this);
                 d(state);
+            }
+            catch (Exception ex)
+            {
+                lock (_lock)
+                {
+                    _unhandledExceptions.Add(ex);
+                }
             }
             finally
             {
@@ -291,9 +363,61 @@ namespace CollationModifier.Tests
 
     public static class MainViewModelTestsRunner
     {
-        public static Task RunAllTestsAsync() => RunTestsAsync();
+        private const string SuiteClassName = "MainViewModelTests";
 
-        public static async Task RunTestsAsync()
+        public static Task<int> RunAllTestsAsync() => RunTestsAsync();
+
+        public static async Task<int> ExecuteAsyncTestAsync(string name, Func<Task> testAction)
+        {
+            var syncContext = new SynchronousSynchronizationContext();
+            var prevContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(syncContext);
+            try
+            {
+                await testAction();
+                syncContext.ThrowIfUnhandledExceptions();
+                Console.WriteLine($"  [PASS] {name}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Exception failure = syncContext.CombineWithUnhandledExceptions(ex);
+                string qualifiedName = name.Contains('.') ? name : $"{SuiteClassName}.{name}";
+                Console.WriteLine($"  [FAIL] {qualifiedName} - {failure}");
+                return 1;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(prevContext);
+            }
+        }
+
+        public static int ExecuteSyncTest(string name, Action testAction)
+        {
+            var syncContext = new SynchronousSynchronizationContext();
+            var prevContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(syncContext);
+            try
+            {
+                testAction();
+                syncContext.ThrowIfUnhandledExceptions();
+                Console.WriteLine($"  [PASS] {name}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Exception failure = syncContext.CombineWithUnhandledExceptions(ex);
+                string qualifiedName = name.Contains('.') ? name : $"{SuiteClassName}.{name}";
+                Console.WriteLine($"  [FAIL] {qualifiedName} - {failure}");
+                return 1;
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(prevContext);
+            }
+        }
+
+        public static async Task<int> RunTestsAsync()
         {
             SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
             int failed = 0;
@@ -1715,6 +1839,108 @@ namespace CollationModifier.Tests
                 Assert(!content.Contains("#3B82F6"), "App.xaml should not contain non-compliant color #3B82F6");
             });
 
+            RunSyncTest("AppXaml_ComboBoxStyle_EditableFocusIndicatorAndAdorner_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string appXamlContent = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(appXamlContent);
+
+                var comboBoxStyle = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Style" &&
+                    e.Attribute("TargetType")?.Value == "ComboBox" &&
+                    e.Attributes().All(a => a.Name.LocalName != "Key"));
+                Assert(comboBoxStyle != null, "App.xaml must define an implicit <Style TargetType=\"ComboBox\">");
+
+                var setters = comboBoxStyle!.Elements().Where(e => e.Name.LocalName == "Setter").ToList();
+                Assert(setters.Any(s => s.Attribute("Property")?.Value == "BorderThickness" && s.Attribute("Value")?.Value == "1"),
+                    "ComboBox style must keep BorderThickness=\"1\" to prevent layout shift");
+                Assert(setters.Any(s => s.Attribute("Property")?.Value == "FocusVisualStyle" && s.Attribute("Value")?.Value == "{StaticResource FocusVisualStyle}"),
+                    "ComboBox style must keep default FocusVisualStyle=\"{StaticResource FocusVisualStyle}\" for non-editable ComboBox controls");
+                Assert(setters.Any(s => s.Attribute("Property")?.Value == "local:App.TrackEditableFocus" && s.Attribute("Value")?.Value == "True"),
+                    "ComboBox style must bind shared attached property local:App.TrackEditableFocus=\"True\"");
+
+                var triggersElement = comboBoxStyle.Elements().FirstOrDefault(e => e.Name.LocalName == "Style.Triggers");
+                Assert(triggersElement != null, "ComboBox style must declare Style.Triggers");
+                var triggers = triggersElement!.Elements().Where(e => e.Name.LocalName == "Trigger").ToList();
+
+                var keyboardFocusedTrigger = triggers.FirstOrDefault(t =>
+                    t.Attribute("Property")?.Value == "IsKeyboardFocused" &&
+                    t.Attribute("Value")?.Value == "True");
+                Assert(keyboardFocusedTrigger != null, "ComboBox style must retain Trigger for IsKeyboardFocused=\"True\"");
+                Assert(keyboardFocusedTrigger!.Elements().Any(s =>
+                    s.Name.LocalName == "Setter" &&
+                    s.Attribute("Property")?.Value == "BorderBrush" &&
+                    s.Attribute("Value")?.Value == "{StaticResource FocusBorderBrush}"),
+                    "IsKeyboardFocused=\"True\" trigger must set BorderBrush to {StaticResource FocusBorderBrush}");
+
+                var keyboardFocusWithinTrigger = triggers.FirstOrDefault(t =>
+                    t.Attribute("Property")?.Value == "IsKeyboardFocusWithin" &&
+                    t.Attribute("Value")?.Value == "True");
+                Assert(keyboardFocusWithinTrigger != null, "ComboBox style must declare Trigger for IsKeyboardFocusWithin=\"True\"");
+                Assert(keyboardFocusWithinTrigger!.Elements().Any(s =>
+                    s.Name.LocalName == "Setter" &&
+                    s.Attribute("Property")?.Value == "BorderBrush" &&
+                    s.Attribute("Value")?.Value == "{StaticResource FocusBorderBrush}"),
+                    "IsKeyboardFocusWithin=\"True\" trigger must set BorderBrush to {StaticResource FocusBorderBrush}");
+
+                var editableTrigger = triggers.FirstOrDefault(t =>
+                    t.Attribute("Property")?.Value == "IsEditable" &&
+                    t.Attribute("Value")?.Value == "True");
+                Assert(editableTrigger != null, "ComboBox style must declare Trigger for IsEditable=\"True\"");
+                Assert(editableTrigger!.Elements().Any(s =>
+                    s.Name.LocalName == "Setter" &&
+                    s.Attribute("Property")?.Value == "FocusVisualStyle" &&
+                    s.Attribute("Value")?.Value == "{x:Null}"),
+                    "IsEditable=\"True\" trigger must set FocusVisualStyle to {x:Null} to prevent duplicate outer adorners");
+
+                Assert(!triggers.SelectMany(t => t.Elements()).Any(s => s.Attribute("Property")?.Value == "BorderThickness"),
+                    "ComboBox triggers must not modify BorderThickness");
+
+                string appXamlCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(appXamlPath)!, "App.xaml.cs"));
+                Assert(System.IO.File.Exists(appXamlCsPath), $"App.xaml.cs file should exist at path {appXamlCsPath}");
+                string appCsContent = System.IO.File.ReadAllText(appXamlCsPath);
+
+                Assert(appCsContent.Contains("TrackEditableFocusProperty"), "App.xaml.cs must register TrackEditableFocusProperty");
+                Assert(appCsContent.Contains("IsEditable"), "App.xaml.cs must guard editable focus tracking on ComboBox.IsEditable");
+                Assert(appCsContent.Contains("IsKeyboardFocusWithinChanged"), "App.xaml.cs must subscribe to IsKeyboardFocusWithinChanged");
+                Assert(appCsContent.Contains("IsEnabledChanged"), "App.xaml.cs must subscribe to IsEnabledChanged");
+                Assert(appCsContent.Contains("Loaded +="), "App.xaml.cs must subscribe to Loaded");
+                Assert(appCsContent.Contains("Unloaded +="), "App.xaml.cs must subscribe to Unloaded");
+                Assert(appCsContent.Contains(": Adorner"), "App.xaml.cs must define a custom Adorner around the outer ComboBox");
+                Assert(appCsContent.Contains("AdornerLayer.GetAdornerLayer"), "App.xaml.cs must manage the focus indicator in AdornerLayer");
+                Assert(appCsContent.Contains("\"FocusVisualStyle\""), "App.xaml.cs must resolve FocusVisualStyle resource for the adorner");
+                Assert(appCsContent.Contains("IsHitTestVisible = false"), "Editable ComboBox focus adorner must be non-interactive (IsHitTestVisible = false)");
+                Assert(appCsContent.Contains("Focusable = false"), "Editable ComboBox focus adorner must not be focusable (Focusable = false)");
+
+                // Verify WCAG 2.2 SC 1.4.11 non-text contrast (>= 3.0:1) for #0284C7 against #F8FAFC and #FFFFFF
+                double fR = 2.0 / 255.0, fG = 132.0 / 255.0, fB = 199.0 / 255.0;
+                double fRLin = fR <= 0.04045 ? fR / 12.92 : Math.Pow((fR + 0.055) / 1.055, 2.4);
+                double fGLin = fG <= 0.04045 ? fG / 12.92 : Math.Pow((fG + 0.055) / 1.055, 2.4);
+                double fBLin = fB <= 0.04045 ? fB / 12.92 : Math.Pow((fB + 0.055) / 1.055, 2.4);
+                double focusLum = 0.2126 * fRLin + 0.7152 * fGLin + 0.0722 * fBLin;
+
+                double bgR = 248.0 / 255.0, bgG = 250.0 / 255.0, bgB = 252.0 / 255.0;
+                double bgRLin = bgR <= 0.04045 ? bgR / 12.92 : Math.Pow((bgR + 0.055) / 1.055, 2.4);
+                double bgGLin = bgG <= 0.04045 ? bgG / 12.92 : Math.Pow((bgG + 0.055) / 1.055, 2.4);
+                double bgBLin = bgB <= 0.04045 ? bgB / 12.92 : Math.Pow((bgB + 0.055) / 1.055, 2.4);
+                double slateBgLum = 0.2126 * bgRLin + 0.7152 * bgGLin + 0.0722 * bgBLin;
+
+                double contrastOnSlate = (slateBgLum + 0.05) / (focusLum + 0.05);
+                double contrastOnWhite = (1.0 + 0.05) / (focusLum + 0.05);
+                Assert(contrastOnSlate >= 3.0, $"Focus ring contrast {contrastOnSlate:F2}:1 on #F8FAFC must meet WCAG 2.2 SC 1.4.11 (>= 3:1)");
+                Assert(contrastOnWhite >= 3.0, $"Focus ring contrast {contrastOnWhite:F2}:1 on #FFFFFF must meet WCAG 2.2 SC 1.4.11 (>= 3:1)");
+            });
+
             RunSyncTest("ErrorDetailsWindowXaml_CopyStatus_UsesAccessibleStatusSuccessBrush", () =>
             {
                 string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
@@ -1866,6 +2092,147 @@ namespace CollationModifier.Tests
                 Assert(sizeNameAttr.Contains("TargetNullValue='Size: -'"), "Size value TextBlock should have TargetNullValue='Size: -'");
                 string sizeLabeledBy = sizeValueTb.Attribute("AutomationProperties.LabeledBy")?.Value ?? "";
                 Assert(sizeLabeledBy.Contains("ElementName=SizeLabel"), "Size value TextBlock should retain LabeledBy binding to SizeLabel");
+            });
+
+            RunSyncTest("MainWindowXaml_MetadataEmptyState_BindingsTriggersAndContrast_Configured", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                var xName = System.Xml.Linq.XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml");
+                var mainDoc = System.Xml.Linq.XDocument.Parse(System.IO.File.ReadAllText(mainWindowXamlPath));
+                var appDoc = System.Xml.Linq.XDocument.Parse(System.IO.File.ReadAllText(appXamlPath));
+
+                // 1. MetadataPropertyGrid wraps the 4 metadata rows and toggles Visibility via HasSelectedDatabase
+                var metadataPropertyGrid = mainDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Grid" && e.Attribute(xName)?.Value == "MetadataPropertyGrid");
+                Assert(metadataPropertyGrid != null, "MainWindow.xaml must define Grid x:Name='MetadataPropertyGrid'");
+
+                var propGridStyle = metadataPropertyGrid!.Elements().FirstOrDefault(e => e.Name.LocalName == "Grid.Style")
+                    ?.Elements().FirstOrDefault(e => e.Name.LocalName == "Style" && e.Attribute("TargetType")?.Value == "Grid");
+                Assert(propGridStyle != null, "MetadataPropertyGrid must define an inline Style with TargetType='Grid'");
+
+                var propGridDefaultVisibility = propGridStyle!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(propGridDefaultVisibility?.Attribute("Value")?.Value == "Collapsed",
+                    "MetadataPropertyGrid must default Visibility to Collapsed when no database is selected");
+
+                var propGridTrigger = propGridStyle.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "DataTrigger" &&
+                    e.Attribute("Binding")?.Value == "{Binding HasSelectedDatabase}" &&
+                    e.Attribute("Value")?.Value == "True");
+                Assert(propGridTrigger != null, "MetadataPropertyGrid must define a DataTrigger for {Binding HasSelectedDatabase} == True");
+                var propGridTriggerSetter = propGridTrigger!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(propGridTriggerSetter?.Attribute("Value")?.Value == "Visible",
+                    "MetadataPropertyGrid DataTrigger must set Visibility to Visible when HasSelectedDatabase is True");
+
+                var propGridTextBlocks = metadataPropertyGrid.Elements().Where(e => e.Name.LocalName == "TextBlock").ToList();
+                Assert(propGridTextBlocks.Count == 8, $"MetadataPropertyGrid should contain all 8 label and value TextBlocks, got {propGridTextBlocks.Count}");
+
+                // 2. MetadataEmptyStateContainer sits beside MetadataPropertyGrid inside the metadata Border Grid
+                var metadataEmptyStateContainer = mainDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "StackPanel" && e.Attribute(xName)?.Value == "MetadataEmptyStateContainer");
+                Assert(metadataEmptyStateContainer != null, "MainWindow.xaml must define StackPanel x:Name='MetadataEmptyStateContainer'");
+                Assert(metadataEmptyStateContainer!.Parent == metadataPropertyGrid.Parent,
+                    "MetadataEmptyStateContainer and MetadataPropertyGrid must share the same parent Grid inside the metadata Border");
+                Assert(metadataEmptyStateContainer.Attribute("Margin")?.Value == "12",
+                    "MetadataEmptyStateContainer must specify valid Margin='12' on StackPanel");
+                Assert(metadataEmptyStateContainer.Attribute("Padding") == null,
+                    "MetadataEmptyStateContainer StackPanel must not specify invalid Padding attribute");
+                Assert(metadataEmptyStateContainer.Attribute("HorizontalAlignment")?.Value == "Center",
+                    "MetadataEmptyStateContainer must specify HorizontalAlignment='Center'");
+                Assert(metadataEmptyStateContainer.Attribute("VerticalAlignment")?.Value == "Center",
+                    "MetadataEmptyStateContainer must specify VerticalAlignment='Center'");
+
+                var emptyContainerStyle = metadataEmptyStateContainer.Elements().FirstOrDefault(e => e.Name.LocalName == "StackPanel.Style")
+                    ?.Elements().FirstOrDefault(e => e.Name.LocalName == "Style" && e.Attribute("TargetType")?.Value == "StackPanel");
+                Assert(emptyContainerStyle != null, "MetadataEmptyStateContainer must define an inline Style with TargetType='StackPanel'");
+
+                var emptyContainerDefaultVisibility = emptyContainerStyle!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(emptyContainerDefaultVisibility?.Attribute("Value")?.Value == "Visible",
+                    "MetadataEmptyStateContainer must default Visibility to Visible when no database is selected");
+
+                var emptyContainerTrigger = emptyContainerStyle.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "DataTrigger" &&
+                    e.Attribute("Binding")?.Value == "{Binding HasSelectedDatabase}" &&
+                    e.Attribute("Value")?.Value == "True");
+                Assert(emptyContainerTrigger != null, "MetadataEmptyStateContainer must define a DataTrigger for {Binding HasSelectedDatabase} == True");
+                var emptyContainerTriggerSetter = emptyContainerTrigger!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Visibility");
+                Assert(emptyContainerTriggerSetter?.Attribute("Value")?.Value == "Collapsed",
+                    "MetadataEmptyStateContainer DataTrigger must set Visibility to Collapsed when HasSelectedDatabase is True");
+
+                // 3. lblMetadataEmptyState bindings, accessibility properties, and inherited #334155 high-contrast foreground
+                var lblMetadataEmptyState = metadataEmptyStateContainer.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "TextBlock" && e.Attribute(xName)?.Value == "lblMetadataEmptyState");
+                Assert(lblMetadataEmptyState != null, "MetadataEmptyStateContainer must contain TextBlock x:Name='lblMetadataEmptyState'");
+                Assert(lblMetadataEmptyState!.Attribute("Text")?.Value == "{Binding MetadataEmptyStateText}",
+                    "lblMetadataEmptyState Text must bind to {Binding MetadataEmptyStateText}");
+                Assert(lblMetadataEmptyState.Attribute("FontSize")?.Value == "14",
+                    "lblMetadataEmptyState must set FontSize='14'");
+                Assert(lblMetadataEmptyState.Attribute("HorizontalAlignment")?.Value == "Center",
+                    "lblMetadataEmptyState must set HorizontalAlignment='Center'");
+                Assert(lblMetadataEmptyState.Attribute("TextWrapping")?.Value == "Wrap",
+                    "lblMetadataEmptyState must set TextWrapping='Wrap'");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.Name")?.Value == "{Binding MetadataEmptyStateText}",
+                    "lblMetadataEmptyState AutomationProperties.Name must bind to {Binding MetadataEmptyStateText}");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.HelpText")?.Value == "Metadata empty state guidance message.",
+                    "lblMetadataEmptyState AutomationProperties.HelpText must equal 'Metadata empty state guidance message.'");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.LiveSetting")?.Value == "Polite",
+                    "lblMetadataEmptyState must configure AutomationProperties.LiveSetting='Polite' for WCAG 2.2 SC 4.1.3");
+                Assert(lblMetadataEmptyState.Attribute("Foreground") == null,
+                    "lblMetadataEmptyState must omit local Foreground so it inherits #334155 from App.xaml");
+                Assert(lblMetadataEmptyState.Attribute("AutomationProperties.HeadingLevel") == null,
+                    "lblMetadataEmptyState must omit AutomationProperties.HeadingLevel");
+
+                // 4. Verify inherited Foreground (#334155) from App.xaml against metadata Border Background (White) meets WCAG 2.2 SC 1.4.3
+                var metadataBorder = metadataPropertyGrid.Parent?.Parent;
+                Assert(metadataBorder != null && metadataBorder.Name.LocalName == "Border",
+                    "Metadata panel outer container should be a Border");
+                Assert(metadataBorder!.Attribute("Background")?.Value == "White",
+                    "Metadata Border Background should be White");
+
+                var implicitTextBlockStyle = appDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "Style" &&
+                    e.Attribute("TargetType")?.Value == "TextBlock" &&
+                    e.Attributes().All(a => a.Name.LocalName != "Key"));
+                Assert(implicitTextBlockStyle != null, "App.xaml must define implicit TextBlock style");
+                var fgSetter = implicitTextBlockStyle!.Elements().FirstOrDefault(e =>
+                    e.Name.LocalName == "Setter" && e.Attribute("Property")?.Value == "Foreground");
+                Assert(fgSetter?.Attribute("Value")?.Value == "#334155",
+                    "App.xaml implicit TextBlock style must set Foreground='#334155'");
+
+                double sR = 0x33 / 255.0;
+                double sG = 0x41 / 255.0;
+                double sB = 0x55 / 255.0;
+                double rLin = sR <= 0.04045 ? sR / 12.92 : Math.Pow((sR + 0.055) / 1.055, 2.4);
+                double gLin = sG <= 0.04045 ? sG / 12.92 : Math.Pow((sG + 0.055) / 1.055, 2.4);
+                double bLin = sB <= 0.04045 ? sB / 12.92 : Math.Pow((sB + 0.055) / 1.055, 2.4);
+                double lumFg = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin;
+                double contrastAgainstWhite = (1.0 + 0.05) / (lumFg + 0.05);
+                Assert(contrastAgainstWhite >= 4.5 && Math.Abs(contrastAgainstWhite - 10.35) < 0.1,
+                    $"Expected inherited #334155 foreground contrast ~10.35:1 (>= 4.5:1) against White, got {contrastAgainstWhite:F2}:1");
             });
 
             RunSyncTest("MainViewModel_SelectedDatabase_MetadataAccessibleNames_EvaluatesCompositeStrings", () =>
@@ -2124,6 +2491,56 @@ namespace CollationModifier.Tests
                 var databasesProp = typeof(ServerInitializationData).GetProperty("Databases");
                 Assert(databasesProp != null, "ServerInitializationData must expose canonical Databases property.");
                 Assert(databasesProp!.PropertyType == typeof(List<DatabaseInfo>), "Databases must be of type List<DatabaseInfo>.");
+            });
+
+            RunSyncTest("IDatabaseService_DoesNotExposeObsoleteBackupRestoreShims", () =>
+            {
+                var backupShim = typeof(IDatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(backupShim == null, "IDatabaseService must not expose obsolete three-parameter BackupDatabaseAsync shim.");
+
+                var restoreShim = typeof(IDatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(restoreShim == null, "IDatabaseService must not expose obsolete three-parameter RestoreDatabaseAsync shim.");
+
+                var canonicalBackup = typeof(IDatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalBackup != null, "IDatabaseService must expose canonical four-parameter BackupDatabaseAsync method.");
+                Assert(canonicalBackup!.ReturnType == typeof(Task<string>), "Canonical BackupDatabaseAsync must return Task<string>.");
+
+                var canonicalRestore = typeof(IDatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalRestore != null, "IDatabaseService must expose canonical four-parameter RestoreDatabaseAsync method.");
+                Assert(canonicalRestore!.ReturnType == typeof(Task), "Canonical RestoreDatabaseAsync must return Task.");
+            });
+
+            RunSyncTest("DatabaseService_DoesNotExposeObsoleteBackupRestoreShims", () =>
+            {
+                var backupShim = typeof(DatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(backupShim == null, "DatabaseService must not expose obsolete three-parameter BackupDatabaseAsync shim.");
+
+                var restoreShim = typeof(DatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(CancellationToken) });
+                Assert(restoreShim == null, "DatabaseService must not expose obsolete three-parameter RestoreDatabaseAsync shim.");
+
+                var canonicalBackup = typeof(DatabaseService).GetMethod(
+                    "BackupDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalBackup != null, "DatabaseService must expose canonical four-parameter BackupDatabaseAsync method.");
+                Assert(canonicalBackup!.ReturnType == typeof(Task<string>), "Canonical BackupDatabaseAsync must return Task<string>.");
+
+                var canonicalRestore = typeof(DatabaseService).GetMethod(
+                    "RestoreDatabaseAsync",
+                    new[] { typeof(string), typeof(string), typeof(IProgress<int>), typeof(CancellationToken) });
+                Assert(canonicalRestore != null, "DatabaseService must expose canonical four-parameter RestoreDatabaseAsync method.");
+                Assert(canonicalRestore!.ReturnType == typeof(Task), "Canonical RestoreDatabaseAsync must return Task.");
             });
 
             await RunAsyncTest("DatabaseService_GetServerInitializationDataAsync_ThrowsOperationCanceledException_WhenTokenCancelled", async () =>
@@ -2388,6 +2805,54 @@ namespace CollationModifier.Tests
                 Assert(restoreReportedPercent == 50, $"Expected restore progress percent to report 50, got {restoreReportedPercent}");
                 Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after restore completes");
                 Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after restore completes");
+            });
+
+            await RunAsyncTest("ProcessCollationChangeAsync_ReportsRestoreProgressPercentagesOnCancellation", async () =>
+            {
+                var initialDb = new DatabaseInfo { Name = "CancelProgressRestoreDb", Collation = "SQL_Latin1_General_CP1_CI_AS" };
+                var mockService = new MockDatabaseService
+                {
+                    DatabasesToReturn = new List<DatabaseInfo> { initialDb },
+                    RestoreProgressSimulator = progress =>
+                    {
+                        progress?.Report(75);
+                    }
+                };
+
+                var vm = new MainViewModel(mockService);
+                vm.ConfirmCollationChangeHandler = (db, col) => true;
+                await vm.LoadDatabasesAsync();
+                vm.SelectedDatabase = vm.Databases[0];
+                vm.TargetCollation = "Latin1_General_100_CI_AS";
+
+                mockService.OnAlterCollation = async token =>
+                {
+                    vm.Cancel();
+                    token.ThrowIfCancellationRequested();
+                    await Task.CompletedTask;
+                };
+
+                int restoreReportedPercent = -1;
+                string? restoreReportedStatus = null;
+                vm.PropertyChanged += (sender, args) =>
+                {
+                    if (args.PropertyName == nameof(MainViewModel.ProgressPercent) && vm.ProgressPercent == 75)
+                    {
+                        restoreReportedPercent = vm.ProgressPercent;
+                    }
+                    if (args.PropertyName == nameof(MainViewModel.StatusMessage) && vm.StatusMessage == "Restoring database... 75%")
+                    {
+                        restoreReportedStatus = vm.StatusMessage;
+                    }
+                };
+
+                await vm.ProcessCollationChangeAsync();
+
+                Assert(restoreReportedPercent == 75, $"Expected restore progress percent to report 75, got {restoreReportedPercent}");
+                Assert(restoreReportedStatus == "Restoring database... 75%", $"Expected restore status message 'Restoring database... 75%', got '{restoreReportedStatus}'");
+                Assert(vm.ProgressPercent == 0, "Expected ProgressPercent to reset to 0 after cancellation rollback completes");
+                Assert(vm.IsIndeterminateProgress == true, "Expected IsIndeterminateProgress to reset to true after cancellation rollback completes");
+                Assert(vm.StatusMessage == "Operation cancelled by user.", $"Expected final StatusMessage 'Operation cancelled by user.', got '{vm.StatusMessage}'");
             });
 
             await RunAsyncTest("ProcessCollationChangeAsync_ResetsProgressAndEnablesIndeterminate_DuringAlterCollation", async () =>
@@ -2925,6 +3390,108 @@ namespace CollationModifier.Tests
                     $"Contrast ratio {contrastAgainstWhite:F2}:1 against white background must exceed 4.5:1 under WCAG 2.2 1.4.3");
             });
 
+            RunSyncTest("DisconnectedOverlay_SharedBrushes_NoContainerOpacity_AndHighContrast", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string appContent = System.IO.File.ReadAllText(appXamlPath);
+                var appDoc = System.Xml.Linq.XDocument.Parse(appContent);
+                System.Xml.Linq.XNamespace xNs = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+                var brushes = appDoc.Descendants().Where(e => e.Name.LocalName == "SolidColorBrush").ToList();
+                var overlayBgBrush = brushes.FirstOrDefault(b => b.Attribute(xNs + "Key")?.Value == "OverlayBackgroundBrush");
+                var overlayFgBrush = brushes.FirstOrDefault(b => b.Attribute(xNs + "Key")?.Value == "OverlayForegroundBrush");
+
+                Assert(overlayBgBrush != null && string.Equals(overlayBgBrush.Attribute("Color")?.Value, "#E6F8FAFC", StringComparison.OrdinalIgnoreCase),
+                    "App.xaml should define OverlayBackgroundBrush with Color=\"#E6F8FAFC\"");
+                Assert(overlayFgBrush != null && string.Equals(overlayFgBrush.Attribute("Color")?.Value, "#334155", StringComparison.OrdinalIgnoreCase),
+                    "App.xaml should define OverlayForegroundBrush with Color=\"#334155\"");
+
+                string mainWindowContent = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var mainDoc = System.Xml.Linq.XDocument.Parse(mainWindowContent);
+
+                var overlayTextBlock = mainDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "TextBlock" && e.Attribute(xNs + "Name")?.Value == "lblDisconnectedOverlay");
+                Assert(overlayTextBlock != null, "MainWindow.xaml must contain lblDisconnectedOverlay TextBlock");
+                Assert(overlayTextBlock!.Attribute("Foreground")?.Value == "{StaticResource OverlayForegroundBrush}",
+                    "lblDisconnectedOverlay must bind Foreground to {StaticResource OverlayForegroundBrush}");
+                Assert(overlayTextBlock.Attribute("Opacity") == null,
+                    "lblDisconnectedOverlay must not set local Opacity");
+
+                var overlayBorder = overlayTextBlock.Parent;
+                Assert(overlayBorder != null && overlayBorder.Name.LocalName == "Border",
+                    "lblDisconnectedOverlay must be wrapped in the disconnected overlay Border");
+                Assert(overlayBorder!.Attribute("Background")?.Value == "{StaticResource OverlayBackgroundBrush}",
+                    "Disconnected overlay Border must bind Background to {StaticResource OverlayBackgroundBrush}");
+                Assert(overlayBorder.Attribute("Opacity") == null,
+                    "Disconnected overlay Border must not set Opacity so child text renders at full opacity");
+                Assert(overlayBorder.Attribute("Panel.ZIndex")?.Value == "5",
+                    "Disconnected overlay Border must preserve Panel.ZIndex=\"5\"");
+
+                // Verify WCAG 2.2 SC 1.4.3 / G18 alpha-composited contrast ratios (> 4.5:1)
+                static double ToLinear(double channelByte)
+                {
+                    double s = channelByte / 255.0;
+                    return s <= 0.04045 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+                }
+
+                static double RelativeLuminance(double r, double g, double b) =>
+                    0.2126 * ToLinear(r) + 0.7152 * ToLinear(g) + 0.0722 * ToLinear(b);
+
+                static double ContrastRatio(double lum1, double lum2)
+                {
+                    double lighter = Math.Max(lum1, lum2);
+                    double darker = Math.Min(lum1, lum2);
+                    return (lighter + 0.05) / (darker + 0.05);
+                }
+
+                // OverlayForegroundBrush #334155 (opaque: R=51, G=65, B=85)
+                double fgLum = RelativeLuminance(0x33, 0x41, 0x55);
+
+                // OverlayBackgroundBrush #E6F8FAFC (A=230/255, R=248, G=250, B=252)
+                double alpha = 0xE6 / 255.0;
+                (string Name, double R, double G, double B)[] underlyingSurfaces = new[]
+                {
+                    ("DashboardPanel #F8FAFC", (double)0xF8, (double)0xFA, (double)0xFC),
+                    ("MetadataCard #FFFFFF", (double)0xFF, (double)0xFF, (double)0xFF),
+                    ("UnderlyingLabel #334155", (double)0x33, (double)0x41, (double)0x55)
+                };
+
+                foreach (var surface in underlyingSurfaces)
+                {
+                    double compR = Math.Round(alpha * 0xF8 + (1.0 - alpha) * surface.R);
+                    double compG = Math.Round(alpha * 0xFA + (1.0 - alpha) * surface.G);
+                    double compB = Math.Round(alpha * 0xFC + (1.0 - alpha) * surface.B);
+                    double bgLum = RelativeLuminance(compR, compG, compB);
+                    double ratio = ContrastRatio(bgLum, fgLum);
+
+                    Assert(ratio >= 4.5,
+                        $"Composited contrast ratio {ratio:F2}:1 over {surface.Name} must exceed 4.5:1 under WCAG 2.2 SC 1.4.3");
+                    Assert(ratio >= 8.4,
+                        $"Composited contrast ratio {ratio:F2}:1 over {surface.Name} should reach expected >= 8.41:1 contrast");
+                }
+            });
+
             RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_NoLocalBorderBrushOverride", () =>
             {
                 string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
@@ -3060,6 +3627,70 @@ namespace CollationModifier.Tests
                 Assert(content.Contains("AutomationProperties.Name=\"Please connect to a server to continue.\""), "lblDisconnectedOverlay should configure AutomationProperties.Name");
                 Assert(content.Contains("AutomationProperties.LiveSetting=\"Polite\""), "MainWindow.xaml should configure AutomationProperties.LiveSetting=\"Polite\"");
                 Assert(content.Contains("AutomationProperties.Name=\"Database Operations\""), "Operations container should configure AutomationProperties.Name=\"Database Operations\"");
+
+                // Verify <Window.Resources> precedes <Grid> so StaticResource resolves BooleanToVisibilityConverter on net48
+                int windowResourcesIndex = content.IndexOf("<Window.Resources>");
+                int rootGridIndex = content.IndexOf("<Grid>");
+                Assert(windowResourcesIndex >= 0, "MainWindow.xaml must declare <Window.Resources>");
+                Assert(rootGridIndex >= 0, "MainWindow.xaml must declare root <Grid>");
+                Assert(windowResourcesIndex < rootGridIndex, "<Window.Resources> must precede <Grid> in MainWindow.xaml");
+
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var rootElements = doc.Root!.Elements().ToList();
+                var windowResourcesElements = rootElements.Where(e => e.Name.LocalName == "Window.Resources").ToList();
+                Assert(windowResourcesElements.Count == 1, "MainWindow.xaml should declare exactly one <Window.Resources> block");
+                var rootGridElement = rootElements.FirstOrDefault(e => e.Name.LocalName == "Grid");
+                Assert(rootGridElement != null, "MainWindow.xaml root must contain <Grid>");
+                Assert(rootElements.IndexOf(windowResourcesElements[0]) < rootElements.IndexOf(rootGridElement!),
+                    "<Window.Resources> element must precede <Grid> element in Window children");
+                Assert(windowResourcesElements[0].Elements().Any(e =>
+                    e.Name.LocalName == "BooleanToVisibilityConverter" &&
+                    e.Attributes().Any(a => a.Name.LocalName == "Key" && a.Value == "BooleanToVisibilityConverter")),
+                    "<Window.Resources> must define BooleanToVisibilityConverter with x:Key='BooleanToVisibilityConverter'");
+
+                // Verify Database Operations StackPanel binds Visibility to IsConnected via BooleanToVisibilityConverter while preserving IsEnabled
+                var operationsPanel = doc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "StackPanel" &&
+                    e.Attribute("AutomationProperties.Name")?.Value == "Database Operations");
+                Assert(operationsPanel != null, "MainWindow.xaml must contain Database Operations StackPanel");
+                Assert(operationsPanel!.Attribute("IsEnabled")?.Value == "{Binding IsConnected}",
+                    "Database Operations StackPanel must preserve IsEnabled=\"{Binding IsConnected}\"");
+                string? opsVisibility = operationsPanel.Attribute("Visibility")?.Value;
+                Assert(opsVisibility == "{Binding IsConnected, Converter={StaticResource BooleanToVisibilityConverter}}",
+                    $"Database Operations StackPanel must bind Visibility to IsConnected via BooleanToVisibilityConverter, got '{opsVisibility}'");
+
+                // Verify TargetCollationInput_Loaded calls ApplyTemplate before checking Template and calling Template.FindName
+                string mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml.cs"));
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                if (!System.IO.File.Exists(mainWindowCsPath))
+                {
+                    mainWindowCsPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml.cs"));
+                }
+                Assert(System.IO.File.Exists(mainWindowCsPath), $"MainWindow.xaml.cs file should exist at path {mainWindowCsPath}");
+
+                string csContent = System.IO.File.ReadAllText(mainWindowCsPath);
+                int loadedMethodIndex = csContent.IndexOf("TargetCollationInput_Loaded");
+                Assert(loadedMethodIndex >= 0, "MainWindow.xaml.cs must define TargetCollationInput_Loaded");
+                string loadedMethodBody = csContent.Substring(loadedMethodIndex);
+                int applyTemplateIndex = loadedMethodBody.IndexOf("TargetCollationInput?.ApplyTemplate()");
+                if (applyTemplateIndex < 0)
+                {
+                    applyTemplateIndex = loadedMethodBody.IndexOf(".ApplyTemplate()");
+                }
+                int templateCheckIndex = loadedMethodBody.IndexOf("Template != null");
+                int findNameIndex = loadedMethodBody.IndexOf("Template.FindName");
+                if (findNameIndex < 0)
+                {
+                    findNameIndex = loadedMethodBody.IndexOf("Template?.FindName");
+                }
+                Assert(applyTemplateIndex >= 0, "TargetCollationInput_Loaded must call ApplyTemplate() on TargetCollationInput");
+                Assert(templateCheckIndex >= 0 && applyTemplateIndex < templateCheckIndex,
+                    "TargetCollationInput_Loaded must call ApplyTemplate() before checking Template");
+                Assert(findNameIndex >= 0 && applyTemplateIndex < findNameIndex,
+                    "TargetCollationInput_Loaded must call ApplyTemplate() before calling Template.FindName");
             });
 
             RunSyncTest("MainViewModel_IsConnected_TransitionsAnnounceOperationsPanelState", () =>
@@ -3596,38 +4227,16 @@ namespace CollationModifier.Tests
             });
 
             Console.WriteLine("\nTest Run Finished: MainViewModel tests completed.");
-            if (failed > 0)
-            {
-                throw new InvalidOperationException($"MainViewModel tests failed with {failed} failures.");
-            }
+            return failed;
 
             async Task RunAsyncTest(string name, Func<Task> testAction)
             {
-                try
-                {
-                    SynchronizationContext.SetSynchronizationContext(new SynchronousSynchronizationContext());
-                    await testAction();
-                    Console.WriteLine($"  [PASS] {name}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    failed++;
-                }
+                failed += await ExecuteAsyncTestAsync(name, testAction);
             }
 
             void RunSyncTest(string name, Action testAction)
             {
-                try
-                {
-                    testAction();
-                    Console.WriteLine($"  [PASS] {name}");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"  [FAIL] {name}: {ex.Message}");
-                    failed++;
-                }
+                failed += ExecuteSyncTest(name, testAction);
             }
 
             void Assert(bool condition, string message)

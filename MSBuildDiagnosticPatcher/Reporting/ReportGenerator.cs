@@ -3,12 +3,15 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using MSBuildDiagnosticPatcher.Models;
 
 namespace MSBuildDiagnosticPatcher.Reporting
 {
     public class ReportGenerator
     {
+        private static readonly Regex LineBreakRegex = new Regex(@"\r\n|\r|\n", RegexOptions.Compiled);
+
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
         {
             WriteIndented = true,
@@ -44,7 +47,7 @@ namespace MSBuildDiagnosticPatcher.Reporting
                 {
                     string file = Path.GetFileName(diag.FilePath);
                     string loc = diag.LineNumber > 0 ? $"{diag.LineNumber}:{diag.ColumnNumber}" : "-";
-                    string cleanMsg = diag.Message.Replace("|", "\\|");
+                    string cleanMsg = FormatMarkdownTableCell(diag.Message);
                     sb.AppendLine($"| `{diag.Code}` | `{diag.Severity}` | `{file}` | `{loc}` | {cleanMsg} |");
                 }
             }
@@ -63,9 +66,12 @@ namespace MSBuildDiagnosticPatcher.Reporting
                 sb.AppendLine("| :--- | :--- | :--- |");
                 foreach (var tf in report.TestFailures)
                 {
-                    string method = string.IsNullOrWhiteSpace(tf.TestMethod) ? "-" : $"`{tf.TestMethod}`";
-                    string cleanMsg = tf.AssertionFailureMessage.Replace("|", "\\|");
-                    sb.AppendLine($"| `{tf.TestClass}` | {method} | {cleanMsg} |");
+                    string cleanClass = FormatMarkdownTableCell(tf.TestClass);
+                    string method = string.IsNullOrWhiteSpace(tf.TestMethod)
+                        ? "-"
+                        : $"`{FormatMarkdownTableCell(tf.TestMethod)}`";
+                    string cleanMsg = FormatMarkdownTableCell(tf.AssertionFailureMessage);
+                    sb.AppendLine($"| `{cleanClass}` | {method} | {cleanMsg} |");
                 }
 
                 sb.AppendLine();
@@ -121,6 +127,17 @@ namespace MSBuildDiagnosticPatcher.Reporting
         public string GenerateJsonReport(DiagnosticReport report)
         {
             return JsonSerializer.Serialize(report, JsonOptions);
+        }
+
+        private static string FormatMarkdownTableCell(string? value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
+            }
+
+            string singleLine = LineBreakRegex.Replace(value, " ");
+            return singleLine.Replace("|", "\\|").Trim();
         }
 
         public void PrintConsoleSummary(DiagnosticReport report)

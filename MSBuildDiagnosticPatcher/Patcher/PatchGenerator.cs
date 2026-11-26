@@ -225,7 +225,7 @@ namespace MSBuildDiagnosticPatcher.Patcher
                     clean = clean.Substring(0, eqIdx).Trim();
                 }
 
-                var tokens = clean.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                var tokens = clean.Split(Array.Empty<char>(), StringSplitOptions.RemoveEmptyEntries);
                 if (tokens.Length >= 2)
                 {
                     string name = tokens[tokens.Length - 1];

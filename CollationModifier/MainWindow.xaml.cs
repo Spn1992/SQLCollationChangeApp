@@ -22,6 +22,7 @@ namespace CollationModifier
 
         private void TargetCollationInput_Loaded(object sender, RoutedEventArgs e)
         {
+            TargetCollationInput?.ApplyTemplate();
             if (TargetCollationInput?.Template != null)
             {
                 var textBox = TargetCollationInput.Template.FindName("PART_EditableTextBox", TargetCollationInput) as TextBox;
