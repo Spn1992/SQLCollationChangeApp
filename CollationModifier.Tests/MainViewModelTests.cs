@@ -2460,6 +2460,58 @@ namespace CollationModifier.Tests
                 Assert(contrastAgainstWhite >= 3.0, $"Contrast ratio {contrastAgainstWhite} against white background must exceed 3:1 under WCAG 2.2 1.4.11");
             });
 
+            RunSyncTest("AppXaml_DisabledInputStyleTriggers_Configured", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string content = System.IO.File.ReadAllText(appXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+                var styles = doc.Descendants().Where(e => e.Name.LocalName == "Style").ToList();
+
+                string[] inputTargetTypes = new[] { "TextBox", "PasswordBox", "ComboBox" };
+                foreach (string targetType in inputTargetTypes)
+                {
+                    var style = styles.FirstOrDefault(s => s.Attribute("TargetType")?.Value == targetType);
+                    Assert(style != null, $"App.xaml should define style for TargetType='{targetType}'");
+
+                    var triggersContainer = style!.Elements().FirstOrDefault(e => e.Name.LocalName == "Style.Triggers");
+                    Assert(triggersContainer != null, $"Style for '{targetType}' should contain <Style.Triggers>");
+
+                    var disabledTrigger = triggersContainer!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Trigger" &&
+                        e.Attribute("Property")?.Value == "IsEnabled" &&
+                        e.Attribute("Value")?.Value == "False");
+                    Assert(disabledTrigger != null, $"Style for '{targetType}' must configure <Trigger Property=\"IsEnabled\" Value=\"False\">");
+
+                    var bgSetter = disabledTrigger!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Setter" &&
+                        e.Attribute("Property")?.Value == "Background" &&
+                        e.Attribute("Value")?.Value == "{StaticResource DisabledBackgroundBrush}");
+                    Assert(bgSetter != null, $"Style for '{targetType}' disabled trigger must set Background to {{StaticResource DisabledBackgroundBrush}}");
+
+                    var fgSetter = disabledTrigger!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Setter" &&
+                        e.Attribute("Property")?.Value == "Foreground" &&
+                        e.Attribute("Value")?.Value == "{StaticResource DisabledForegroundBrush}");
+                    Assert(fgSetter != null, $"Style for '{targetType}' disabled trigger must set Foreground to {{StaticResource DisabledForegroundBrush}}");
+
+                    var borderSetter = disabledTrigger!.Elements().FirstOrDefault(e =>
+                        e.Name.LocalName == "Setter" &&
+                        e.Attribute("Property")?.Value == "BorderBrush" &&
+                        e.Attribute("Value")?.Value == "{StaticResource DisabledBackgroundBrush}");
+                    Assert(borderSetter != null, $"Style for '{targetType}' disabled trigger must set BorderBrush to {{StaticResource DisabledBackgroundBrush}}");
+                }
+            });
+
             RunSyncTest("MainWindowXaml_MetadataValues_AutomationProperties_Configured", () =>
             {
                 string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
@@ -4120,6 +4172,53 @@ namespace CollationModifier.Tests
                     "TargetCollationInput_Loaded must call ApplyTemplate() before checking Template");
                 Assert(findNameIndex >= 0 && applyTemplateIndex < findNameIndex,
                     "TargetCollationInput_Loaded must call ApplyTemplate() before calling Template.FindName");
+            });
+
+            RunSyncTest("MainWindowXaml_DashboardOperationsPanel_WrappedInScrollViewer", () =>
+            {
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string content = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var doc = System.Xml.Linq.XDocument.Parse(content);
+
+                // 1. Find operations StackPanel
+                var stackPanels = doc.Descendants().Where(e => e.Name.LocalName == "StackPanel").ToList();
+                var operationsPanel = stackPanels.FirstOrDefault(sp =>
+                    sp.Attribute("AutomationProperties.Name")?.Value == "Database Operations");
+                Assert(operationsPanel != null, "MainWindow.xaml should contain operations StackPanel with AutomationProperties.Name='Database Operations'");
+
+                // 2. Parent of operations StackPanel must be a ScrollViewer
+                var parentScrollViewer = operationsPanel!.Parent;
+                Assert(parentScrollViewer != null, "Operations StackPanel should have a parent");
+                Assert(parentScrollViewer!.Name.LocalName == "ScrollViewer",
+                    $"Operations StackPanel should be directly enclosed in a ScrollViewer, but found {parentScrollViewer.Name.LocalName}");
+
+                // 3. ScrollViewer should configure vertical auto and horizontal disabled scrolling
+                Assert(parentScrollViewer.Attribute("VerticalScrollBarVisibility")?.Value == "Auto",
+                    "Dashboard ScrollViewer should specify VerticalScrollBarVisibility='Auto'");
+                Assert(parentScrollViewer.Attribute("HorizontalScrollBarVisibility")?.Value == "Disabled",
+                    "Dashboard ScrollViewer should specify HorizontalScrollBarVisibility='Disabled'");
+
+                // 4. ScrollViewer parent should be the dashboard Grid
+                var dashboardGrid = parentScrollViewer.Parent;
+                Assert(dashboardGrid != null, "Dashboard ScrollViewer should have a parent Grid");
+                Assert(dashboardGrid!.Name.LocalName == "Grid",
+                    $"Dashboard ScrollViewer parent should be Grid, but found {dashboardGrid.Name.LocalName}");
+
+                // 5. The disconnected overlay Border should be a sibling element within the same Grid
+                var overlayBorder = dashboardGrid.Elements()
+                    .FirstOrDefault(e => e.Name.LocalName == "Border" &&
+                                         e.Descendants().Any(d => d.Attributes().Any(a => a.Name.LocalName == "Name" && a.Value == "lblDisconnectedOverlay")));
+                Assert(overlayBorder != null, "Disconnected overlay Border should be a sibling inside the dashboard Grid");
             });
 
             RunSyncTest("MainViewModel_IsConnected_TransitionsAnnounceOperationsPanelState", () =>
