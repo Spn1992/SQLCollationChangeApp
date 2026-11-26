@@ -3049,6 +3049,108 @@ namespace CollationModifier.Tests
                     $"Contrast ratio {contrastAgainstWhite:F2}:1 against white background must exceed 4.5:1 under WCAG 2.2 1.4.3");
             });
 
+            RunSyncTest("DisconnectedOverlay_SharedBrushes_NoContainerOpacity_AndHighContrast", () =>
+            {
+                string appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "App.xaml"));
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "App.xaml"));
+                }
+                if (!System.IO.File.Exists(appXamlPath))
+                {
+                    appXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "App.xaml"));
+                }
+                Assert(System.IO.File.Exists(appXamlPath), $"App.xaml file should exist at path {appXamlPath}");
+
+                string mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "MainWindow.xaml"));
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "CollationModifier", "MainWindow.xaml"));
+                }
+                if (!System.IO.File.Exists(mainWindowXamlPath))
+                {
+                    mainWindowXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "..", "CollationModifier", "MainWindow.xaml"));
+                }
+                Assert(System.IO.File.Exists(mainWindowXamlPath), $"MainWindow.xaml file should exist at path {mainWindowXamlPath}");
+
+                string appContent = System.IO.File.ReadAllText(appXamlPath);
+                var appDoc = System.Xml.Linq.XDocument.Parse(appContent);
+                System.Xml.Linq.XNamespace xNs = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+                var brushes = appDoc.Descendants().Where(e => e.Name.LocalName == "SolidColorBrush").ToList();
+                var overlayBgBrush = brushes.FirstOrDefault(b => b.Attribute(xNs + "Key")?.Value == "OverlayBackgroundBrush");
+                var overlayFgBrush = brushes.FirstOrDefault(b => b.Attribute(xNs + "Key")?.Value == "OverlayForegroundBrush");
+
+                Assert(overlayBgBrush != null && string.Equals(overlayBgBrush.Attribute("Color")?.Value, "#E6F8FAFC", StringComparison.OrdinalIgnoreCase),
+                    "App.xaml should define OverlayBackgroundBrush with Color=\"#E6F8FAFC\"");
+                Assert(overlayFgBrush != null && string.Equals(overlayFgBrush.Attribute("Color")?.Value, "#334155", StringComparison.OrdinalIgnoreCase),
+                    "App.xaml should define OverlayForegroundBrush with Color=\"#334155\"");
+
+                string mainWindowContent = System.IO.File.ReadAllText(mainWindowXamlPath);
+                var mainDoc = System.Xml.Linq.XDocument.Parse(mainWindowContent);
+
+                var overlayTextBlock = mainDoc.Descendants().FirstOrDefault(e =>
+                    e.Name.LocalName == "TextBlock" && e.Attribute(xNs + "Name")?.Value == "lblDisconnectedOverlay");
+                Assert(overlayTextBlock != null, "MainWindow.xaml must contain lblDisconnectedOverlay TextBlock");
+                Assert(overlayTextBlock!.Attribute("Foreground")?.Value == "{StaticResource OverlayForegroundBrush}",
+                    "lblDisconnectedOverlay must bind Foreground to {StaticResource OverlayForegroundBrush}");
+                Assert(overlayTextBlock.Attribute("Opacity") == null,
+                    "lblDisconnectedOverlay must not set local Opacity");
+
+                var overlayBorder = overlayTextBlock.Parent;
+                Assert(overlayBorder != null && overlayBorder.Name.LocalName == "Border",
+                    "lblDisconnectedOverlay must be wrapped in the disconnected overlay Border");
+                Assert(overlayBorder!.Attribute("Background")?.Value == "{StaticResource OverlayBackgroundBrush}",
+                    "Disconnected overlay Border must bind Background to {StaticResource OverlayBackgroundBrush}");
+                Assert(overlayBorder.Attribute("Opacity") == null,
+                    "Disconnected overlay Border must not set Opacity so child text renders at full opacity");
+                Assert(overlayBorder.Attribute("Panel.ZIndex")?.Value == "5",
+                    "Disconnected overlay Border must preserve Panel.ZIndex=\"5\"");
+
+                // Verify WCAG 2.2 SC 1.4.3 / G18 alpha-composited contrast ratios (> 4.5:1)
+                static double ToLinear(double channelByte)
+                {
+                    double s = channelByte / 255.0;
+                    return s <= 0.04045 ? s / 12.92 : Math.Pow((s + 0.055) / 1.055, 2.4);
+                }
+
+                static double RelativeLuminance(double r, double g, double b) =>
+                    0.2126 * ToLinear(r) + 0.7152 * ToLinear(g) + 0.0722 * ToLinear(b);
+
+                static double ContrastRatio(double lum1, double lum2)
+                {
+                    double lighter = Math.Max(lum1, lum2);
+                    double darker = Math.Min(lum1, lum2);
+                    return (lighter + 0.05) / (darker + 0.05);
+                }
+
+                // OverlayForegroundBrush #334155 (opaque: R=51, G=65, B=85)
+                double fgLum = RelativeLuminance(0x33, 0x41, 0x55);
+
+                // OverlayBackgroundBrush #E6F8FAFC (A=230/255, R=248, G=250, B=252)
+                double alpha = 0xE6 / 255.0;
+                (string Name, double R, double G, double B)[] underlyingSurfaces = new[]
+                {
+                    ("DashboardPanel #F8FAFC", (double)0xF8, (double)0xFA, (double)0xFC),
+                    ("MetadataCard #FFFFFF", (double)0xFF, (double)0xFF, (double)0xFF),
+                    ("UnderlyingLabel #334155", (double)0x33, (double)0x41, (double)0x55)
+                };
+
+                foreach (var surface in underlyingSurfaces)
+                {
+                    double compR = Math.Round(alpha * 0xF8 + (1.0 - alpha) * surface.R);
+                    double compG = Math.Round(alpha * 0xFA + (1.0 - alpha) * surface.G);
+                    double compB = Math.Round(alpha * 0xFC + (1.0 - alpha) * surface.B);
+                    double bgLum = RelativeLuminance(compR, compG, compB);
+                    double ratio = ContrastRatio(bgLum, fgLum);
+
+                    Assert(ratio >= 4.5,
+                        $"Composited contrast ratio {ratio:F2}:1 over {surface.Name} must exceed 4.5:1 under WCAG 2.2 SC 1.4.3");
+                    Assert(ratio >= 8.4,
+                        $"Composited contrast ratio {ratio:F2}:1 over {surface.Name} should reach expected >= 8.41:1 contrast");
+                }
+            });
+
             RunSyncTest("ErrorDetailsWindowXaml_TxtErrorDetails_NoLocalBorderBrushOverride", () =>
             {
                 string errorDetailsXamlPath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "..", "..", "..", "CollationModifier", "ErrorDetailsWindow.xaml"));
